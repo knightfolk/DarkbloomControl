@@ -179,6 +179,49 @@ struct ProviderConfigStoreTests {
         #expect(!FileManager.default.fileExists(atPath: candidateURL.path))
     }
 
+    @Test("a cooperating writer waiting before swap cannot edit either inode during publication")
+    func blocksWaitingWriterAcrossSwap() async throws {
+        let writer = CooperatingConfigWriter(
+            data: Data("enabled_models=[]\npreload_models=[]\n# waiting writer\n".utf8)
+        )
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o600,
+            cooperatingWriterBeforeSwap: writer,
+            cooperatingWriterAfterSwap: writer
+        )
+        defer { harness.cleanup() }
+        let selection = ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+        let expectedConfig = try ProviderConfigDocument(data: harness.originalData).rendering(selection)
+        let draft = try await harness.store.load()
+
+        _ = try await harness.store.save(draft.withSelection(selection))
+
+        #expect(writer.attempts == [.blocked, .blocked])
+        #expect(try Data(contentsOf: harness.configURL) == expectedConfig)
+        #expect(try Data(contentsOf: harness.backupURL) == harness.originalData)
+    }
+
+    @Test("a cooperating writer started after swap cannot edit the newly published inode")
+    func blocksWriterStartedAfterSwap() async throws {
+        let writer = CooperatingConfigWriter(
+            data: Data("enabled_models=[]\npreload_models=[]\n# post-swap writer\n".utf8)
+        )
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o600,
+            cooperatingWriterAfterSwap: writer
+        )
+        defer { harness.cleanup() }
+        let selection = ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+        let expectedConfig = try ProviderConfigDocument(data: harness.originalData).rendering(selection)
+        let draft = try await harness.store.load()
+
+        _ = try await harness.store.save(draft.withSelection(selection))
+
+        #expect(writer.attempts == [.blocked])
+        #expect(try Data(contentsOf: harness.configURL) == expectedConfig)
+        #expect(try Data(contentsOf: harness.backupURL) == harness.originalData)
+    }
+
     @Test("a pre-existing external change is rejected without validation or backup")
     func rejectsExternalChangeBeforeValidation() async throws {
         let harness = try ConfigStoreHarness.make(mode: 0o600)
@@ -366,6 +409,8 @@ private struct ConfigStoreHarness: Sendable {
         externalWriteDuringValidation: Data? = nil,
         chmodDuringValidation: Int? = nil,
         externalWriteAfterFinalSnapshot: Data? = nil,
+        cooperatingWriterBeforeSwap: CooperatingConfigWriter? = nil,
+        cooperatingWriterAfterSwap: CooperatingConfigWriter? = nil,
         candidateCleanupFailure: String? = nil,
         metadataRecorder: MetadataRecorder? = nil,
         lockPolicy: ProviderConfigLockPolicy = .live
@@ -424,7 +469,9 @@ private struct ConfigStoreHarness: Sendable {
                 if let externalWriteAfterFinalSnapshot {
                     try externalWriteAfterFinalSnapshot.write(to: configURL)
                 }
+                try cooperatingWriterBeforeSwap?.attempt(at: configURL)
             },
+            afterSwap: { try cooperatingWriterAfterSwap?.attempt(at: configURL) },
             removeCandidate: cleanupHook,
             preserveMetadata: metadataHook
         )
@@ -540,6 +587,51 @@ private final class MetadataRecorder: @unchecked Sendable {
     }
 }
 
+private final class CooperatingConfigWriter: @unchecked Sendable {
+    enum Attempt: Equatable, Sendable {
+        case blocked
+        case wrote
+    }
+
+    private let lock = NSLock()
+    private let data: Data
+    private var recordedAttempts: [Attempt] = []
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    var attempts: [Attempt] {
+        lock.withLock { recordedAttempts }
+    }
+
+    func attempt(at url: URL) throws {
+        let descriptor = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return Darwin.open(
+                path,
+                O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_EXLOCK | O_NONBLOCK
+            )
+        }
+        guard descriptor >= 0 else {
+            let lockError = errno
+            guard lockError == EWOULDBLOCK || lockError == EAGAIN else {
+                throw FakeExecutorError(message: "cooperating writer could not open config")
+            }
+            lock.withLock { recordedAttempts.append(.blocked) }
+            return
+        }
+        defer { Darwin.close(descriptor) }
+
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        try handle.truncate(atOffset: 0)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: data)
+        try handle.synchronize()
+        lock.withLock { recordedAttempts.append(.wrote) }
+    }
+}
+
 private func fileMode(_ url: URL) throws -> Int {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     return try #require((attributes[.posixPermissions] as? NSNumber)?.intValue)
@@ -561,9 +653,17 @@ private func fileGroup(_ url: URL) throws -> UInt32 {
 }
 
 private func acquireExclusiveTestLock(_ url: URL) throws -> Int32 {
-    let descriptor = url.withUnsafeFileSystemRepresentation { path in
-        guard let path else { return Int32(-1) }
-        return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_EXLOCK | O_NONBLOCK)
+    for _ in 0..<100 {
+        let descriptor = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_EXLOCK | O_NONBLOCK)
+        }
+        if descriptor >= 0 { return descriptor }
+        let lockError = errno
+        guard lockError == EWOULDBLOCK || lockError == EAGAIN || lockError == EINTR else {
+            break
+        }
+        usleep(1_000)
     }
-    return try #require(descriptor >= 0 ? descriptor : nil)
+    throw FakeExecutorError(message: "could not acquire bounded test lock")
 }

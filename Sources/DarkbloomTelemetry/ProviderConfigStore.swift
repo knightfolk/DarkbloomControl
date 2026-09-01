@@ -58,10 +58,16 @@ public protocol ProviderConfigManaging: Sendable {
 
 struct ProviderConfigStoreHooks: Sendable {
     let afterFinalSnapshot: @Sendable () throws -> Void
+    let afterSwap: @Sendable () throws -> Void
     let removeCandidate: (@Sendable (URL) throws -> Void)?
     let preserveMetadata: (@Sendable (URL, URL) throws -> Void)?
 
-    static let live = Self(afterFinalSnapshot: {}, removeCandidate: nil, preserveMetadata: nil)
+    static let live = Self(
+        afterFinalSnapshot: {},
+        afterSwap: {},
+        removeCandidate: nil,
+        preserveMetadata: nil
+    )
 }
 
 struct ProviderConfigLockPolicy: Sendable {
@@ -225,24 +231,29 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         candidateNeedsCleanup: inout Bool
     ) async throws {
         // Publication uses the strongest local-filesystem primitive available on
-        // the macOS 14 target. O_EXLOCK coordinates writers that honor advisory
-        // locks; RENAME_SWAP then gives us the exact file that occupied the config
-        // path at the swap boundary. We verify that displaced file and atomically
-        // roll it back when it differs from the loaded snapshot.
+        // the macOS 14 target. Before RENAME_SWAP, bounded O_EXLOCK descriptors
+        // are acquired in one canonical order: current config inode, then private
+        // candidate inode. If either is busy, every acquired descriptor is closed
+        // before the bounded retry sleep. The locks follow their inodes across the
+        // swap, protecting both the newly published config and the displaced file
+        // until verification and atomic backup publication finish.
         //
-        // This is not an absolute lock against a noncooperating process retaining
-        // an open descriptor and writing through it during recovery. Before a
-        // rollback we therefore verify that our published inode is still intact;
-        // if certainty is lost, both path-visible files are preserved and a
-        // bounded recovery error is returned instead of deleting either version.
-        let descriptor = try await openLockedDescriptor(at: configURL, lockFlag: O_EXLOCK)
-        defer { Darwin.close(descriptor) }
+        // Advisory locking cannot protect against noncooperating descriptor writes.
+        // A cooperating writer that retries after a blocked open must resolve the
+        // config path again (and revalidate identity) rather than write through a
+        // descriptor that may now name the displaced inode. Recovery still checks
+        // our published inode and preserves both visible files if certainty is lost.
+        let descriptors = try await openPublicationDescriptors(candidateURL: candidateURL)
+        defer {
+            Darwin.close(descriptors.candidate)
+            Darwin.close(descriptors.config)
+        }
 
-        let finalState = try snapshot(descriptor: descriptor).state
+        let finalState = try snapshot(descriptor: descriptors.config).state
         guard finalState == expectedState else {
             throw ProviderConfigError.changedExternally
         }
-        let candidateState = try readSnapshot(at: candidateURL).state
+        let candidateState = try snapshot(descriptor: descriptors.candidate).state
 
         do {
             try hooks.afterFinalSnapshot()
@@ -251,6 +262,17 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         }
 
         try atomicSwap(candidateURL, configURL)
+
+        do {
+            try hooks.afterSwap()
+        } catch {
+            try preserveOrRollback(
+                candidateURL,
+                candidateState: candidateState,
+                candidateNeedsCleanup: &candidateNeedsCleanup
+            )
+            throw Self.saveFailure
+        }
 
         let displacedState: ProviderConfigFileState
         do {
@@ -388,26 +410,80 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
 
         for attempt in 1...lockPolicy.maxAttempts {
             try Task.checkCancellation()
-            let descriptor = url.withUnsafeFileSystemRepresentation { path in
-                guard let path else { return Int32(-1) }
-                return Darwin.open(
-                    path,
-                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | lockFlag
-                )
+            if let descriptor = try tryOpenLockedDescriptor(at: url, lockFlag: lockFlag) {
+                return descriptor
             }
-            if descriptor >= 0 { return descriptor }
-
-            let lockError = errno
-            guard lockError == EWOULDBLOCK || lockError == EAGAIN else {
-                throw Self.readFailure
-            }
-            guard attempt < lockPolicy.maxAttempts else {
-                throw Self.busyFailure
-            }
-            try await Task.sleep(for: lockPolicy.retryDelay)
+            try await waitBeforeLockRetry(attempt: attempt)
         }
 
         throw Self.busyFailure
+    }
+
+    private func openPublicationDescriptors(
+        candidateURL: URL
+    ) async throws -> (config: Int32, candidate: Int32) {
+        guard lockPolicy.maxAttempts > 0 else { throw Self.busyFailure }
+
+        for attempt in 1...lockPolicy.maxAttempts {
+            try Task.checkCancellation()
+            guard let configDescriptor = try tryOpenLockedDescriptor(
+                at: configURL,
+                lockFlag: O_EXLOCK
+            ) else {
+                try await waitBeforeLockRetry(attempt: attempt)
+                continue
+            }
+
+            do {
+                try Task.checkCancellation()
+                if let candidateDescriptor = try tryOpenLockedDescriptor(
+                    at: candidateURL,
+                    lockFlag: O_EXLOCK
+                ) {
+                    do {
+                        try Task.checkCancellation()
+                        return (configDescriptor, candidateDescriptor)
+                    } catch {
+                        Darwin.close(candidateDescriptor)
+                        throw error
+                    }
+                }
+            } catch {
+                Darwin.close(configDescriptor)
+                throw error
+            }
+
+            // Never retain the first lock while waiting for the second. This keeps
+            // the config-then-candidate order deadlock-free for every retry.
+            Darwin.close(configDescriptor)
+            try await waitBeforeLockRetry(attempt: attempt)
+        }
+
+        throw Self.busyFailure
+    }
+
+    private func tryOpenLockedDescriptor(at url: URL, lockFlag: Int32) throws -> Int32? {
+        let descriptor = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return Darwin.open(
+                path,
+                O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | lockFlag
+            )
+        }
+        if descriptor >= 0 { return descriptor }
+
+        let lockError = errno
+        guard lockError == EWOULDBLOCK || lockError == EAGAIN else {
+            throw Self.readFailure
+        }
+        return nil
+    }
+
+    private func waitBeforeLockRetry(attempt: Int) async throws {
+        guard attempt < lockPolicy.maxAttempts else {
+            throw Self.busyFailure
+        }
+        try await Task.sleep(for: lockPolicy.retryDelay)
     }
 
     private func atomicReplace(_ source: URL, at destination: URL) throws {
