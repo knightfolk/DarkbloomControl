@@ -27,4 +27,15 @@ struct TelemetryFormattingTests {
         #expect(TelemetryFormatting.modelList([]) == "None reported")
         #expect(TelemetryFormatting.unavailable("loaded-models.json missing") == "Unavailable — loaded-models.json missing")
     }
+
+    @Test("non-finite values and oversized durations are unavailable")
+    func rejectsInvalidNumbers() {
+        #expect(TelemetryFormatting.tokenRate(.available(tokensPerSecond: .nan, label: "derived")) == "Unavailable — Token rate is not finite")
+        #expect(TelemetryFormatting.tokenRate(.available(tokensPerSecond: .infinity, label: "derived")) == "Unavailable — Token rate is not finite")
+        #expect(TelemetryFormatting.gibibytes(.nan) == "Unavailable — Memory value is not finite")
+        #expect(TelemetryFormatting.gibibytes(.infinity) == "Unavailable — Memory value is not finite")
+        #expect(TelemetryFormatting.duration(.available(seconds: .nan, label: "derived")) == "Unavailable — Duration is not finite")
+        #expect(TelemetryFormatting.duration(.available(seconds: .infinity, label: "derived")) == "Unavailable — Duration is not finite")
+        #expect(TelemetryFormatting.duration(.available(seconds: Double.greatestFiniteMagnitude, label: "derived")) == "Unavailable — Duration is out of range")
+    }
 }

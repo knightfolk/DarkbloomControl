@@ -7,6 +7,9 @@ public enum TelemetryFormatting {
     public static func tokenRate(_ rate: TokenRate) -> String {
         switch rate {
         case .available(let tokensPerSecond, let label):
+            guard tokensPerSecond.isFinite else {
+                return unavailable("Token rate is not finite")
+            }
             return String(format: "%.1f tok/s · %@", locale: locale, tokensPerSecond, label)
         case .unavailable(let reason):
             return unavailable(reason)
@@ -16,14 +19,23 @@ public enum TelemetryFormatting {
     public static func duration(_ duration: DerivedDuration) -> String {
         switch duration {
         case .available(let seconds, let label):
-            return "\(compactDuration(seconds)) · \(label)"
+            guard seconds.isFinite else {
+                return unavailable("Duration is not finite")
+            }
+            guard let value = compactDuration(seconds) else {
+                return unavailable("Duration is out of range")
+            }
+            return "\(value) · \(label)"
         case .unavailable(let reason):
             return unavailable(reason)
         }
     }
 
     public static func gibibytes(_ value: Double) -> String {
-        String(format: "%.2f GiB", locale: locale, value)
+        guard value.isFinite else {
+            return unavailable("Memory value is not finite")
+        }
+        return String(format: "%.2f GiB", locale: locale, value)
     }
 
     public static func memoryFraction(active: Double, total: Double) -> Double? {
@@ -58,8 +70,15 @@ public enum TelemetryFormatting {
         "Unavailable — \(reason)"
     }
 
-    private static func compactDuration(_ seconds: TimeInterval) -> String {
-        let wholeSeconds = max(0, Int(seconds.rounded(.down)))
+    private static func compactDuration(_ seconds: TimeInterval) -> String? {
+        let wholeSeconds: Int
+        if seconds <= 0 {
+            wholeSeconds = 0
+        } else {
+            let flooredSeconds = seconds.rounded(.down)
+            guard flooredSeconds < Double(Int.max) else { return nil }
+            wholeSeconds = Int(flooredSeconds)
+        }
         let days = wholeSeconds / 86_400
         let hours = (wholeSeconds % 86_400) / 3_600
         let minutes = (wholeSeconds % 3_600) / 60
