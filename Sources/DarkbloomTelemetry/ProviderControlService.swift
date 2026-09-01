@@ -53,6 +53,9 @@ public actor ProviderControlService: ProviderControlling {
     private let now: @Sendable () -> Date
     private var lastCatalog: [CatalogModel]?
     private var lastLocalModels: [LocalModel]?
+    private var nextRefreshGeneration: UInt64 = 0
+    private var lastCatalogGeneration: UInt64 = 0
+    private var lastLocalModelsGeneration: UInt64 = 0
     private var commandRunning = false
 
     public init(
@@ -148,12 +151,18 @@ public actor ProviderControlService: ProviderControlling {
 
     public func execute(
         _ action: ProviderLifecycleAction,
-        enabledModels: [String]
+        enabledModels _: [String]
     ) async throws {
         try beginCommand()
         defer { endCommand() }
-        if action == .start, enabledModels.isEmpty {
-            throw ProviderControlError.noEnabledModels
+        let savedEnabledModels: [String]
+        if action == .start {
+            savedEnabledModels = try await configStore.load().original.enabled
+            guard !savedEnabledModels.isEmpty else {
+                throw ProviderControlError.noEnabledModels
+            }
+        } else {
+            savedEnabledModels = []
         }
         let executable = try resolveExecutable()
         let command: ProcessCommand
@@ -162,7 +171,7 @@ public actor ProviderControlService: ProviderControlling {
             command = DarkbloomCommand.start(
                 executable: executable,
                 config: policy.providerConfig,
-                models: enabledModels
+                models: savedEnabledModels
             )
         case .stop:
             command = DarkbloomCommand.stop(executable: executable)
@@ -191,6 +200,8 @@ public actor ProviderControlService: ProviderControlling {
         using executable: URL,
         allowStaleSources: Bool
     ) async throws -> ProviderControlSnapshot {
+        nextRefreshGeneration &+= 1
+        let generation = nextRefreshGeneration
         var catalog: [CatalogModel]?
         var local: [LocalModel]?
         var sourceIssues: [String] = []
@@ -203,8 +214,13 @@ public actor ProviderControlService: ProviderControlling {
                 onOutput: nil
             )
             let decoded = try ModelCatalogDecoder.decode(result.standardOutput)
-            lastCatalog = decoded
+            if generation > lastCatalogGeneration {
+                lastCatalog = decoded
+                lastCatalogGeneration = generation
+            }
             catalog = decoded
+        } catch let error as CancellationError {
+            throw error
         } catch {
             if allowStaleSources, let lastCatalog {
                 catalog = lastCatalog
@@ -220,8 +236,13 @@ public actor ProviderControlService: ProviderControlling {
                 onOutput: nil
             )
             let decoded = try LocalModelListDecoder.decode(result.standardOutput).models
-            lastLocalModels = decoded
+            if generation > lastLocalModelsGeneration {
+                lastLocalModels = decoded
+                lastLocalModelsGeneration = generation
+            }
             local = decoded
+        } catch let error as CancellationError {
+            throw error
         } catch {
             if allowStaleSources, let lastLocalModels {
                 local = lastLocalModels
@@ -236,8 +257,32 @@ public actor ProviderControlService: ProviderControlling {
             throw ProviderControlError.inventoryUnavailable("Local model list is unavailable")
         }
         let draft = try await configStore.load()
-        let daemon = try? await telemetrySource.readDaemonState()
-        let loadedModels = (try? await telemetrySource.readLoadedModels().models) ?? []
+        let daemon: DaemonState?
+        do {
+            daemon = try await telemetrySource.readDaemonState()
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            guard allowStaleSources else {
+                throw ProviderControlError.deleteBlocked(
+                    "Provider activity is unavailable; deletion was not attempted"
+                )
+            }
+            daemon = nil
+        }
+        let loadedModels: [String]
+        do {
+            loadedModels = try await telemetrySource.readLoadedModels().models
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            guard allowStaleSources else {
+                throw ProviderControlError.deleteBlocked(
+                    "Loaded model state is unavailable; deletion was not attempted"
+                )
+            }
+            loadedModels = []
+        }
         let builtInventory = ModelInventoryBuilder.build(
             catalog: catalog,
             local: local,

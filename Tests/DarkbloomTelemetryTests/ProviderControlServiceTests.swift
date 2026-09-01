@@ -61,6 +61,28 @@ struct ProviderControlServiceTests {
         #expect(staleLocal.inventory.myCatalog.count == 2)
     }
 
+    @Test("an older refresh cannot replace the cache from a completed mutation")
+    func mutationRefreshWinsCacheRace() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+        await harness.runner.blockNextLocal(with: localJSON)
+        let olderRefresh = Task { try await harness.service.refresh() }
+        await harness.runner.waitUntilLocalBlocked()
+
+        await harness.runner.useLocalByDefault(localWithQwenJSON)
+        try await harness.service.download("qwen3-8b", onOutput: nil)
+
+        await harness.runner.releaseBlockedLocal()
+        _ = try await olderRefresh.value
+        await harness.runner.failNextLocal()
+        let stale = try await harness.service.refresh()
+
+        #expect(stale.inventory.issues.contains(
+            "Local model list is stale; download state may be outdated"
+        ))
+        #expect(stale.inventory.myCatalog.map(\.catalogID).contains("qwen3-8b"))
+    }
+
     @Test("a required source that has never decoded throws a bounded unavailable error")
     func rejectsUnavailableFirstRefresh() async throws {
         let catalogHarness = try ServiceHarness.make()
@@ -137,6 +159,31 @@ struct ProviderControlServiceTests {
         #expect(await preloaded.runner.mutationArguments.isEmpty)
     }
 
+    @Test("delete fails closed when either live residency source is unavailable")
+    func deleteRequiresLiveResidencySources() async throws {
+        let daemonUnavailable = try ServiceHarness.make()
+        defer { daemonUnavailable.cleanup() }
+        await daemonUnavailable.telemetry.failNextDaemonRead()
+
+        await #expect(throws: ProviderControlError.deleteBlocked(
+            "Provider activity is unavailable; deletion was not attempted"
+        )) {
+            try await daemonUnavailable.service.delete("gpt-oss-20b")
+        }
+        #expect(await daemonUnavailable.runner.mutationArguments.isEmpty)
+
+        let loadedUnavailable = try ServiceHarness.make()
+        defer { loadedUnavailable.cleanup() }
+        await loadedUnavailable.telemetry.failNextLoadedModelsRead()
+
+        await #expect(throws: ProviderControlError.deleteBlocked(
+            "Loaded model state is unavailable; deletion was not attempted"
+        )) {
+            try await loadedUnavailable.service.delete("gpt-oss-20b")
+        }
+        #expect(await loadedUnavailable.runner.mutationArguments.isEmpty)
+    }
+
     @Test("delete rejects unmatched and ambiguous local identities")
     func deleteRejectsUnsafeIdentity() async throws {
         let unmatched = try ServiceHarness.make()
@@ -157,7 +204,10 @@ struct ProviderControlServiceTests {
 
     @Test("lifecycle commands use exact arguments and policy bounds")
     func lifecycleCommandsAreExact() async throws {
-        let harness = try ServiceHarness.make()
+        let harness = try ServiceHarness.make(selection: ProviderModelSelection(
+            enabled: ["gemma-4-26b-qat-4bit", "gpt-oss"],
+            preloaded: []
+        ))
         defer { harness.cleanup() }
 
         try await harness.service.execute(.start, enabledModels: ["gemma-4-26b-qat-4bit", "gpt-oss"])
@@ -177,14 +227,37 @@ struct ProviderControlServiceTests {
 
     @Test("start rejects an empty saved enabled selection")
     func startRequiresEnabledModels() async throws {
-        let harness = try ServiceHarness.make()
+        let harness = try ServiceHarness.make(selection: ProviderModelSelection(
+            enabled: [],
+            preloaded: []
+        ))
         defer { harness.cleanup() }
 
         await #expect(throws: ProviderControlError.noEnabledModels) {
-            try await harness.service.execute(.start, enabledModels: [])
+            try await harness.service.execute(.start, enabledModels: ["stale-caller-model"])
         }
 
         #expect(await harness.runner.lifecycleInvocations.isEmpty)
+    }
+
+    @Test("start ignores stale caller selectors and uses the fresh saved selection")
+    func startUsesFreshSavedSelection() async throws {
+        let harness = try ServiceHarness.make(selection: ProviderModelSelection(
+            enabled: ["gemma-4-26b-qat-4bit"],
+            preloaded: []
+        ))
+        defer { harness.cleanup() }
+
+        try await harness.service.execute(
+            .start,
+            enabledModels: ["gpt-oss", "qwen3-8b"]
+        )
+
+        let invocation = try #require(await harness.runner.lifecycleInvocations.first)
+        #expect(invocation.command.arguments == [
+            "start", "--config", harness.configURL.path,
+            "--model", "gemma-4-26b-qat-4bit",
+        ])
     }
 
     @Test("activity maps fresh daemon telemetry directly")
@@ -296,6 +369,79 @@ struct ProviderControlServiceTests {
         #expect(await harness.runner.sourceArguments.isEmpty)
         try await harness.service.execute(.stop, enabledModels: [])
     }
+
+    @Test("refresh propagates cancellation from model and telemetry sources")
+    func refreshPropagatesCancellation() async throws {
+        let catalogSource = try ServiceHarness.make()
+        defer { catalogSource.cleanup() }
+        _ = try await catalogSource.service.refresh()
+        await catalogSource.runner.cancelNextCatalog()
+        do {
+            _ = try await catalogSource.service.refresh()
+            Issue.record("Expected catalog-source cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let modelSource = try ServiceHarness.make()
+        defer { modelSource.cleanup() }
+        _ = try await modelSource.service.refresh()
+        await modelSource.runner.blockNextLocal(with: localJSON)
+        let refresh = Task { try await modelSource.service.refresh() }
+        await modelSource.runner.waitUntilLocalBlocked()
+        refresh.cancel()
+        do {
+            _ = try await refresh.value
+            Issue.record("Expected model-source cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let daemonSource = try ServiceHarness.make()
+        defer { daemonSource.cleanup() }
+        await daemonSource.telemetry.cancelNextDaemonRead()
+        do {
+            _ = try await daemonSource.service.refresh()
+            Issue.record("Expected daemon-source cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let loadedSource = try ServiceHarness.make()
+        defer { loadedSource.cleanup() }
+        await loadedSource.telemetry.cancelNextLoadedModelsRead()
+        do {
+            _ = try await loadedSource.service.refresh()
+            Issue.record("Expected loaded-model-source cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
+    @Test("post-command refresh cancellation propagates and releases the command lock")
+    func postCommandRefreshPropagatesCancellation() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+        _ = try await harness.service.refresh()
+        await harness.runner.blockNextLocal(with: localJSON)
+        let download = Task {
+            try await harness.service.download("qwen3-8b", onOutput: nil)
+        }
+        await harness.runner.waitUntilLocalBlocked()
+
+        download.cancel()
+        do {
+            try await download.value
+            Issue.record("Expected post-command refresh cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        #expect(await harness.runner.mutationArguments == [[
+            "models", "download", "--config", harness.configURL.path, "qwen3-8b",
+        ]])
+        try await harness.service.execute(.stop, enabledModels: [])
+    }
 }
 
 private final class ServiceHarness: @unchecked Sendable {
@@ -376,6 +522,7 @@ private actor ServiceRunnerFake: ProcessExecuting {
     private enum Response: Sendable {
         case data(Data)
         case failure
+        case cancellation
     }
 
     struct Invocation: Sendable {
@@ -385,12 +532,15 @@ private actor ServiceRunnerFake: ProcessExecuting {
     }
 
     private let catalog: Data
-    private let local: Data
+    private var local: Data
     private var nextCatalog: Response?
     private var nextLocal: Response?
     private(set) var invocations: [Invocation] = []
     private var blockedGate: ServiceAsyncGate?
     private var shouldBlockNextMutation = false
+    private var blockedLocalGate: ServiceAsyncGate?
+    private var blockedLocalData: Data?
+    private var shouldBlockNextLocal = false
 
     init(catalog: Data, local: Data) {
         self.catalog = catalog
@@ -440,8 +590,25 @@ private actor ServiceRunnerFake: ProcessExecuting {
         await blockedGate?.release()
     }
 
+    func blockNextLocal(with data: Data) {
+        blockedLocalGate = ServiceAsyncGate()
+        blockedLocalData = data
+        shouldBlockNextLocal = true
+    }
+
+    func waitUntilLocalBlocked() async {
+        await blockedLocalGate?.waitUntilStarted()
+    }
+
+    func releaseBlockedLocal() async {
+        await blockedLocalGate?.release()
+    }
+
+    func useLocalByDefault(_ data: Data) { local = data }
+
     func failNextCatalog() { nextCatalog = .failure }
     func failNextLocal() { nextLocal = .failure }
+    func cancelNextCatalog() { nextCatalog = .cancellation }
     func useNextCatalog(_ data: Data) { nextCatalog = .data(data) }
     func useNextLocal(_ data: Data) { nextLocal = .data(data) }
 
@@ -472,7 +639,15 @@ private actor ServiceRunnerFake: ProcessExecuting {
         case ["models", "catalog"]:
             output = try consume(&nextCatalog, fallback: catalog)
         case ["models", "list"]:
-            output = try consume(&nextLocal, fallback: local)
+            if shouldBlockNextLocal {
+                shouldBlockNextLocal = false
+                if let blockedLocalGate {
+                    try await blockedLocalGate.wait()
+                }
+                output = blockedLocalData ?? local
+            } else {
+                output = try consume(&nextLocal, fallback: local)
+            }
         default: output = Data()
         }
         return CommandResult(exitCode: 0, standardOutput: output, standardError: Data())
@@ -484,6 +659,7 @@ private actor ServiceRunnerFake: ProcessExecuting {
         switch selected {
         case .data(let data): return data
         case .failure: throw ServiceFakeError.sourceFailed
+        case .cancellation: throw CancellationError()
         }
     }
 }
@@ -580,6 +756,9 @@ private actor ServiceTelemetryFake: TelemetrySource {
     private let daemon: DaemonState
     private let loadedModels: LoadedModelsState
     private var daemonReadShouldFail = false
+    private var loadedModelsReadShouldFail = false
+    private var daemonReadShouldCancel = false
+    private var loadedModelsReadShouldCancel = false
 
     init(daemon: DaemonState, loadedModels: LoadedModelsState) {
         self.daemon = daemon
@@ -587,15 +766,32 @@ private actor ServiceTelemetryFake: TelemetrySource {
     }
 
     func failNextDaemonRead() { daemonReadShouldFail = true }
+    func failNextLoadedModelsRead() { loadedModelsReadShouldFail = true }
+    func cancelNextDaemonRead() { daemonReadShouldCancel = true }
+    func cancelNextLoadedModelsRead() { loadedModelsReadShouldCancel = true }
 
     func readDaemonState() async throws -> DaemonState {
+        if daemonReadShouldCancel {
+            daemonReadShouldCancel = false
+            throw CancellationError()
+        }
         if daemonReadShouldFail {
             daemonReadShouldFail = false
             throw ServiceFakeError.sourceFailed
         }
         return daemon
     }
-    func readLoadedModels() async throws -> LoadedModelsState { loadedModels }
+    func readLoadedModels() async throws -> LoadedModelsState {
+        if loadedModelsReadShouldCancel {
+            loadedModelsReadShouldCancel = false
+            throw CancellationError()
+        }
+        if loadedModelsReadShouldFail {
+            loadedModelsReadShouldFail = false
+            throw ServiceFakeError.sourceFailed
+        }
+        return loadedModels
+    }
     func readStatus() async throws -> StatusSnapshot { StatusSnapshot() }
     func readLegacyEvents(limit: Int) async throws -> [LogEvent] { [] }
 }
@@ -643,6 +839,18 @@ private let localGemmaOnlyJSON = Data(#"""
   "filtered_by_config":false,
   "models":[
     {"id":"gemma-4-26b-qat-4bit","model_type":"llm","size_bytes":16320875724,"estimated_memory_gb":18.5}
+  ]
+}
+"""#.utf8)
+
+private let localWithQwenJSON = Data(#"""
+{
+  "cache_directory":"/inert/cache",
+  "filtered_by_config":false,
+  "models":[
+    {"id":"gpt-oss-20b","model_type":"llm","size_bytes":13421772800,"estimated_memory_gb":15.0},
+    {"id":"gemma-4-26b-qat-4bit","model_type":"llm","size_bytes":16320875724,"estimated_memory_gb":18.5},
+    {"id":"qwen3-8b","model_type":"llm","size_bytes":5368709120,"estimated_memory_gb":7.0}
   ]
 }
 """#.utf8)
