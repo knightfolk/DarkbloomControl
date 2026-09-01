@@ -93,6 +93,29 @@ struct ModelInventoryTests {
         #expect(inventory.available.map(\.displayName) == ["Gemma 4 26B"])
     }
 
+    @Test("reconciled rows preserve the catalog model type")
+    func preservesModelType() throws {
+        let inventory = ModelInventoryBuilder.build(
+            catalog: [CatalogModel(
+                id: "vision-model",
+                displayName: "Vision Model",
+                family: "vision",
+                modelType: "vision-language",
+                capabilities: ["vision", "text"],
+                sizeGB: 6,
+                minimumRAMGB: 12,
+                active: true
+            )],
+            local: [],
+            selection: ProviderModelSelection(enabled: [], preloaded: []),
+            daemon: nil,
+            loadedModels: []
+        )
+
+        let item = try #require(inventory.available.first)
+        #expect(item.modelType == "vision-language")
+    }
+
     @Test("exact configured IDs win over family aliases in either input order")
     func exactSelectorPrecedence() throws {
         let catalog = try ModelCatalogDecoder.decode(fixture("model-catalog.json"))

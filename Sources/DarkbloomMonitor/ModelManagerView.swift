@@ -7,6 +7,7 @@ struct ModelRowPresentation: Equatable {
     let showsPreloadToggle: Bool
     let showsDelete: Bool
     let deleteBlockReason: String?
+    let availableMetadataText: String?
 
     static func make(
         item: ModelInventoryItem,
@@ -21,7 +22,10 @@ struct ModelRowPresentation: Equatable {
             showsDelete: isDownloaded,
             deleteBlockReason: isDownloaded
                 ? deleteBlockReason(item: item, draft: draft, operation: operation)
-                : nil
+                : nil,
+            availableMetadataText: isDownloaded
+                ? nil
+                : ModelFormatting.availableDetails(item)
         )
     }
 
@@ -254,16 +258,22 @@ private struct AvailableModelRow: View {
         store.operation == .downloading(item.catalogID)
     }
 
+    private var presentation: ModelRowPresentation {
+        .make(item: item, draft: store.draft, operation: store.operation)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.displayName)
                         .font(.headline)
-                    Text(ModelFormatting.availableDetails(item))
+                    Text(presentation.availableMetadataText ?? "")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel(presentation.availableMetadataText ?? "")
+                        .accessibilityIdentifier("model.\(item.catalogID).metadata")
                 }
                 Spacer(minLength: 8)
 
@@ -403,6 +413,6 @@ private enum ModelFormatting {
         let capabilities = item.capabilities.isEmpty
             ? "Capabilities unavailable"
             : item.capabilities.map { $0.capitalized }.joined(separator: ", ")
-        return "\(capabilities) · \(size(item.sizeGB)) · \(item.minimumRAMGB) GB minimum RAM"
+        return "\(item.modelType.uppercased()) · \(capabilities) · \(size(item.sizeGB)) · \(item.minimumRAMGB) GB minimum RAM"
     }
 }

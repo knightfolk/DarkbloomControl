@@ -87,6 +87,7 @@ public struct ModelInventoryItem: Equatable, Identifiable, Sendable {
     public let localID: String?
     public let configuredSelector: String?
     public let displayName: String
+    public let modelType: String
     public let capabilities: [String]
     public let sizeGB: Double
     public let minimumRAMGB: Int
@@ -150,7 +151,8 @@ public enum ModelInventoryBuilder {
             return ModelInventoryItem(
                 catalogID: model.id, localID: downloaded ? model.id : nil,
                 configuredSelector: resolvedEnabled[model.id] ?? resolvedPreloaded[model.id],
-                displayName: model.displayName, capabilities: model.capabilities,
+                displayName: model.displayName, modelType: model.modelType,
+                capabilities: model.capabilities,
                 sizeGB: model.sizeGB, minimumRAMGB: model.minimumRAMGB,
                 isDownloaded: downloaded, isEnabled: resolvedEnabled[model.id] != nil,
                 isPreloaded: resolvedPreloaded[model.id] != nil, liveState: live, issue: itemIssues[model.id]

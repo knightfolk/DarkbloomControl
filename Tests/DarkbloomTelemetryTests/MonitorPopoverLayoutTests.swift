@@ -88,7 +88,7 @@ struct MonitorPopoverLayoutTests {
         #expect(controller.settingsWindowContentSize == NSSize(width: 720, height: 620))
     }
 
-    @Test("model settings fit their minimum hosted size without horizontal growth")
+    @Test("model settings including available model type fit without horizontal growth")
     func modelSettingsFitMinimumSize() async {
         let controlStore = ProviderControlStore(controller: InertSettingsController())
         await controlStore.refresh()
@@ -185,8 +185,8 @@ private actor InertSettingsController: ProviderControlling {
                 id: "available-model",
                 displayName: "Available Model",
                 family: "available",
-                modelType: "llm",
-                capabilities: ["text"],
+                modelType: "vision-language",
+                capabilities: ["vision", "text"],
                 sizeGB: 4,
                 minimumRAMGB: 8,
                 active: true

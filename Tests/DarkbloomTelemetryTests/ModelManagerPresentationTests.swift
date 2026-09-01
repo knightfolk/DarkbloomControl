@@ -17,6 +17,7 @@ struct ModelManagerPresentationTests {
         #expect(row.showsPreloadToggle)
         #expect(row.showsDelete)
         #expect(row.deleteBlockReason == nil)
+        #expect(row.availableMetadataText == nil)
     }
 
     @Test("available models offer only download")
@@ -32,6 +33,7 @@ struct ModelManagerPresentationTests {
         #expect(row.showsPreloadToggle == false)
         #expect(row.showsDelete == false)
         #expect(row.deleteBlockReason == nil)
+        #expect(row.availableMetadataText == "LLM · Text · 4.5 GB · 8 GB minimum RAM")
     }
 
     @Test("delete explains active and loaded blockers")
