@@ -48,67 +48,20 @@ struct DarkbloomLogo: View {
 
 struct MenuBarMetric: View {
     static let width: CGFloat = 78
-    static let height: CGFloat = 21
+    static let height: CGFloat = 14
 
     let text: String?
-    let uptime: ObservedUptimeValue
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            ZStack(alignment: .leading) {
-                Color.clear
-                if let text {
-                    Text(text)
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .lineLimit(1)
-                }
+        ZStack(alignment: .leading) {
+            Color.clear
+            if let text {
+                Text(text)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .lineLimit(1)
             }
-            .frame(width: Self.width, height: 12, alignment: .leading)
-
-            ObservedUptimeRow(value: uptime)
         }
         .frame(width: Self.width, height: Self.height, alignment: .leading)
-    }
-}
-
-private struct ObservedUptimeRow: View {
-    let value: ObservedUptimeValue
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ZStack(alignment: .leading) {
-                Capsule().fill(.secondary.opacity(0.28))
-                if let fraction = value.fraction {
-                    Capsule()
-                        .fill(.secondary)
-                        .frame(width: 43 * fraction)
-                }
-            }
-            .frame(width: 43, height: 3)
-
-            Text(label)
-                .font(.system(size: 8, weight: .medium, design: .monospaced))
-                .lineLimit(1)
-                .frame(width: 29, alignment: .leading)
-        }
-        .frame(width: MenuBarMetric.width, height: 8, alignment: .leading)
-        .opacity(isUnavailable ? 0 : 1)
-    }
-
-    private var label: String {
-        switch value {
-        case .available:
-            value.compactPercent ?? ""
-        case .warming:
-            "warm"
-        case .unavailable:
-            ""
-        }
-    }
-
-    private var isUnavailable: Bool {
-        if case .unavailable = value { return true }
-        return false
     }
 }
 
@@ -124,7 +77,7 @@ struct MenuBarLabel: View {
             )
             .frame(width: 12.25, height: 14)
 
-            MenuBarMetric(text: presentation.metricText, uptime: uptime)
+            MenuBarMetric(text: presentation.metricText)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(presentation.accessibilityLabel) \(uptime.accessibilityDescription)")
