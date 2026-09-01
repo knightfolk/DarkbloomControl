@@ -1,37 +1,115 @@
 import DarkbloomTelemetry
 import SwiftUI
 
+enum PopoverSection: String, CaseIterable, Hashable {
+    case performance
+    case modelsAndSlots
+    case memoryAndProcess
+    case trust
+    case recentEvents
+    case advanced
+    case menuBarSettings
+}
+
+struct PopoverDisclosureDefaults {
+    let expandedSections: Set<PopoverSection>
+
+    static let compact = Self(expandedSections: [])
+}
+
 struct MonitorPopover: View {
     @ObservedObject var store: MonitorStore
+    @Binding var displayMode: MenuBarDisplayMode
 
     @State private var showAllEvents = false
-    @State private var advancedExpanded = false
+    @State private var expandedSections = PopoverDisclosureDefaults.compact.expandedSections
+
+    init(
+        store: MonitorStore,
+        displayMode: Binding<MenuBarDisplayMode> = .constant(.automatic)
+    ) {
+        self.store = store
+        _displayMode = displayMode
+    }
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
-                HeaderSection(snapshot: store.snapshot)
-                PrimaryMetricsSection(snapshot: store.snapshot)
-                ModelsAndSlotsSection(snapshot: store.snapshot)
-                MemoryAndProcessSection(snapshot: store.snapshot)
-                TrustSection(snapshot: store.snapshot)
-                RecentEventsSection(snapshot: store.snapshot, showAll: $showAllEvents)
-                AdvancedSection(snapshot: store.snapshot, isExpanded: $advancedExpanded)
+            LazyVStack(alignment: .leading, spacing: 13) {
+                HeaderSection(
+                    snapshot: store.snapshot,
+                    presentation: store.menuPresentation(mode: displayMode),
+                    earnings: store.earnings
+                )
+                Divider()
+                detailDisclosure(.performance, title: "Performance") {
+                    PrimaryMetricsSection(snapshot: store.snapshot, earnings: store.earnings)
+                }
+                detailDisclosure(.modelsAndSlots, title: "Models and slots") {
+                    ModelsAndSlotsSection(snapshot: store.snapshot)
+                }
+                detailDisclosure(.memoryAndProcess, title: "Memory and process") {
+                    MemoryAndProcessSection(snapshot: store.snapshot)
+                }
+                detailDisclosure(.trust, title: "Trust") {
+                    TrustSection(snapshot: store.snapshot)
+                }
+                detailDisclosure(.recentEvents, title: "Recent events") {
+                    RecentEventsSection(snapshot: store.snapshot, showAll: $showAllEvents)
+                }
+                AdvancedSection(
+                    snapshot: store.snapshot,
+                    isExpanded: expansionBinding(for: .advanced)
+                )
+                detailDisclosure(.menuBarSettings, title: "Menu-bar settings") {
+                    MenuBarSettingsSection(displayMode: $displayMode)
+                }
                 FooterSection(refresh: store.refresh, quit: store.quit)
             }
             .padding(16)
         }
-        .frame(width: 420)
-        .frame(maxHeight: 680)
+        .frame(width: 420, height: 680)
+    }
+
+    @ViewBuilder
+    private func detailDisclosure<Content: View>(
+        _ section: PopoverSection,
+        title: String,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        DisclosureGroup(isExpanded: expansionBinding(for: section)) {
+            content()
+                .padding(.top, 8)
+        } label: {
+            Text(title)
+                .font(.headline)
+        }
+    }
+
+    private func expansionBinding(for section: PopoverSection) -> Binding<Bool> {
+        Binding(
+            get: { expandedSections.contains(section) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedSections.insert(section)
+                } else {
+                    expandedSections.remove(section)
+                }
+            }
+        )
     }
 }
 
 private struct HeaderSection: View {
     let snapshot: TelemetrySnapshot
+    let presentation: MenuBarPresentation
+    let earnings: EarningsPresentationValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                DarkbloomLogoShape()
+                    .fill(healthColor)
+                    .frame(width: 22, height: 25)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Darkbloom")
                         .font(.title2.weight(.semibold))
@@ -44,31 +122,23 @@ private struct HeaderSection: View {
                         .help(providerName)
                 }
                 Spacer(minLength: 8)
-                if let state = snapshot.state.value {
-                    StatusBadge(
-                        text: state.trust.status,
-                        tone: trustTone(state.trust.status),
-                        accessibilityLabel: "Darkbloom trust status \(state.trust.status)"
-                    )
-                } else {
-                    StatusBadge(
-                        text: "Unavailable",
-                        tone: .neutral,
-                        accessibilityLabel: stateUnavailableText
-                    )
-                }
+                StatusBadge(
+                    text: presentation.health.isRoutable ? "Routable" : "Not routable",
+                    tone: healthTone,
+                    accessibilityLabel: presentation.accessibilityLabel
+                )
             }
 
-            HStack(spacing: 12) {
-                Label(inferenceText, systemImage: inferenceSymbol)
-                    .font(.caption.weight(.medium))
-                Spacer(minLength: 8)
-                Text(stateAgeText)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.trailing)
-                    .fixedSize(horizontal: false, vertical: true)
+            Text(presentation.health.reason)
+                .font(.caption.weight(presentation.health.isRoutable ? .regular : .semibold))
+                .foregroundStyle(healthColor)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
+                summaryRow("Activity", inferenceText)
+                summaryRow("Current model", currentModel)
+                summaryRow(summaryMetricLabel, summaryMetricValue)
+                summaryRow("Thermal", presentation.thermal.displayName)
             }
 
             if case .stale(_, _, let reason) = snapshot.state {
@@ -83,6 +153,38 @@ private struct HeaderSection: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    private var currentModel: String {
+        guard let model = snapshot.state.value?.currentModel, !model.isEmpty else {
+            return stateUnavailableText
+        }
+        return model
+    }
+
+    private var summaryMetricLabel: String {
+        snapshot.state.value?.inferenceActive == true ? "Token rate" : "Earnings · 24h"
+    }
+
+    private var summaryMetricValue: String {
+        presentation.metricText ?? "Status only"
+    }
+
+    private var healthColor: Color {
+        switch presentation.health.color {
+        case .green: .green
+        case .yellow: .yellow
+        case .orange: .orange
+        case .red: .red
+        }
+    }
+
+    private var healthTone: StatusBadge.Tone {
+        switch presentation.health.color {
+        case .green: .online
+        case .yellow, .orange: .stale
+        case .red: .offline
         }
     }
 
@@ -124,21 +226,27 @@ private struct HeaderSection: View {
         return state.inferenceActive ? "bolt.fill" : "pause.circle.fill"
     }
 
-    private func trustTone(_ status: String) -> StatusBadge.Tone {
-        switch status {
-        case "online": .online
-        case "offline": .offline
-        default: .stale
+    private func summaryRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.medium))
+                .monospacedDigit()
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .accessibilityElement(children: .combine)
     }
 }
 
 private struct PrimaryMetricsSection: View {
     let snapshot: TelemetrySnapshot
+    let earnings: EarningsPresentationValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Primary metrics")
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
                 GridRow {
                     MetricCard(title: "Current model", value: stateValue(\.currentModel), detail: stateDetail)
@@ -162,6 +270,8 @@ private struct PrimaryMetricsSection: View {
                 }
             }
 
+            valueRow("Authenticated earnings · rolling 24h", earningsText)
+
             HStack(spacing: 6) {
                 Text("Usage gaps")
                     .font(.caption)
@@ -174,6 +284,19 @@ private struct PrimaryMetricsSection: View {
                     .textSelection(.enabled)
             }
             .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var earningsText: String {
+        switch earnings {
+        case .available(let microUSD):
+            let dollars = Double(microUSD) / 1_000_000
+            return String(format: "$%.2f", locale: Locale(identifier: "en_US_POSIX"), dollars)
+        case .stale(let microUSD, let reason):
+            let dollars = Double(microUSD) / 1_000_000
+            return String(format: "$%.2f · stale — %@", locale: Locale(identifier: "en_US_POSIX"), dollars, reason)
+        case .unavailable(let reason):
+            return TelemetryFormatting.unavailable(reason)
         }
     }
 
@@ -210,7 +333,6 @@ private struct ModelsAndSlotsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Models and slots")
             valueRow("Loaded models", loadedModelsText)
             valueRow("Warm models", warmModelsText)
 
@@ -260,7 +382,6 @@ private struct MemoryAndProcessSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Memory and process")
             if let state = snapshot.state.value {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 7) {
                     detailRow("Active GPU", TelemetryFormatting.gibibytes(state.capacity.gpuMemoryActiveGB))
@@ -305,7 +426,6 @@ private struct TrustSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Trust")
             if let state = snapshot.state.value {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 7) {
                     detailRow("Level", state.trust.level)
@@ -335,7 +455,6 @@ private struct RecentEventsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                sectionTitle("Recent events")
                 Spacer()
                 if availableEvents.count > 20 {
                     Button(showAll ? "Show recent" : "Show all") {
@@ -378,6 +497,26 @@ private struct RecentEventsSection: View {
     }
 }
 
+private struct MenuBarSettingsSection: View {
+    @Binding var displayMode: MenuBarDisplayMode
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Displayed metric", selection: $displayMode) {
+                ForEach(MenuBarDisplayMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Text("Automatic shows token rate while active and rolling 24-hour earnings while idle.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 private struct FooterSection: View {
     let refresh: () -> Void
     let quit: () async -> Void
@@ -397,12 +536,6 @@ private struct FooterSection: View {
         }
         .padding(.top, 2)
     }
-}
-
-@ViewBuilder
-private func sectionTitle(_ title: String) -> some View {
-    Text(title)
-        .font(.headline)
 }
 
 @ViewBuilder

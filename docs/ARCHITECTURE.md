@@ -4,9 +4,10 @@
 
 The Swift 6 package has two targets:
 
-- `DarkbloomTelemetry` is Foundation-only. It owns fixed source policy,
-  acquisition, parsing, normalization, freshness, derivation, diagnostics, and
-  the immutable `TelemetrySnapshot` consumed by the app.
+- `DarkbloomTelemetry` is UI-independent. It owns fixed source policy,
+  acquisition, parsing, normalization, freshness, derivation, authenticated
+  earnings reads, compact SQLite persistence, diagnostics, and the immutable
+  values consumed by the app.
 - `DarkbloomMonitor` owns the AppKit/SwiftUI lifecycle and presentation. It is
   an accessory application built around a window-style `MenuBarExtra`; it has no
   Dock icon or ordinary window.
@@ -38,9 +39,16 @@ read a file or launch a process directly.
    token counters and state-write timestamps. It retains at most 100 deduplicated
    qualifying events and publishes immutable snapshots through a buffering-newest
    async stream.
-7. `@MainActor MonitorStore` subscribes once, publishes completed snapshots to
-   SwiftUI, coalesces manual refresh work, and owns orderly shutdown. The views
-   only format normalized data and invoke store actions.
+7. `AuthenticatedEarningsClient` performs a fixed-endpoint account GET every
+   ten minutes, incrementally writes inference work and `base_reward` events to
+   separate hourly tables plus changed hourly balance samples using one
+   earning-ID high-water mark,
+   and uses the public 24-hour leaderboard aggregate when the 1,000-row account
+   history cap cannot cover the full window.
+8. `@MainActor MonitorStore` subscribes once, observes native thermal-state
+   notifications, publishes completed snapshots to SwiftUI, coalesces manual
+   refresh work, and owns orderly shutdown. The views only format normalized
+   data and invoke store actions.
 
 ```text
 approved files -----> LocalTelemetrySource --\
@@ -54,6 +62,9 @@ darkbloom status ---> CappedProcessRunner -----+--> TelemetryService actor
                                                            |
                                                            v
                                               SwiftUI MenuBarExtra popover
+
+authenticated earnings --> 10-minute fixed GET --> incremental hourly SQLite aggregates
+                                                   --> menu presentation
 ```
 
 ## Ownership and cancellation
@@ -68,16 +79,21 @@ never targeted.
 
 ## Trust and privacy boundaries
 
-The monitor does not read `provider.toml`, `auth_token`, model weights, caches,
-or local endpoint credentials. Paths printed by `darkbloom status` are inert
+The monitor does not read `provider.toml`, model weights, caches, or local
+endpoint credentials. It reads `auth_token` only for the fixed authenticated
+account-earnings GET and never logs, displays, or persists it. Paths printed by `darkbloom status` are inert
 display strings and are never followed. The state `attestation_public_key` and
 unknown fields are ignored. Log messages are untrusted literal text without
 link activation or command execution; a unified-log `<private>` value becomes
 an explicit privacy-redaction placeholder.
 
-There is no networking dependency or entitlement. The source policy does not
-offer an arbitrary command interface, and the application does not expose any
-provider-control action.
+Networking is limited to two read-only HTTPS GET paths on `api.darkbloom.dev`:
+authenticated account earnings and the public 24-hour leaderboard. SQLite keeps
+separate hourly inference-work and online-reward aggregates plus balances with
+user-only permissions; it excludes account
+IDs, provider keys, and credential material. The source policy does not offer an
+arbitrary command interface, and the application exposes no provider-control
+action.
 
 ## Failure and freshness model
 

@@ -1,8 +1,9 @@
 # Darkbloom Monitor
 
 A native, read-only macOS menu-bar monitor for a locally running Darkbloom
-provider. It presents live provider state in a 420-point SwiftUI popover without
-provider controls, network access, or credential access.
+provider. It presents live provider state in a compact 420-point SwiftUI
+popover, reads authenticated account earnings, and never exposes provider
+controls.
 
 ## Requirements
 
@@ -29,11 +30,11 @@ ordinary application window.
 
 ## What the popover shows
 
-The selected presentation is a single, bounded, scrollable popover with these
-sections in order: header, primary metrics, models and slots, memory and process,
-trust, recent events, Advanced, and the footer. Loaded and warm models are kept
-separate. Advanced contains CLI-only corroborating fields, inert source paths,
-source timestamps, and acquisition diagnostics.
+The always-visible summary shows routing health, activity, current model,
+thermal state, and token rate or rolling 24-hour earnings. Performance, models
+and slots, memory and process, trust, recent events, Advanced, and menu-bar
+settings are independent disclosure groups that start collapsed. Loaded and
+warm models remain separate.
 
 The complete field inventory and known gaps are documented in
 [`docs/TELEMETRY_CONTRACT.md`](docs/TELEMETRY_CONTRACT.md).
@@ -47,6 +48,9 @@ The complete field inventory and known gaps are documented in
 | Final 128 KiB of `~/.darkbloom/provider.log` | Bounded legacy events | Every 5 seconds |
 | Local `/usr/bin/log stream` for subsystem `dev.darkbloom.provider` | Unified lifecycle/warning/error events | App lifetime |
 | `darkbloom status` | CLI-only configuration and hardware detail | Every 30 seconds |
+| `ProcessInfo.thermalState` | Native macOS thermal pressure | On launch and each system notification |
+| Authenticated account earnings API | Recent earning records and account balances | Every 10 minutes |
+| Public 24-hour earnings leaderboard | Exact server-computed rolling account total when the account is ranked | Every 10 minutes |
 
 The state and loaded-model polls are independent, so a slow source does not
 delay the other. `Refresh Now` requests a non-overlapping refresh of all finite
@@ -78,27 +82,43 @@ are also labeled `derived`.
 - A failed refresh retains the last good value as stale and shows the failure
   reason. A source with no last good value is unavailable.
 
-The menu-bar status is green for fresh state whose direct trust status is
-`online`, red for direct `offline`, amber for stale or another reported trust
-status, and gray when structured state is unavailable. Text and accessibility
-labels expose the status without relying on color.
+The Darkbloom logo is green for routable/nominal, yellow for routable/fair,
+orange for routable/serious, and red whenever routing is blocked or cannot be
+confirmed. Critical thermal pressure is red, but red can also mean offline,
+stale, or unavailable. Text and accessibility labels expose the exact reason
+without relying on color.
 
 ## Privacy and safety boundary
 
 The monitor:
 
-- reads only the five local sources listed above;
+- reads only the fixed local and remote sources listed above;
 - runs Darkbloom with exactly the `status` argument and treats reported paths as
   inert display text;
-- never opens `~/.darkbloom/auth_token`, `provider.toml`, model weights, caches,
-  or recovery files;
+- opens `~/.darkbloom/auth_token` only to authenticate the fixed account-
+  earnings GET request; the token is held in memory and is never displayed,
+  logged, or persisted;
+- never opens `provider.toml`, model weights, caches, or recovery files;
 - ignores `attestation_public_key` and unknown state fields;
 - never executes `darkbloom local`, `verify`, `doctor`, update, account, device,
   or provider-management commands;
 - has no provider start, stop, restart, model-selection, or configuration
   controls;
-- imports no network framework, opens no socket, and sends no telemetry;
+- sends read-only GET requests only to
+  `api.darkbloom.dev/v1/provider/account-earnings` and
+  `api.darkbloom.dev/v1/leaderboard`;
 - never writes under `~/.darkbloom` or `~/.config/darkbloom`.
+
+Hourly inference-work aggregates, hourly online/base rewards, and changed
+account balance samples are stored at
+`~/Library/Application Support/Darkbloom Monitor/earnings.sqlite3` with user-
+only permissions. Ten-minute overlapping pages are deduplicated with one
+earning-ID high-water mark, and unchanged polls write no history. The database
+stores no auth token, account ID, provider key, prompt text, response text, or
+per-job rows. Darkbloom entries whose model is `base_reward` never increment
+inference job or token totals; they are retained in the separate reward series.
+Its compact hourly schema supports charts, model comparisons, combined earnings,
+withdrawable/pending settlement calculations, and payout reconciliation.
 
 Unified logging can redact message text as `<private>`. The monitor preserves
 the event timestamp, severity, category, and process metadata and displays
@@ -137,3 +157,11 @@ only this monitor to create a new unified-log stream.
 An idle provider normally reports `No token progress in the polling window`.
 Generate no traffic solely to make this value appear: a rate is shown only when
 the ordinary two-second samples observe a positive same-process counter delta.
+
+### Rolling earnings unavailable
+
+Run `darkbloom login` if the authenticated request is rejected. Darkbloom caps
+recent account history at 1,000 records; the monitor never labels that partial
+history as a complete 24-hour total. It uses Darkbloom's public 24-hour aggregate
+when the authenticated account can be matched to a ranked pseudonym, while the
+local hourly database builds a durable chart and payout history over time.

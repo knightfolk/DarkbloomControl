@@ -9,14 +9,17 @@ let package = Package(
         .executable(name: "DarkbloomMonitor", targets: ["DarkbloomMonitor"]),
     ],
     targets: [
-        .target(name: "DarkbloomTelemetry"),
+        .target(
+            name: "DarkbloomTelemetry",
+            linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
         .executableTarget(
             name: "DarkbloomMonitor",
             dependencies: ["DarkbloomTelemetry"]
         ),
         .testTarget(
             name: "DarkbloomTelemetryTests",
-            dependencies: ["DarkbloomTelemetry"],
+            dependencies: ["DarkbloomTelemetry", "DarkbloomMonitor"],
             resources: [.copy("Fixtures")]
         ),
     ]

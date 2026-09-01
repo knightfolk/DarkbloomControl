@@ -4,6 +4,112 @@ import Testing
 
 @Suite("Monitor presentation")
 struct MonitorPresentationTests {
+    @Test("Apple thermal states map one-to-one")
+    func mapsAppleThermalStates() {
+        #expect(SystemThermalState(ProcessInfo.ThermalState.nominal) == .nominal)
+        #expect(SystemThermalState(ProcessInfo.ThermalState.fair) == .fair)
+        #expect(SystemThermalState(ProcessInfo.ThermalState.serious) == .serious)
+        #expect(SystemThermalState(ProcessInfo.ThermalState.critical) == .critical)
+    }
+
+    @Test(arguments: [
+        (SystemThermalState.nominal, RoutingHealthColor.green),
+        (SystemThermalState.fair, RoutingHealthColor.yellow),
+        (SystemThermalState.serious, RoutingHealthColor.orange),
+    ])
+    func mapsRoutableThermalState(
+        thermal: SystemThermalState,
+        color: RoutingHealthColor
+    ) {
+        let presentation = MenuBarPresentation.make(
+            snapshot: snapshot(menuStatus: .online, active: false),
+            thermal: thermal,
+            earnings: .available(microUSD: 125_000),
+            mode: .automatic
+        )
+
+        #expect(presentation.health.color == color)
+        #expect(presentation.health.isRoutable)
+    }
+
+    @Test("critical thermal pressure overrides online routing")
+    func criticalThermalIsRed() {
+        let presentation = MenuBarPresentation.make(
+            snapshot: snapshot(menuStatus: .online, active: true),
+            thermal: .critical,
+            earnings: .unavailable(reason: "not loaded"),
+            mode: .automatic
+        )
+
+        #expect(presentation.health.color == .red)
+        #expect(!presentation.health.isRoutable)
+        #expect(presentation.health.reason == "Critical thermal pressure")
+    }
+
+    @Test(arguments: [
+        (MenuPresentationStatus.offline, "Provider is offline"),
+        (MenuPresentationStatus.stale, "Provider routing state is stale"),
+        (MenuPresentationStatus.unavailable, "Provider routing state is unavailable"),
+    ])
+    func nonRoutableProviderStateOverridesNominalThermals(
+        status: MenuPresentationStatus,
+        reason: String
+    ) {
+        let presentation = MenuBarPresentation.make(
+            snapshot: snapshot(menuStatus: status, active: false),
+            thermal: .nominal,
+            earnings: .available(microUSD: 0),
+            mode: .automatic
+        )
+
+        #expect(presentation.health.color == .red)
+        #expect(presentation.health.reason == reason)
+    }
+
+    @Test("automatic mode shows token rate while active")
+    func automaticModeUsesActiveThroughput() {
+        let presentation = MenuBarPresentation.make(
+            snapshot: snapshot(
+                menuStatus: .online,
+                active: true,
+                tokenRate: .available(tokensPerSecond: 42.25, label: "derived")
+            ),
+            thermal: .nominal,
+            earnings: .available(microUSD: 125_000),
+            mode: .automatic
+        )
+
+        #expect(presentation.metricText == "42.3 tok/s")
+        #expect(presentation.accessibilityLabel.contains("42.3 tokens per second"))
+    }
+
+    @Test("automatic mode shows rolling earnings while idle")
+    func automaticModeUsesIdleEarnings() {
+        let presentation = MenuBarPresentation.make(
+            snapshot: snapshot(menuStatus: .online, active: false),
+            thermal: .fair,
+            earnings: .available(microUSD: 125_000),
+            mode: .automatic
+        )
+
+        #expect(presentation.metricText == "$0.13/24h")
+        #expect(presentation.accessibilityLabel ==
+            "Darkbloom routable, thermal fair. 0.13 dollars earned in the last 24 hours.")
+    }
+
+    @Test("missing selected metric is an em dash, never a fabricated zero")
+    func unavailableMetricIsExplicit() {
+        let presentation = MenuBarPresentation.make(
+            snapshot: snapshot(menuStatus: .online, active: false),
+            thermal: .nominal,
+            earnings: .unavailable(reason: "Not logged in"),
+            mode: .automatic
+        )
+
+        #expect(presentation.metricText == "—")
+        #expect(presentation.metricUnavailableReason == "Not logged in")
+    }
+
     @Test("menu status has inspectable symbol and accessibility label")
     func mapsMenuStatus() {
         #expect(MenuPresentationStatus.online.symbolName == "circle.fill")
@@ -107,6 +213,39 @@ struct MonitorPresentationTests {
 
     private func value(_ label: String, in status: StatusSnapshot) -> String? {
         status.advancedRows.first(where: { $0.label == label })?.value
+    }
+
+    private func snapshot(
+        menuStatus: MenuPresentationStatus,
+        active: Bool,
+        tokenRate: TokenRate = .unavailable(reason: "Waiting for activity")
+    ) -> TelemetrySnapshot {
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        let daemon = DaemonState(
+            schema: 1,
+            version: "1.0",
+            currentModel: "gemma-4-26b",
+            warmModels: ["gemma-4-26b"],
+            stats: ProviderStats(tokensGenerated: 1_000, requestsServed: 2, usageGaps: 0),
+            trust: TrustState(level: "hardware", status: "online", reason: "ok", receivedAt: now.timeIntervalSince1970),
+            capacity: MemoryCapacity(totalMemoryGB: 64, gpuMemoryActiveGB: 8, gpuMemoryCacheGB: 2),
+            slots: [],
+            inferenceActive: active,
+            startedAt: now.timeIntervalSince1970 - 60,
+            writtenAt: now.timeIntervalSince1970,
+            pid: 42,
+            processIdentity: ProcessIdentity(pid: 42, startTimeMicros: 1)
+        )
+        return TelemetrySnapshot(
+            state: .available(value: daemon, capturedAt: now),
+            loadedModels: .unavailable(reason: "unused"),
+            status: .unavailable(reason: "unused"),
+            eventFeed: .unavailable(reason: "unused"),
+            tokenRate: tokenRate,
+            diagnostics: [],
+            capturedAt: now,
+            menuStatus: menuStatus
+        )
     }
 }
 

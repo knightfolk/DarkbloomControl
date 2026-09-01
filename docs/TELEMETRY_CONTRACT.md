@@ -88,3 +88,23 @@ error/fault. Log input is bounded by bytes and retained event count.
   the requested contract.
 - Cumulative-counter tokens/second is a polling-window estimate, not an engine
   benchmark or instantaneous generation rate.
+
+## Account earnings extension
+
+The monitor additionally uses the fixed authenticated
+`GET /v1/provider/account-earnings?limit=1000` response for lifetime earnings,
+available balance, withdrawable balance, and recent per-job earning metadata.
+Darkbloom caps this history at 1,000 records, so it is not automatically a full
+24-hour window for a busy account. The monitor uses the server-computed public
+`GET /v1/leaderboard?metric=earnings&window=24h&limit=200` row after deriving the
+account's official pseudonym; if no row matches, the 24-hour value remains
+unavailable rather than undercounted.
+
+New earnings from overlapping ten-minute polls are reduced using a single
+persisted earning-ID high-water mark. Inference work is stored in per-model
+hourly aggregates. Entries with Darkbloom's `base_reward` model marker are
+stored in a separate hourly rewards table and never increment work job or token
+totals. Changed balances are stored at most once per hour; unchanged polls write
+no history. Raw per-job rows, account IDs, provider keys, tokens, prompts, and
+responses are not persisted. The menu's rolling 24-hour figure remains total
+earnings, including work and all rewards.

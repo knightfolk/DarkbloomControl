@@ -5,6 +5,7 @@ import SwiftUI
 @main
 struct DarkbloomMonitorApp: App {
     @StateObject private var store: MonitorStore
+    @AppStorage("menuBarDisplayMode") private var displayModeRaw = MenuBarDisplayMode.automatic.rawValue
 
     init() {
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -22,9 +23,21 @@ struct DarkbloomMonitorApp: App {
             source: source,
             unifiedEvents: UnifiedLogStreamer().events()
         )
+        let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!.appendingPathComponent("Darkbloom Monitor", isDirectory: true)
+        let earningsDatabase = try? EarningsDatabase(
+            url: applicationSupport.appendingPathComponent("earnings.sqlite3")
+        )
+        let earningsClient = AuthenticatedEarningsClient(
+            homeDirectory: home,
+            database: earningsDatabase
+        )
         let monitorStore = MonitorStore(
             service: service,
-            initial: .unavailable(now: Date())
+            initial: .unavailable(now: Date()),
+            earningsClient: earningsClient
         )
         _store = StateObject(wrappedValue: monitorStore)
 
@@ -35,10 +48,21 @@ struct DarkbloomMonitorApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MonitorPopover(store: store)
+            MonitorPopover(store: store, displayMode: displayModeBinding)
         } label: {
-            MenuBarLabel(status: store.snapshot.menuStatus)
+            MenuBarLabel(presentation: store.menuPresentation(mode: displayMode))
         }
         .menuBarExtraStyle(.window)
+    }
+
+    private var displayMode: MenuBarDisplayMode {
+        MenuBarDisplayMode(rawValue: displayModeRaw) ?? .automatic
+    }
+
+    private var displayModeBinding: Binding<MenuBarDisplayMode> {
+        Binding(
+            get: { displayMode },
+            set: { displayModeRaw = $0.rawValue }
+        )
     }
 }
