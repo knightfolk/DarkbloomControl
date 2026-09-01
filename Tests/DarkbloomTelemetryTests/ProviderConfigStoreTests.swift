@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import DarkbloomTelemetry
@@ -50,6 +51,62 @@ struct ProviderConfigStoreTests {
         let savedData = try Data(contentsOf: harness.configURL)
         #expect(validation.candidateData == savedData)
         #expect(!FileManager.default.fileExists(atPath: candidateURL.path))
+    }
+
+    @Test("publishes only after applying source security metadata to the candidate")
+    func preservesSourceSecurityMetadata() async throws {
+        let metadataRecorder = MetadataRecorder()
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o640,
+            metadataRecorder: metadataRecorder
+        )
+        defer { harness.cleanup() }
+        let sourceOwner = try fileOwner(harness.configURL)
+        let sourceGroup = try fileGroup(harness.configURL)
+        let draft = try await harness.store.load()
+
+        _ = try await harness.store.save(draft.withSelection(
+            ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+        ))
+
+        let application = try #require(metadataRecorder.application)
+        #expect(application.source == harness.configURL)
+        #expect(application.candidate.deletingLastPathComponent() == harness.directory)
+        #expect(try fileMode(harness.configURL) == 0o640)
+        #expect(try fileOwner(harness.configURL) == sourceOwner)
+        #expect(try fileGroup(harness.configURL) == sourceGroup)
+    }
+
+    @Test("metadata preservation failure rejects publication with a safe error")
+    func rejectsMetadataPreservationFailure() async throws {
+        let metadataRecorder = MetadataRecorder(failure: "/Users/private/provider.toml acl=secret-value")
+        let existingBackup = Data("existing-backup".utf8)
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o640,
+            backupData: existingBackup,
+            metadataRecorder: metadataRecorder
+        )
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+
+        do {
+            _ = try await harness.store.save(draft.withSelection(
+                ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+            ))
+            Issue.record("Expected metadata preservation to fail")
+        } catch {
+            #expect(error as? ProviderConfigError == .validationFailed(
+                "Could not preserve provider configuration security metadata"
+            ))
+            #expect(!String(describing: error).contains("/Users/private"))
+            #expect(!String(describing: error).contains("secret-value"))
+        }
+
+        let application = try #require(metadataRecorder.application)
+        #expect(!FileManager.default.fileExists(atPath: application.candidate.path))
+        #expect(try Data(contentsOf: harness.configURL) == harness.originalData)
+        #expect(try Data(contentsOf: harness.backupURL) == existingBackup)
+        #expect(await harness.executor.invocations.isEmpty)
     }
 
     @Test("an external write during validation rejects save before backup or replacement")
@@ -234,6 +291,63 @@ struct ProviderConfigStoreTests {
         #expect(try fileNumber(harness.configURL) == originalFileNumber)
         #expect(!FileManager.default.fileExists(atPath: harness.backupURL.path))
     }
+
+    @Test("lock contention returns a bounded redacted busy error")
+    func boundsLockContention() async throws {
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o600,
+            lockPolicy: ProviderConfigLockPolicy(maxAttempts: 3, retryDelay: .milliseconds(5))
+        )
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+        let lockDescriptor = try acquireExclusiveTestLock(harness.configURL)
+        defer { Darwin.close(lockDescriptor) }
+        let clock = ContinuousClock()
+        let started = clock.now
+
+        await #expect(throws: ProviderConfigError.validationFailed(
+            "Provider configuration is busy; try again"
+        )) {
+            try await harness.store.save(draft.withSelection(
+                ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+            ))
+        }
+
+        #expect(started.duration(to: clock.now) < .seconds(1))
+        #expect(await harness.executor.invocations.isEmpty)
+        #expect(try Data(contentsOf: harness.configURL) == harness.originalData)
+        #expect(!FileManager.default.fileExists(atPath: harness.backupURL.path))
+    }
+
+    @Test("cancellation interrupts lock retry without waiting for its bound")
+    func cancelsLockContention() async throws {
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o600,
+            lockPolicy: ProviderConfigLockPolicy(maxAttempts: 100, retryDelay: .milliseconds(20))
+        )
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+        let lockDescriptor = try acquireExclusiveTestLock(harness.configURL)
+        defer { Darwin.close(lockDescriptor) }
+
+        let save = Task {
+            try await harness.store.save(draft.withSelection(
+                ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+            ))
+        }
+        try await Task.sleep(for: .milliseconds(10))
+        save.cancel()
+
+        do {
+            _ = try await save.value
+            Issue.record("Expected lock retry cancellation")
+        } catch is CancellationError {
+            // Expected cancellation must remain distinct from a busy/file error.
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+        #expect(await harness.executor.invocations.isEmpty)
+    }
 }
 
 private struct ConfigStoreHarness: Sendable {
@@ -252,7 +366,9 @@ private struct ConfigStoreHarness: Sendable {
         externalWriteDuringValidation: Data? = nil,
         chmodDuringValidation: Int? = nil,
         externalWriteAfterFinalSnapshot: Data? = nil,
-        candidateCleanupFailure: String? = nil
+        candidateCleanupFailure: String? = nil,
+        metadataRecorder: MetadataRecorder? = nil,
+        lockPolicy: ProviderConfigLockPolicy = .live
     ) throws -> Self {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DarkbloomConfigStoreTests-\(UUID().uuidString)", isDirectory: true)
@@ -295,13 +411,22 @@ private struct ConfigStoreHarness: Sendable {
         } else {
             cleanupHook = nil
         }
+        let metadataHook: (@Sendable (URL, URL) throws -> Void)?
+        if let metadataRecorder {
+            metadataHook = { source, candidate in
+                try metadataRecorder.record(source: source, candidate: candidate)
+            }
+        } else {
+            metadataHook = nil
+        }
         let storeHooks = ProviderConfigStoreHooks(
             afterFinalSnapshot: {
                 if let externalWriteAfterFinalSnapshot {
                     try externalWriteAfterFinalSnapshot.write(to: configURL)
                 }
             },
-            removeCandidate: cleanupHook
+            removeCandidate: cleanupHook,
+            preserveMetadata: metadataHook
         )
         return Self(
             directory: directory,
@@ -315,7 +440,8 @@ private struct ConfigStoreHarness: Sendable {
                 executable: executableURL,
                 runner: executor,
                 fileManager: .default,
-                hooks: storeHooks
+                hooks: storeHooks,
+                lockPolicy: lockPolicy
             )
         )
     }
@@ -390,6 +516,30 @@ private struct FakeExecutorError: Error, Sendable, CustomStringConvertible {
     var description: String { message }
 }
 
+private final class MetadataRecorder: @unchecked Sendable {
+    struct Application: Sendable {
+        let source: URL
+        let candidate: URL
+    }
+
+    private let lock = NSLock()
+    private let failure: String?
+    private var recordedApplication: Application?
+
+    init(failure: String? = nil) {
+        self.failure = failure
+    }
+
+    var application: Application? {
+        lock.withLock { recordedApplication }
+    }
+
+    func record(source: URL, candidate: URL) throws {
+        lock.withLock { recordedApplication = Application(source: source, candidate: candidate) }
+        if let failure { throw FakeExecutorError(message: failure) }
+    }
+}
+
 private func fileMode(_ url: URL) throws -> Int {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     return try #require((attributes[.posixPermissions] as? NSNumber)?.intValue)
@@ -398,4 +548,22 @@ private func fileMode(_ url: URL) throws -> Int {
 private func fileNumber(_ url: URL) throws -> UInt64 {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     return try #require((attributes[.systemFileNumber] as? NSNumber)?.uint64Value)
+}
+
+private func fileOwner(_ url: URL) throws -> UInt32 {
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    return try #require((attributes[.ownerAccountID] as? NSNumber)?.uint32Value)
+}
+
+private func fileGroup(_ url: URL) throws -> UInt32 {
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    return try #require((attributes[.groupOwnerAccountID] as? NSNumber)?.uint32Value)
+}
+
+private func acquireExclusiveTestLock(_ url: URL) throws -> Int32 {
+    let descriptor = url.withUnsafeFileSystemRepresentation { path in
+        guard let path else { return Int32(-1) }
+        return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_EXLOCK | O_NONBLOCK)
+    }
+    return try #require(descriptor >= 0 ? descriptor : nil)
 }

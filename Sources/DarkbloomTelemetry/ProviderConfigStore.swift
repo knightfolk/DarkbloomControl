@@ -59,8 +59,16 @@ public protocol ProviderConfigManaging: Sendable {
 struct ProviderConfigStoreHooks: Sendable {
     let afterFinalSnapshot: @Sendable () throws -> Void
     let removeCandidate: (@Sendable (URL) throws -> Void)?
+    let preserveMetadata: (@Sendable (URL, URL) throws -> Void)?
 
-    static let live = Self(afterFinalSnapshot: {}, removeCandidate: nil)
+    static let live = Self(afterFinalSnapshot: {}, removeCandidate: nil, preserveMetadata: nil)
+}
+
+struct ProviderConfigLockPolicy: Sendable {
+    let maxAttempts: Int
+    let retryDelay: Duration
+
+    static let live = Self(maxAttempts: 20, retryDelay: .milliseconds(10))
 }
 
 public actor LocalProviderConfigStore: ProviderConfigManaging {
@@ -76,12 +84,19 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
     private static let recoveryFailure = ProviderConfigError.validationFailed(
         "Provider configuration changed during recovery; recovery data was preserved beside it"
     )
+    private static let metadataFailure = ProviderConfigError.validationFailed(
+        "Could not preserve provider configuration security metadata"
+    )
+    private static let busyFailure = ProviderConfigError.validationFailed(
+        "Provider configuration is busy; try again"
+    )
 
     private let configURL: URL
     private let executable: URL
     private let runner: any ProcessExecuting
     private let fileManager: FileManager
     private let hooks: ProviderConfigStoreHooks
+    private let lockPolicy: ProviderConfigLockPolicy
 
     public init(
         configURL: URL,
@@ -94,6 +109,7 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         self.runner = runner
         self.fileManager = fileManager
         self.hooks = .live
+        self.lockPolicy = .live
     }
 
     init(
@@ -101,17 +117,19 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         executable: URL,
         runner: any ProcessExecuting,
         fileManager: FileManager,
-        hooks: ProviderConfigStoreHooks
+        hooks: ProviderConfigStoreHooks,
+        lockPolicy: ProviderConfigLockPolicy
     ) {
         self.configURL = configURL
         self.executable = executable
         self.runner = runner
         self.fileManager = fileManager
         self.hooks = hooks
+        self.lockPolicy = lockPolicy
     }
 
     public func load() async throws -> ProviderConfigDraft {
-        let source = try readSnapshot(lockFlag: O_SHLOCK)
+        let source = try await readLockedSnapshot(lockFlag: O_SHLOCK)
         let document = try ProviderConfigDocument(data: source.data)
         return ProviderConfigDraft(document: document, sourceFileState: source.state)
     }
@@ -124,7 +142,7 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         guard let expectedState = draft.sourceFileState else {
             throw ProviderConfigError.changedExternally
         }
-        let currentSnapshot = try readSnapshot(lockFlag: O_SHLOCK)
+        let currentSnapshot = try await readLockedSnapshot(lockFlag: O_SHLOCK)
         guard currentSnapshot.state == expectedState else {
             throw ProviderConfigError.changedExternally
         }
@@ -141,8 +159,13 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
                 mode: mode,
                 candidateNeedsCleanup: &candidateNeedsCleanup
             )
+            try preserveSecurityMetadata(
+                from: configURL,
+                to: candidateURL,
+                expectedState: expectedState
+            )
             try await validate(candidateURL)
-            try publish(
+            try await publish(
                 candidateURL,
                 expectedState: expectedState,
                 candidateNeedsCleanup: &candidateNeedsCleanup
@@ -157,14 +180,16 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         return ProviderConfigSaveResult(draft: try await load(), restartRequired: true)
     }
 
-    private func readSnapshot(lockFlag: Int32) throws -> ProviderConfigFileSnapshot {
-        try readSnapshot(at: configURL, lockFlag: lockFlag)
+    private func readLockedSnapshot(lockFlag: Int32) async throws -> ProviderConfigFileSnapshot {
+        let descriptor = try await openLockedDescriptor(at: configURL, lockFlag: lockFlag)
+        defer { Darwin.close(descriptor) }
+        return try snapshot(descriptor: descriptor)
     }
 
-    private func readSnapshot(at url: URL, lockFlag: Int32) throws -> ProviderConfigFileSnapshot {
+    private func readSnapshot(at url: URL) throws -> ProviderConfigFileSnapshot {
         let descriptor = url.withUnsafeFileSystemRepresentation { path in
             guard let path else { return Int32(-1) }
-            return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | lockFlag)
+            return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         }
         guard descriptor >= 0 else { throw Self.readFailure }
         defer { Darwin.close(descriptor) }
@@ -198,7 +223,7 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         _ candidateURL: URL,
         expectedState: ProviderConfigFileState,
         candidateNeedsCleanup: inout Bool
-    ) throws {
+    ) async throws {
         // Publication uses the strongest local-filesystem primitive available on
         // the macOS 14 target. O_EXLOCK coordinates writers that honor advisory
         // locks; RENAME_SWAP then gives us the exact file that occupied the config
@@ -210,18 +235,14 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         // rollback we therefore verify that our published inode is still intact;
         // if certainty is lost, both path-visible files are preserved and a
         // bounded recovery error is returned instead of deleting either version.
-        let descriptor = configURL.withUnsafeFileSystemRepresentation { path in
-            guard let path else { return Int32(-1) }
-            return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_EXLOCK)
-        }
-        guard descriptor >= 0 else { throw Self.readFailure }
+        let descriptor = try await openLockedDescriptor(at: configURL, lockFlag: O_EXLOCK)
         defer { Darwin.close(descriptor) }
 
         let finalState = try snapshot(descriptor: descriptor).state
         guard finalState == expectedState else {
             throw ProviderConfigError.changedExternally
         }
-        let candidateState = try readSnapshot(at: candidateURL, lockFlag: 0).state
+        let candidateState = try readSnapshot(at: candidateURL).state
 
         do {
             try hooks.afterFinalSnapshot()
@@ -233,7 +254,7 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
 
         let displacedState: ProviderConfigFileState
         do {
-            displacedState = try readSnapshot(at: candidateURL, lockFlag: 0).state
+            displacedState = try readSnapshot(at: candidateURL).state
         } catch {
             try preserveOrRollback(
                 candidateURL,
@@ -272,13 +293,13 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         candidateNeedsCleanup: inout Bool
     ) throws {
         do {
-            let publishedState = try readSnapshot(at: configURL, lockFlag: 0).state
+            let publishedState = try readSnapshot(at: configURL).state
             guard publishedState.matchesAcrossRename(candidateState) else {
                 candidateNeedsCleanup = false
                 throw Self.recoveryFailure
             }
             try atomicSwap(candidateURL, configURL)
-            let restoredCandidate = try readSnapshot(at: candidateURL, lockFlag: 0).state
+            let restoredCandidate = try readSnapshot(at: candidateURL).state
             guard restoredCandidate.matchesAcrossRename(candidateState) else {
                 candidateNeedsCleanup = false
                 throw Self.recoveryFailure
@@ -324,10 +345,69 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         }
     }
 
+    private func preserveSecurityMetadata(
+        from sourceURL: URL,
+        to candidateURL: URL,
+        expectedState: ProviderConfigFileState
+    ) throws {
+        do {
+            if let preserveMetadata = hooks.preserveMetadata {
+                try preserveMetadata(sourceURL, candidateURL)
+            } else {
+                let result = sourceURL.withUnsafeFileSystemRepresentation { sourcePath in
+                    candidateURL.withUnsafeFileSystemRepresentation { candidatePath in
+                        guard let sourcePath, let candidatePath else { return Int32(-1) }
+                        return Darwin.copyfile(
+                            sourcePath,
+                            candidatePath,
+                            nil,
+                            copyfile_flags_t(COPYFILE_METADATA | COPYFILE_NOFOLLOW)
+                        )
+                    }
+                }
+                guard result == 0 else { throw Self.metadataFailure }
+            }
+
+            let candidateState = try readSnapshot(at: candidateURL).state
+            guard candidateState.hasSameSecurityMetadata(as: expectedState) else {
+                throw Self.metadataFailure
+            }
+        } catch {
+            throw Self.metadataFailure
+        }
+    }
+
     private func uniqueSibling(named purpose: String) -> URL {
         configURL.deletingLastPathComponent().appendingPathComponent(
             ".\(configURL.lastPathComponent).darkbloom-monitor-\(purpose)-\(UUID().uuidString)"
         )
+    }
+
+    private func openLockedDescriptor(at url: URL, lockFlag: Int32) async throws -> Int32 {
+        guard lockPolicy.maxAttempts > 0 else { throw Self.busyFailure }
+
+        for attempt in 1...lockPolicy.maxAttempts {
+            try Task.checkCancellation()
+            let descriptor = url.withUnsafeFileSystemRepresentation { path in
+                guard let path else { return Int32(-1) }
+                return Darwin.open(
+                    path,
+                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | lockFlag
+                )
+            }
+            if descriptor >= 0 { return descriptor }
+
+            let lockError = errno
+            guard lockError == EWOULDBLOCK || lockError == EAGAIN else {
+                throw Self.readFailure
+            }
+            guard attempt < lockPolicy.maxAttempts else {
+                throw Self.busyFailure
+            }
+            try await Task.sleep(for: lockPolicy.retryDelay)
+        }
+
+        throw Self.busyFailure
     }
 
     private func atomicReplace(_ source: URL, at destination: URL) throws {
@@ -425,5 +505,12 @@ private struct ProviderConfigFileState: Equatable, Sendable {
             && modificationNanoseconds == other.modificationNanoseconds
             && flags == other.flags
             && generation == other.generation
+    }
+
+    func hasSameSecurityMetadata(as other: Self) -> Bool {
+        permissions == other.permissions
+            && owner == other.owner
+            && group == other.group
+            && flags == other.flags
     }
 }
