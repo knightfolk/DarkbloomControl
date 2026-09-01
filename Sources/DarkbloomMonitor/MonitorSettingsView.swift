@@ -2,8 +2,24 @@ import DarkbloomTelemetry
 import SwiftUI
 
 struct MonitorSettingsView: View {
+    @EnvironmentObject private var controlStore: ProviderControlStore
     @AppStorage("menuBarDisplayMode") private var displayModeRaw =
         MenuBarDisplayMode.automatic.rawValue
+
+    var body: some View {
+        TabView {
+            GeneralSettingsView(displayModeRaw: $displayModeRaw)
+                .tabItem { Label("General", systemImage: "gearshape") }
+
+            ModelManagerView(store: controlStore)
+                .tabItem { Label("Models", systemImage: "shippingbox") }
+        }
+        .frame(minWidth: 680, minHeight: 560)
+    }
+}
+
+private struct GeneralSettingsView: View {
+    @Binding var displayModeRaw: String
 
     var body: some View {
         Form {
@@ -22,7 +38,6 @@ struct MonitorSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 180)
     }
 
     private var displayModeBinding: Binding<MenuBarDisplayMode> {

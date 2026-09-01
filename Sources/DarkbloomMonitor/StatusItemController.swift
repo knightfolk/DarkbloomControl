@@ -16,6 +16,12 @@ final class StatusItemController: NSObject {
     var settingsWindowIsReleasedWhenClosed: Bool? {
         settingsWindowController.window?.isReleasedWhenClosed
     }
+    var settingsWindowIsResizable: Bool {
+        settingsWindowController.window?.styleMask.contains(.resizable) == true
+    }
+    var settingsWindowContentSize: NSSize? {
+        settingsWindowController.window?.contentView?.frame.size
+    }
 
     init(store: MonitorStore, controlStore: ProviderControlStore? = nil) {
         statusItem = NSStatusBar.system.statusItem(withLength: Self.itemWidth)
@@ -25,9 +31,9 @@ final class StatusItemController: NSObject {
         )
         let settingsWindow = NSWindow(contentViewController: settingsViewController)
         settingsWindow.title = "Darkbloom Monitor Settings"
-        settingsWindow.styleMask = [.titled, .closable, .miniaturizable]
+        settingsWindow.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         settingsWindow.isReleasedWhenClosed = false
-        settingsWindow.setContentSize(NSSize(width: 420, height: 180))
+        settingsWindow.setContentSize(NSSize(width: 720, height: 620))
         settingsWindow.center()
         settingsWindowController = NSWindowController(window: settingsWindow)
         super.init()

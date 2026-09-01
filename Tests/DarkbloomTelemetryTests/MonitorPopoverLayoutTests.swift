@@ -84,6 +84,24 @@ struct MonitorPopoverLayoutTests {
         #expect(controller.statusItemLength == 132)
         #expect(controller.settingsWindowTitle == "Darkbloom Monitor Settings")
         #expect(controller.settingsWindowIsReleasedWhenClosed == false)
+        #expect(controller.settingsWindowIsResizable)
+        #expect(controller.settingsWindowContentSize == NSSize(width: 720, height: 620))
+    }
+
+    @Test("model settings fit their minimum hosted size without horizontal growth")
+    func modelSettingsFitMinimumSize() async {
+        let controlStore = ProviderControlStore(controller: InertSettingsController())
+        await controlStore.refresh()
+        let hostingController = NSHostingController(
+            rootView: MonitorSettingsView()
+                .environmentObject(controlStore)
+        )
+
+        let proposed = NSSize(width: 680, height: 560)
+        let fitted = hostingController.sizeThatFits(in: proposed)
+
+        #expect(fitted.width == proposed.width)
+        #expect(fitted.height == proposed.height)
     }
 
     @Test("infographic popover has a compact stable viewport")
@@ -141,3 +159,78 @@ private struct UnusedTelemetrySource: TelemetrySource {
 }
 
 private struct UnusedError: Error {}
+
+private actor InertSettingsController: ProviderControlling {
+    private let value: ProviderControlSnapshot
+
+    init() {
+        let selection = ProviderModelSelection(enabled: [], preloaded: [])
+        let draft = ProviderConfigDraft(
+            sourceRevision: "layout-fixture",
+            original: selection,
+            selection: selection
+        )
+        let catalog = [
+            CatalogModel(
+                id: "downloaded-model",
+                displayName: "Downloaded Model",
+                family: "downloaded",
+                modelType: "llm",
+                capabilities: ["text", "code"],
+                sizeGB: 8.5,
+                minimumRAMGB: 16,
+                active: true
+            ),
+            CatalogModel(
+                id: "available-model",
+                displayName: "Available Model",
+                family: "available",
+                modelType: "llm",
+                capabilities: ["text"],
+                sizeGB: 4,
+                minimumRAMGB: 8,
+                active: true
+            ),
+        ]
+        let inventory = ModelInventoryBuilder.build(
+            catalog: catalog,
+            local: [LocalModel(
+                id: "downloaded-model",
+                modelType: "llm",
+                sizeBytes: 8_500_000_000,
+                estimatedMemoryGB: nil
+            )],
+            selection: selection,
+            daemon: nil,
+            loadedModels: []
+        )
+        value = ProviderControlSnapshot(
+            inventory: inventory,
+            draft: draft,
+            capturedAt: Date(timeIntervalSince1970: 1_750_000_000)
+        )
+    }
+
+    func refresh() async throws -> ProviderControlSnapshot { value }
+
+    func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
+        ProviderConfigSaveResult(draft: draft, restartRequired: draft.hasChanges)
+    }
+
+    func download(
+        _ modelID: String,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+    ) async throws {
+        throw UnusedError()
+    }
+
+    func delete(_ localModelID: String) async throws { throw UnusedError() }
+    func activityRisk() async -> ProviderActivityRisk { .idle }
+
+    func execute(
+        _ action: ProviderLifecycleAction,
+        enabledModels: [String]
+    ) async throws {
+        throw UnusedError()
+    }
+}
