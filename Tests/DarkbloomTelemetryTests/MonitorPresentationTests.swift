@@ -58,6 +58,13 @@ struct MonitorPresentationTests {
 
         let unavailable: SourceAvailability<EventFeed> = .unavailable(reason: "provider.log missing")
         #expect(unavailable.eventEmptyMessage == "Logs unavailable — provider.log missing")
+
+        let stale: SourceAvailability<EventFeed> = .stale(
+            value: feed,
+            capturedAt: Date(timeIntervalSince1970: 1),
+            reason: "unified stream ended"
+        )
+        #expect(stale.eventEmptyMessage == "No qualifying events in the bounded window")
     }
 
     @Test("advanced status rows include every observed status property")
@@ -74,11 +81,32 @@ struct MonitorPresentationTests {
         ])
     }
 
+    @Test("advanced status lists distinguish missing from explicitly empty output")
+    func formatsStatusListPresence() {
+        let missing = StatusParser.parse("darkbloom 0.8.15\nProvider: test")
+        let exposedEmpty = StatusParser.parse("""
+            darkbloom 0.8.15
+            Warm models: none
+            Slot posture: state written 0s ago
+            """)
+
+        #expect(value("CLI warm models", in: missing) ==
+            "Unavailable — not reported by Darkbloom status")
+        #expect(value("CLI slot posture", in: missing) ==
+            "Unavailable — not reported by Darkbloom status")
+        #expect(value("CLI warm models", in: exposedEmpty) == "None reported")
+        #expect(value("CLI slot posture", in: exposedEmpty) == "None reported")
+    }
+
     private func unavailableReason<Value>(
         _ availability: SourceAvailability<Value>
     ) -> String? where Value: Equatable & Sendable {
         guard case .unavailable(let reason) = availability else { return nil }
         return reason
+    }
+
+    private func value(_ label: String, in status: StatusSnapshot) -> String? {
+        status.advancedRows.first(where: { $0.label == label })?.value
     }
 }
 

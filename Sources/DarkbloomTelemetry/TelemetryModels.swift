@@ -155,12 +155,12 @@ public struct StatusSnapshot: Equatable, Sendable {
     public var daemon: String?
     public var trust: String?
     public var trustReason: String?
-    public var warmModels: [String] = []
+    public var warmModels: [String]?
     public var mostRecentlyUsed: String?
     public var requestCount: Int64?
     public var tokenCount: Int64?
     public var stateAge: String?
-    public var slotPosture: [String] = []
+    public var slotPosture: [String]?
 
     public init() {}
 }

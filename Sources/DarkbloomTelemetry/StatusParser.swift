@@ -26,13 +26,16 @@ public enum StatusParser {
         snapshot.daemon = value(after: "Daemon:", in: lines)
         snapshot.trust = value(after: "Trust:", in: lines)
         snapshot.trustReason = value(after: "→ coordinator reason:", in: lines)
-        snapshot.warmModels = commaSeparated(value(after: "Warm models:", in: lines))
+        snapshot.warmModels = commaSeparatedValue(after: "Warm models:", in: lines)
         snapshot.mostRecentlyUsed = value(after: "Most recently used:", in: lines)
         snapshot.stateAge = value(after: "Slot posture:", in: lines)
             .map { $0.replacingOccurrences(of: "state written ", with: "") }
-        snapshot.slotPosture = lines.compactMap { line in
+        let slotPosture = lines.compactMap { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             return trimmed.contains(": kv=") ? trimmed : nil
+        }
+        if containsLine(prefixed: "Slot posture:", in: lines) || !slotPosture.isEmpty {
+            snapshot.slotPosture = slotPosture
         }
 
         if let counters = lines.first(where: { $0.hasPrefix("Requests served:") }) {
@@ -56,10 +59,20 @@ public enum StatusParser {
             .flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    private static func commaSeparated(_ value: String?) -> [String] {
-        guard let value, value.lowercased() != "none" else { return [] }
+    private static func commaSeparatedValue(after prefix: String, in lines: [String]) -> [String]? {
+        guard let line = lines.lazy
+            .map({ $0.trimmingCharacters(in: .whitespaces) })
+            .first(where: { $0.hasPrefix(prefix) })
+        else { return nil }
+
+        let value = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty, value.lowercased() != "none" else { return [] }
         return value.split(separator: ",").map {
             $0.trimmingCharacters(in: .whitespaces)
         }.filter { !$0.isEmpty }
+    }
+
+    private static func containsLine(prefixed prefix: String, in lines: [String]) -> Bool {
+        lines.contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix(prefix) }
     }
 }

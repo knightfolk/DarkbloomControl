@@ -7,6 +7,11 @@ public struct DarkbloomSourcePolicy: Equatable, Sendable {
     public static let legacyLogByteLimit = 128 * 1_024
     public static let processOutputByteLimit = 256 * 1_024
     public static let processTimeout: Duration = .seconds(3)
+    public static let cliCandidateDescriptions = [
+        "~/.darkbloom/bin/darkbloom",
+        "~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom",
+        "PATH entries ending in /darkbloom",
+    ]
 
     public let daemonState: URL
     public let loadedModels: URL

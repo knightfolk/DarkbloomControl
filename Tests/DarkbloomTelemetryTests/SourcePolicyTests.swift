@@ -33,4 +33,13 @@ struct SourcePolicyTests {
         #expect(DarkbloomSourcePolicy.processOutputByteLimit == 262_144)
         #expect(DarkbloomSourcePolicy.processTimeout == .seconds(3))
     }
+
+    @Test("CLI candidate descriptions cover home bundled app and PATH")
+    func describesCLICandidatesWithoutDiscovery() {
+        #expect(DarkbloomSourcePolicy.cliCandidateDescriptions == [
+            "~/.darkbloom/bin/darkbloom",
+            "~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom",
+            "PATH entries ending in /darkbloom",
+        ])
+    }
 }

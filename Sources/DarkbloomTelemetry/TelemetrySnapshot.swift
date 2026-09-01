@@ -107,8 +107,8 @@ public extension SourceAvailability where Value == EventFeed {
         switch self {
         case .available(let feed, _):
             feed.events.isEmpty ? feed.emptyMessage : nil
-        case .stale(let feed, _, let reason):
-            feed.events.isEmpty ? "Logs unavailable — \(reason)" : nil
+        case .stale(let feed, _, _):
+            feed.events.isEmpty ? feed.emptyMessage : nil
         case .unavailable(let reason):
             "Logs unavailable — \(reason)"
         }
@@ -136,12 +136,12 @@ public extension StatusSnapshot {
             DisplayRow(label: "Daemon", value: display(daemon)),
             DisplayRow(label: "CLI trust", value: display(trust)),
             DisplayRow(label: "CLI trust reason", value: display(trustReason)),
-            DisplayRow(label: "CLI warm models", value: TelemetryFormatting.modelList(warmModels)),
+            DisplayRow(label: "CLI warm models", value: display(warmModels)),
             DisplayRow(label: "Most recently used", value: display(mostRecentlyUsed)),
             DisplayRow(label: "CLI requests", value: display(requestCount)),
             DisplayRow(label: "CLI tokens", value: display(tokenCount)),
             DisplayRow(label: "CLI state age", value: display(stateAge)),
-            DisplayRow(label: "CLI slot posture", value: TelemetryFormatting.modelList(slotPosture)),
+            DisplayRow(label: "CLI slot posture", value: display(slotPosture)),
         ]
     }
 
@@ -158,5 +158,10 @@ public extension StatusSnapshot {
 
     private func display(_ value: Int64?) -> String {
         value.map(TelemetryFormatting.integer) ?? TelemetryFormatting.unavailable("not reported by Darkbloom status")
+    }
+
+    private func display(_ value: [String]?) -> String {
+        value.map(TelemetryFormatting.modelList)
+            ?? TelemetryFormatting.unavailable("not reported by Darkbloom status")
     }
 }

@@ -73,6 +73,31 @@ struct ContractHardeningTests {
         #expect(status.backendPort == nil)
         #expect(status.trust == "hardware / online")
     }
+
+    @Test("status list presence distinguishes missing lines from exposed empty lists")
+    func preservesStatusListPresence() {
+        let missing = StatusParser.parse("darkbloom 0.8.15\nProvider: test")
+        #expect(missing.warmModels == nil)
+        #expect(missing.slotPosture == nil)
+
+        let exposedEmpty = StatusParser.parse("""
+            darkbloom 0.8.15
+            Warm models: none
+            Slot posture: state written 0s ago
+            """)
+        #expect(exposedEmpty.warmModels == [])
+        #expect(exposedEmpty.slotPosture == [])
+    }
+
+    @Test("slot detail remains available without its summary header")
+    func parsesIndependentSlotDetail() {
+        let detailWithoutHeader = StatusParser.parse(
+            "  gemma: kv=contiguous (requested auto) | mtp=enabled, active"
+        )
+        #expect(detailWithoutHeader.slotPosture == [
+            "gemma: kv=contiguous (requested auto) | mtp=enabled, active",
+        ])
+    }
 }
 
 private extension ContractHardeningTests {

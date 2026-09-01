@@ -51,13 +51,18 @@ struct AdvancedSection: View {
     }
 
     private var sourcePathRows: [DisplayRow] {
-        [
+        let baseRows = [
             DisplayRow(label: "Daemon state", value: "~/.darkbloom/daemon-state.json"),
             DisplayRow(label: "Loaded models", value: "~/.darkbloom/loaded-models.json"),
             DisplayRow(label: "Legacy events", value: "~/.darkbloom/provider.log (final 128 KiB)"),
             DisplayRow(label: "Unified events", value: "subsystem dev.darkbloom.provider"),
             DisplayRow(label: "CLI operation", value: "darkbloom status"),
         ]
+        let candidateRows = zip(
+            ["CLI candidate · home", "CLI candidate · bundled app", "CLI candidate · PATH"],
+            DarkbloomSourcePolicy.cliCandidateDescriptions
+        ).map { DisplayRow(label: $0.0, value: $0.1) }
+        return baseRows + candidateRows
     }
 
     private var timestampRows: [DisplayRow] {

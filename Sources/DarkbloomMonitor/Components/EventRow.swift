@@ -19,7 +19,9 @@ struct EventRow: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text(event.category)
                         .font(.caption.weight(.semibold))
+                        .monospaced()
                         .lineLimit(1)
+                        .textSelection(.enabled)
                         .help(event.category)
                     Spacer(minLength: 8)
                     Text(TelemetryFormatting.timestamp(event.timestamp))
@@ -37,8 +39,10 @@ struct EventRow: View {
 
                 Text(metadata)
                     .font(.caption2)
+                    .monospaced()
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .textSelection(.enabled)
                     .help(metadata)
             }
         }
