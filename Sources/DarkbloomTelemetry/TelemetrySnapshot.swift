@@ -20,6 +20,23 @@ public enum MenuPresentationStatus: Equatable, Sendable {
     case unavailable
 }
 
+public extension MenuPresentationStatus {
+    var symbolName: String { "circle.fill" }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .online:
+            "Darkbloom online"
+        case .stale:
+            "Darkbloom state stale"
+        case .offline:
+            "Darkbloom offline"
+        case .unavailable:
+            "Darkbloom unavailable"
+        }
+    }
+}
+
 public struct TelemetrySnapshot: Equatable, Sendable {
     public let state: SourceAvailability<DaemonState>
     public let loadedModels: SourceAvailability<LoadedModelsState>
@@ -29,6 +46,21 @@ public struct TelemetrySnapshot: Equatable, Sendable {
     public let diagnostics: [AcquisitionDiagnostic]
     public let capturedAt: Date
     public let menuStatus: MenuPresentationStatus
+}
+
+public extension TelemetrySnapshot {
+    static func unavailable(now: Date) -> Self {
+        TelemetrySnapshot(
+            state: .unavailable(reason: "Waiting for daemon state"),
+            loadedModels: .unavailable(reason: "Waiting for loaded models"),
+            status: .unavailable(reason: "Waiting for Darkbloom status"),
+            eventFeed: .unavailable(reason: "Waiting for event sources"),
+            tokenRate: .unavailable(reason: "Waiting for a second telemetry sample"),
+            diagnostics: [],
+            capturedAt: now,
+            menuStatus: .unavailable
+        )
+    }
 }
 
 extension MenuPresentationStatus {
