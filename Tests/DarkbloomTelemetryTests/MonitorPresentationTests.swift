@@ -97,8 +97,21 @@ struct MonitorPresentationTests {
             "Darkbloom routable, thermal fair. 0.13 dollars earned in the last 24 hours.")
     }
 
-    @Test("missing selected metric is an em dash, never a fabricated zero")
-    func unavailableMetricIsExplicit() {
+    @Test("missing measured rate falls back to real earnings")
+    func unavailableRateUsesEarnings() {
+        let presentation = MenuBarPresentation.make(
+            snapshot: snapshot(menuStatus: .online, active: true),
+            thermal: .nominal,
+            earnings: .available(microUSD: 2_900_000),
+            mode: .automatic
+        )
+
+        #expect(presentation.metricText == "$2.90/24h")
+        #expect(presentation.metricUnavailableReason == nil)
+    }
+
+    @Test("missing rate and earnings omit metric text")
+    func unavailableMetricsAreOmitted() {
         let presentation = MenuBarPresentation.make(
             snapshot: snapshot(menuStatus: .online, active: false),
             thermal: .nominal,
@@ -106,7 +119,7 @@ struct MonitorPresentationTests {
             mode: .automatic
         )
 
-        #expect(presentation.metricText == "—")
+        #expect(presentation.metricText == nil)
         #expect(presentation.metricUnavailableReason == "Not logged in")
     }
 

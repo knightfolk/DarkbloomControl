@@ -123,49 +123,18 @@ public struct MenuBarPresentation: Equatable, Sendable {
         earnings: EarningsPresentationValue,
         mode: MenuBarDisplayMode
     ) -> Metric {
-        let selectedMode: MenuBarDisplayMode
-        if mode == .automatic {
-            guard let state = snapshot.state.value else {
-                return Metric(text: "—", accessibility: "Selected metric unavailable.", unavailableReason: "Daemon state unavailable")
+        switch mode {
+        case .automatic, .throughput:
+            if let throughput = availableThroughput(snapshot.tokenRate) {
+                return throughput
             }
-            selectedMode = state.inferenceActive ? .throughput : .earnings
-        } else {
-            selectedMode = mode
-        }
-
-        switch selectedMode {
-        case .automatic:
-            preconditionFailure("Automatic mode must be resolved before formatting")
-        case .throughput:
-            switch snapshot.tokenRate {
-            case .available(let tokensPerSecond, _):
-                guard tokensPerSecond.isFinite else {
-                    return unavailableMetric("Token rate is not finite")
-                }
-                let compact = decimal(tokensPerSecond, fractionDigits: 1)
-                return Metric(
-                    text: "\(compact) tok/s",
-                    accessibility: "\(compact) tokens per second.",
-                    unavailableReason: nil
-                )
-            case .unavailable(let reason):
-                return unavailableMetric(reason)
+            if let earnings = availableEarnings(earnings) {
+                return earnings
             }
+            return unavailableMetric(earningsUnavailableReason(earnings))
         case .earnings:
-            switch earnings {
-            case .available(let microUSD):
-                let dollars = Double(microUSD) / 1_000_000
-                let compact = decimal(dollars, fractionDigits: 2)
-                return Metric(
-                    text: "$\(compact)/24h",
-                    accessibility: "\(compact) dollars earned in the last 24 hours.",
-                    unavailableReason: nil
-                )
-            case .stale(_, let reason):
-                return unavailableMetric("Rolling earnings stale — \(reason)")
-            case .unavailable(let reason):
-                return unavailableMetric(reason)
-            }
+            return availableEarnings(earnings)
+                ?? unavailableMetric(earningsUnavailableReason(earnings))
         case .model:
             guard let model = snapshot.state.value?.currentModel, !model.isEmpty else {
                 return unavailableMetric("Current model unavailable")
@@ -176,8 +145,45 @@ public struct MenuBarPresentation: Equatable, Sendable {
         }
     }
 
+    private static func availableThroughput(_ rate: TokenRate) -> Metric? {
+        guard case .available(let tokensPerSecond, _) = rate,
+              tokensPerSecond.isFinite else {
+            return nil
+        }
+        let compact = decimal(tokensPerSecond, fractionDigits: 1)
+        return Metric(
+            text: "\(compact) tok/s",
+            accessibility: "\(compact) tokens per second.",
+            unavailableReason: nil
+        )
+    }
+
+    private static func availableEarnings(_ earnings: EarningsPresentationValue) -> Metric? {
+        guard case .available(let microUSD) = earnings else { return nil }
+        let dollars = Double(microUSD) / 1_000_000
+        let compact = decimal(dollars, fractionDigits: 2)
+        return Metric(
+            text: "$\(compact)/24h",
+            accessibility: "\(compact) dollars earned in the last 24 hours.",
+            unavailableReason: nil
+        )
+    }
+
+    private static func earningsUnavailableReason(
+        _ earnings: EarningsPresentationValue
+    ) -> String {
+        switch earnings {
+        case .available:
+            "Earnings unavailable"
+        case .stale(_, let reason):
+            "Rolling earnings stale — \(reason)"
+        case .unavailable(let reason):
+            reason
+        }
+    }
+
     private static func unavailableMetric(_ reason: String) -> Metric {
-        Metric(text: "—", accessibility: "Selected metric unavailable.", unavailableReason: reason)
+        Metric(text: nil, accessibility: nil, unavailableReason: reason)
     }
 
     private static func decimal(_ value: Double, fractionDigits: Int) -> String {

@@ -44,6 +44,7 @@ public actor TelemetryService {
     private var unifiedFailureReason: String?
 
     private var previousStateSample: DaemonState?
+    private var activityRateBaseline: DaemonState?
     private var tokenRate: TokenRate = .unavailable(
         reason: "Waiting for a second telemetry sample"
     )
@@ -411,11 +412,7 @@ public actor TelemetryService {
 
         switch result {
         case .success(let state, let capturedAt):
-            tokenRate = TelemetryDeriver.tokenRate(
-                previous: previousStateSample,
-                current: state
-            )
-            previousStateSample = state
+            updateTokenRate(with: state)
             lastState = LastGood(value: state, capturedAt: capturedAt)
             stateFailureReason = nil
             diagnosticsByID.removeValue(forKey: DiagnosticID.daemonState)
@@ -431,6 +428,43 @@ public actor TelemetryService {
             return
         }
         publishSnapshot()
+    }
+
+    private func updateTokenRate(with state: DaemonState) {
+        defer { previousStateSample = state }
+
+        guard let previousStateSample else {
+            activityRateBaseline = state.inferenceActive ? state : nil
+            return
+        }
+        guard previousStateSample.processIdentity == state.processIdentity else {
+            activityRateBaseline = state.inferenceActive ? state : nil
+            tokenRate = .unavailable(reason: "Provider process changed between samples")
+            return
+        }
+
+        if !previousStateSample.inferenceActive, state.inferenceActive {
+            activityRateBaseline = state
+            tokenRate = .unavailable(reason: "Waiting for completed token telemetry")
+            return
+        }
+
+        if let baseline = activityRateBaseline {
+            if state.stats.tokensGenerated != baseline.stats.tokensGenerated {
+                tokenRate = TelemetryDeriver.tokenRate(previous: baseline, current: state)
+                activityRateBaseline = state.inferenceActive ? state : nil
+                return
+            }
+        } else if state.inferenceActive {
+            activityRateBaseline = state
+        }
+
+        if state.inferenceActive {
+            tokenRate = .unavailable(reason: "Waiting for completed token telemetry")
+        } else {
+            activityRateBaseline = nil
+            tokenRate = .unavailable(reason: "Waiting for activity")
+        }
     }
 
     private func completeLoadedModelsRefresh(

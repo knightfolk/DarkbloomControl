@@ -55,6 +55,64 @@ struct TelemetryServiceTests {
         #expect(snapshot.menuStatus == .online)
     }
 
+    @Test("active rate is not retained without new token telemetry")
+    func doesNotRetainMeasuredRateWhileActive() async {
+        let source = ScriptedTelemetrySource(states: [
+            .success(sample(tokens: 100, writtenAt: 1_000)),
+            .success(sample(tokens: 160, writtenAt: 1_004)),
+            .success(sample(tokens: 160, writtenAt: 1_006)),
+        ])
+        let service = TelemetryService(
+            source: source,
+            now: { Date(timeIntervalSince1970: 1_006) }
+        )
+
+        _ = await service.refreshNow()
+        let measured = await service.refreshNow()
+        let heartbeat = await service.refreshNow()
+
+        #expect(measured.tokenRate == .available(tokensPerSecond: 15, label: "derived"))
+        #expect(heartbeat.tokenRate == .unavailable(
+            reason: "Waiting for completed token telemetry"
+        ))
+        #expect(MenuBarPresentation.make(
+            snapshot: heartbeat,
+            thermal: .nominal,
+            earnings: .available(microUSD: 2_900_000),
+            mode: .automatic
+        ).metricText == "$2.90/24h")
+    }
+
+    @Test("completed work uses the full observed active window")
+    func derivesCompletedWorkRate() async {
+        let source = ScriptedTelemetrySource(states: [
+            .success(sample(tokens: 100, writtenAt: 998, inferenceActive: false)),
+            .success(sample(tokens: 100, writtenAt: 1_000)),
+            .success(sample(tokens: 100, writtenAt: 1_002)),
+            .success(sample(tokens: 160, writtenAt: 1_004, inferenceActive: false)),
+            .success(sample(tokens: 160, writtenAt: 1_006, inferenceActive: false)),
+        ])
+        let service = TelemetryService(
+            source: source,
+            now: { Date(timeIntervalSince1970: 1_006) }
+        )
+
+        _ = await service.refreshNow()
+        _ = await service.refreshNow()
+        _ = await service.refreshNow()
+        let completed = await service.refreshNow()
+        let nextIdle = await service.refreshNow()
+
+        #expect(completed.tokenRate == .available(tokensPerSecond: 15, label: "derived"))
+        #expect(MenuBarPresentation.make(
+            snapshot: completed,
+            thermal: .nominal,
+            earnings: .available(microUSD: 0),
+            mode: .automatic
+        ).metricText == "15.0 tok/s")
+        #expect(nextIdle.tokenRate == .unavailable(reason: "Waiting for activity"))
+    }
+
     @Test("failed refresh preserves last good value and capture time as stale")
     func preservesLastGoodState() async throws {
         let clock = LockedNow(1_001)
@@ -458,7 +516,8 @@ struct TelemetryServiceTests {
         tokens: Int64,
         writtenAt: TimeInterval,
         pid: Int32 = 42,
-        trustStatus: String = "online"
+        trustStatus: String = "online",
+        inferenceActive: Bool = true
     ) -> DaemonState {
         DaemonState(
             schema: 1,
@@ -478,7 +537,7 @@ struct TelemetryServiceTests {
                 gpuMemoryCacheGB: 1
             ),
             slots: [],
-            inferenceActive: true,
+            inferenceActive: inferenceActive,
             startedAt: writtenAt - 100,
             writtenAt: writtenAt,
             pid: pid,

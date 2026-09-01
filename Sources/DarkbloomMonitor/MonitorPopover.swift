@@ -107,8 +107,7 @@ private struct HeaderSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .center, spacing: 10) {
-                DarkbloomLogoShape()
-                    .fill(healthColor)
+                DarkbloomLogo(image: DarkbloomLogoAsset.sourceImage, tint: healthColor)
                     .frame(width: 22, height: 25)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Darkbloom")

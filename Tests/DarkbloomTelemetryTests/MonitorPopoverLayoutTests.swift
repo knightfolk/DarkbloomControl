@@ -7,11 +7,60 @@ import Testing
 @Suite("Monitor popover layout")
 @MainActor
 struct MonitorPopoverLayoutTests {
-    @Test("Darkbloom logo shape preserves the supplied mark proportions")
-    func logoGeometry() {
-        let bounds = DarkbloomLogoShape().path(in: CGRect(x: 0, y: 0, width: 32, height: 37)).boundingRect
+    @Test("official Darkbloom logo loads as a tintable vector asset")
+    func officialLogoAsset() throws {
+        let sourceImage = try #require(DarkbloomLogoAsset.sourceImage)
+        let greenImage = try #require(DarkbloomLogoAsset.menuBarImage(tint: .systemGreen))
+        let redImage = try #require(DarkbloomLogoAsset.menuBarImage(tint: .systemRed))
+        let green = try #require(sampledMarkColor(in: greenImage))
+        let red = try #require(sampledMarkColor(in: redImage))
 
-        #expect(bounds == CGRect(x: 0, y: 0, width: 32, height: 37))
+        #expect(sourceImage.size == NSSize(width: 221, height: 253))
+        #expect(!greenImage.isTemplate)
+        #expect(greenImage.size == NSSize(width: 12.25, height: 14))
+        #expect(green.greenComponent > green.redComponent)
+        #expect(green.greenComponent > green.blueComponent)
+        #expect(red.redComponent > red.greenComponent)
+        #expect(red.redComponent > red.blueComponent)
+    }
+
+    @Test("menu bar label keeps the official logo within status-item bounds")
+    func menuBarLogoSize() {
+        let hostingController = NSHostingController(
+            rootView: DarkbloomLogo(
+                image: DarkbloomLogoAsset.menuBarImage(tint: .systemGreen),
+                tint: .green
+            )
+            .frame(width: 12.25, height: 14)
+        )
+        let size = hostingController.sizeThatFits(in: NSSize(width: 500, height: 500))
+
+        #expect(size.width <= 13)
+        #expect(size.height <= 15)
+    }
+
+    @Test("menu bar metric allocation is stable across measured modes")
+    func stableMetricWidth() {
+        let throughput = NSHostingController(rootView: MenuBarMetric(text: "41.9 tok/s"))
+        let earnings = NSHostingController(rootView: MenuBarMetric(text: "$2.90/24h"))
+        let unavailable = NSHostingController(rootView: MenuBarMetric(text: nil))
+        let proposed = NSSize(width: 500, height: 100)
+        let expected = throughput.sizeThatFits(in: proposed)
+
+        #expect(earnings.sizeThatFits(in: proposed) == expected)
+        #expect(unavailable.sizeThatFits(in: proposed) == expected)
+    }
+
+    @Test("native status item owns one fixed width")
+    func nativeStatusItemWidth() {
+        let service = TelemetryService(source: UnusedTelemetrySource())
+        let store = MonitorStore(
+            service: service,
+            initial: .unavailable(now: Date(timeIntervalSince1970: 1_750_000_000))
+        )
+        let controller = StatusItemController(store: store)
+
+        #expect(controller.statusItemLength == StatusItemController.itemWidth)
     }
 
     @Test("all detailed sections start collapsed")
@@ -37,6 +86,34 @@ struct MonitorPopoverLayoutTests {
         #expect(proposedSize.width == 420)
         #expect(proposedSize.height == 680)
     }
+}
+
+private func sampledMarkColor(in image: NSImage) -> NSColor? {
+    let scale = 10
+    let width = Int(image.size.width * CGFloat(scale))
+    let height = Int(image.size.height * CGFloat(scale))
+    guard let bitmap = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: width,
+        pixelsHigh: height,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ) else {
+        return nil
+    }
+    bitmap.size = image.size
+
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+    image.draw(in: NSRect(origin: .zero, size: image.size))
+    NSGraphicsContext.restoreGraphicsState()
+
+    return bitmap.colorAt(x: width / 10, y: height / 2)?.usingColorSpace(.deviceRGB)
 }
 
 private struct UnusedTelemetrySource: TelemetrySource {

@@ -15,7 +15,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "DarkbloomMonitor",
-            dependencies: ["DarkbloomTelemetry"]
+            dependencies: ["DarkbloomTelemetry"],
+            resources: [
+                .copy("Resources/darkbloom-mark.svg"),
+                .copy("Resources/darkbloom-menubar.svg"),
+            ]
         ),
         .testTarget(
             name: "DarkbloomTelemetryTests",

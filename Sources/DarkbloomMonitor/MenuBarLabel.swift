@@ -1,30 +1,67 @@
+import AppKit
 import DarkbloomTelemetry
 import SwiftUI
 
-struct DarkbloomLogoShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let scaleX = rect.width / 32
-        let scaleY = rect.height / 37
-        var path = Path()
+enum DarkbloomLogoAsset {
+    static let sourceImage = load(named: "darkbloom-mark")
+    private static let menuBarMask = load(named: "darkbloom-menubar")
 
-        func add(_ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) {
-            path.addRect(CGRect(
-                x: rect.minX + x * scaleX,
-                y: rect.minY + y * scaleY,
-                width: width * scaleX,
-                height: height * scaleY
-            ))
+    static func menuBarImage(tint: NSColor) -> NSImage? {
+        guard let mask = menuBarMask else { return nil }
+
+        let image = NSImage(size: mask.size, flipped: false) { rect in
+            mask.draw(in: rect)
+            tint.setFill()
+            rect.fill(using: .sourceAtop)
+            return true
         }
+        image.isTemplate = false
+        return image
+    }
 
-        // Deterministic vector reconstruction of the supplied 32 × 37 pixel mark.
-        add(0, 0, 9, 37)
-        add(14, 0, 9, 4)
-        add(18, 4, 5, 5)
-        add(28, 0, 4, 9)
-        add(18, 9, 9, 9)
-        add(14, 18, 4, 10)
-        add(0, 28, 27, 9)
-        return path
+    private static func load(named name: String) -> NSImage? {
+        guard
+            let url = Bundle.module.url(forResource: name, withExtension: "svg"),
+            let image = NSImage(contentsOf: url)
+        else {
+            return nil
+        }
+        image.isTemplate = true
+        return image
+    }
+}
+
+struct DarkbloomLogo: View {
+    let image: NSImage?
+    let tint: Color
+
+    var body: some View {
+        if let image {
+            Image(nsImage: image)
+                .renderingMode(image.isTemplate ? .template : .original)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .foregroundStyle(tint)
+        }
+    }
+}
+
+struct MenuBarMetric: View {
+    static let width: CGFloat = 78
+    static let height: CGFloat = 14
+
+    let text: String?
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Color.clear
+            if let text {
+                Text(text)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: Self.width, height: Self.height, alignment: .leading)
     }
 }
 
@@ -32,17 +69,14 @@ struct MenuBarLabel: View {
     let presentation: MenuBarPresentation
 
     var body: some View {
-        HStack(spacing: 4) {
-            DarkbloomLogoShape()
-                .fill(statusColor)
-                .frame(width: 13, height: 15)
+        HStack(spacing: 7) {
+            DarkbloomLogo(
+                image: DarkbloomLogoAsset.menuBarImage(tint: statusNSColor),
+                tint: statusColor
+            )
+            .frame(width: 12.25, height: 14)
 
-            if let metric = presentation.metricText {
-                Text(metric)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-            }
+            MenuBarMetric(text: presentation.metricText)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(presentation.accessibilityLabel)
@@ -50,11 +84,15 @@ struct MenuBarLabel: View {
     }
 
     private var statusColor: Color {
+        Color(nsColor: statusNSColor)
+    }
+
+    private var statusNSColor: NSColor {
         switch presentation.health.color {
-        case .green: .green
-        case .yellow: .yellow
-        case .orange: .orange
-        case .red: .red
+        case .green: .systemGreen
+        case .yellow: .systemYellow
+        case .orange: .systemOrange
+        case .red: .systemRed
         }
     }
 

@@ -4,12 +4,20 @@ import SwiftUI
 
 @main
 struct DarkbloomMonitorApp: App {
-    @StateObject private var store: MonitorStore
-    @AppStorage("menuBarDisplayMode") private var displayModeRaw = MenuBarDisplayMode.automatic.rawValue
+    @NSApplicationDelegateAdaptor(DarkbloomMonitorAppDelegate.self) private var appDelegate
 
-    init() {
+    var body: some Scene {
+        Settings { EmptyView() }
+    }
+}
+
+@MainActor
+final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate {
+    private var store: MonitorStore?
+    private var statusItemController: StatusItemController?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
-
         let home = FileManager.default.homeDirectoryForCurrentUser
         let policy = DarkbloomSourcePolicy(
             homeDirectory: home,
@@ -39,30 +47,14 @@ struct DarkbloomMonitorApp: App {
             initial: .unavailable(now: Date()),
             earningsClient: earningsClient
         )
-        _store = StateObject(wrappedValue: monitorStore)
-
-        Task { @MainActor in
-            monitorStore.start()
-        }
+        store = monitorStore
+        statusItemController = StatusItemController(store: monitorStore)
+        monitorStore.start()
     }
 
-    var body: some Scene {
-        MenuBarExtra {
-            MonitorPopover(store: store, displayMode: displayModeBinding)
-        } label: {
-            MenuBarLabel(presentation: store.menuPresentation(mode: displayMode))
-        }
-        .menuBarExtraStyle(.window)
-    }
-
-    private var displayMode: MenuBarDisplayMode {
-        MenuBarDisplayMode(rawValue: displayModeRaw) ?? .automatic
-    }
-
-    private var displayModeBinding: Binding<MenuBarDisplayMode> {
-        Binding(
-            get: { displayMode },
-            set: { displayModeRaw = $0.rawValue }
-        )
+    func applicationWillTerminate(_ notification: Notification) {
+        statusItemController?.invalidate()
+        guard let store else { return }
+        Task { await store.stop() }
     }
 }
