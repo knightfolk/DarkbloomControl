@@ -1,0 +1,22 @@
+[
+  {
+    "id": "gpt-oss-20b",
+    "display_name": "GPT OSS 20B",
+    "family": "gpt-oss",
+    "model_type": "llm",
+    "capabilities": ["chat", "code"],
+    "size_gb": 12.5,
+    "min_ram_gb": 16,
+    "active": true
+  },
+  {
+    "id": "gemma-4-26b-qat-4bit",
+    "display_name": "Gemma 4 26B",
+    "family": "gemma",
+    "model_type": "llm",
+    "capabilities": ["chat"],
+    "size_gb": 15.0,
+    "min_ram_gb": 24,
+    "active": true
+  }
+]

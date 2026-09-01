@@ -1,0 +1,18 @@
+{
+  "cache_directory": "/tmp/darkbloom-test-cache",
+  "filtered_by_config": false,
+  "models": [
+    {
+      "id": "gpt-oss-20b",
+      "model_type": "llm",
+      "size_bytes": 13421772800,
+      "estimated_memory_gb": 14.2
+    },
+    {
+      "id": "gemma-4-26b-qat-4bit",
+      "model_type": "llm",
+      "size_bytes": 16106127360,
+      "estimated_memory_gb": 17.1
+    }
+  ]
+}
