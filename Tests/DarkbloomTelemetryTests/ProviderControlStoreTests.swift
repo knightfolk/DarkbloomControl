@@ -1,6 +1,7 @@
 import AppKit
 import DarkbloomTelemetry
 import Foundation
+import SwiftUI
 import Testing
 @testable import DarkbloomMonitor
 
@@ -266,6 +267,43 @@ struct ProviderControlStoreTests {
         )
 
         #expect(statusController.controlStore === controlStore)
+    }
+
+    @Test("app Settings waits for and then retains the exact shared store")
+    func appSettingsUsesSharedStore() async throws {
+        let controlStore = ProviderControlStore(controller: FakeProviderController.fixture())
+        let waitingRoot = AppSettingsSceneRoot(controlStore: nil)
+        let readyRoot = AppSettingsSceneRoot(controlStore: controlStore)
+        let settingsRoot = ProviderSettingsRoot(controlStore: controlStore)
+        let waitingHost = NSHostingController(rootView: waitingRoot)
+        let waitingSize = waitingHost.sizeThatFits(in: NSSize(width: 800, height: 800))
+
+        #expect(waitingRoot.controlStore == nil)
+        #expect(waitingSize == NSSize(width: 420, height: 180))
+        #expect(readyRoot.controlStore === controlStore)
+        #expect(settingsRoot.controlStore === controlStore)
+    }
+
+    @Test("app and status-item Settings roots share one store identity")
+    func allSettingsRootsShareIdentity() async throws {
+        let telemetryService = TelemetryService(source: InertStoreTelemetrySource())
+        let monitorStore = MonitorStore(
+            service: telemetryService,
+            initial: .unavailable(now: Date(timeIntervalSince1970: 1_750_000_000))
+        )
+        let controlStore = ProviderControlStore(controller: FakeProviderController.fixture())
+        let appRoot = AppSettingsSceneRoot(controlStore: controlStore)
+        let statusController = StatusItemController(
+            store: monitorStore,
+            controlStore: controlStore
+        )
+
+        let appIdentity = try #require(appRoot.controlStore.map(ObjectIdentifier.init))
+        let statusIdentity = try #require(
+            statusController.controlStore.map(ObjectIdentifier.init)
+        )
+        #expect(appIdentity == ObjectIdentifier(controlStore))
+        #expect(statusIdentity == appIdentity)
     }
 }
 

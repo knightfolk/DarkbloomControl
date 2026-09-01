@@ -21,7 +21,7 @@ final class StatusItemController: NSObject {
         statusItem = NSStatusBar.system.statusItem(withLength: Self.itemWidth)
         self.controlStore = controlStore
         let settingsViewController = NSHostingController(
-            rootView: SettingsRootView(controlStore: controlStore)
+            rootView: AppSettingsSceneRoot(controlStore: controlStore)
         )
         let settingsWindow = NSWindow(contentViewController: settingsViewController)
         settingsWindow.title = "Darkbloom Monitor Settings"
@@ -114,20 +114,6 @@ private struct PopoverRootView: View {
                 .environmentObject(controlStore)
         } else {
             MonitorPopover(store: store, openSettings: openSettings)
-        }
-    }
-}
-
-private struct SettingsRootView: View {
-    let controlStore: ProviderControlStore?
-
-    @ViewBuilder
-    var body: some View {
-        if let controlStore {
-            MonitorSettingsView()
-                .environmentObject(controlStore)
-        } else {
-            MonitorSettingsView()
         }
     }
 }

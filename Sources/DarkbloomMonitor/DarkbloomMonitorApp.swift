@@ -8,15 +8,15 @@ struct DarkbloomMonitorApp: App {
 
     var body: some Scene {
         Settings {
-            MonitorSettingsView()
+            AppSettingsSceneRoot(controlStore: appDelegate.controlStore)
         }
     }
 }
 
 @MainActor
-final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate {
+final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var store: MonitorStore?
-    private var controlStore: ProviderControlStore?
+    @Published private(set) var controlStore: ProviderControlStore?
     private var statusItemController: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -84,5 +84,28 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate {
         controlStore?.cancelCurrentOperation()
         guard let store else { return }
         Task { await store.stop() }
+    }
+}
+
+struct AppSettingsSceneRoot: View {
+    let controlStore: ProviderControlStore?
+
+    @ViewBuilder
+    var body: some View {
+        if let controlStore {
+            ProviderSettingsRoot(controlStore: controlStore)
+        } else {
+            ProgressView("Starting Darkbloom Monitor…")
+                .frame(width: 420, height: 180)
+        }
+    }
+}
+
+struct ProviderSettingsRoot: View {
+    @ObservedObject var controlStore: ProviderControlStore
+
+    var body: some View {
+        MonitorSettingsView()
+            .environmentObject(controlStore)
     }
 }
