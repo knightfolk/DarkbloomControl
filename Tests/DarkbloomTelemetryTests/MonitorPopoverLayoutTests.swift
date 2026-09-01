@@ -41,14 +41,25 @@ struct MonitorPopoverLayoutTests {
 
     @Test("menu bar metric allocation is stable across measured modes")
     func stableMetricWidth() {
-        let throughput = NSHostingController(rootView: MenuBarMetric(text: "41.9 tok/s"))
-        let earnings = NSHostingController(rootView: MenuBarMetric(text: "$2.90/24h"))
-        let unavailable = NSHostingController(rootView: MenuBarMetric(text: nil))
+        let throughput = NSHostingController(rootView: MenuBarMetric(
+            text: "41.9 tok/s",
+            uptime: .available(percent: 99.7, observedSeconds: 86_400)
+        ))
+        let earnings = NSHostingController(rootView: MenuBarMetric(
+            text: "$2.90/24h",
+            uptime: .warming(observedSeconds: 120)
+        ))
+        let unavailable = NSHostingController(rootView: MenuBarMetric(
+            text: nil,
+            uptime: .unavailable(reason: "Local uptime database unavailable")
+        ))
         let proposed = NSSize(width: 500, height: 100)
         let expected = throughput.sizeThatFits(in: proposed)
 
         #expect(earnings.sizeThatFits(in: proposed) == expected)
         #expect(unavailable.sizeThatFits(in: proposed) == expected)
+        #expect(expected.width == MenuBarMetric.width)
+        #expect(expected.height <= 22)
     }
 
     @Test("native status item owns one fixed width")

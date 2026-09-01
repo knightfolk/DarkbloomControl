@@ -38,7 +38,8 @@ struct MonitorPopover: View {
                 HeaderSection(
                     snapshot: store.snapshot,
                     presentation: store.menuPresentation(mode: displayMode),
-                    earnings: store.earnings
+                    earnings: store.earnings,
+                    observedUptime: store.observedUptime
                 )
                 Divider()
                 detailDisclosure(.performance, title: "Performance") {
@@ -103,6 +104,7 @@ private struct HeaderSection: View {
     let snapshot: TelemetrySnapshot
     let presentation: MenuBarPresentation
     let earnings: EarningsPresentationValue
+    let observedUptime: ObservedUptimeValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -137,6 +139,7 @@ private struct HeaderSection: View {
                 summaryRow("Activity", inferenceText)
                 summaryRow("Current model", currentModel)
                 summaryRow(summaryMetricLabel, summaryMetricValue)
+                summaryRow("Observed uptime · 24h", uptimeSummary)
                 summaryRow("Thermal", presentation.thermal.displayName)
             }
 
@@ -168,6 +171,24 @@ private struct HeaderSection: View {
 
     private var summaryMetricValue: String {
         presentation.metricText ?? "Status only"
+    }
+
+    private var uptimeSummary: String {
+        switch observedUptime {
+        case .available(let percent, let observedSeconds):
+            return "\(Int(percent.rounded()))% · \(coverage(observedSeconds)) observed"
+        case .warming(let observedSeconds):
+            return "Warming up · \(coverage(observedSeconds)) of 5m"
+        case .unavailable(let reason):
+            return TelemetryFormatting.unavailable(reason)
+        }
+    }
+
+    private func coverage(_ seconds: TimeInterval) -> String {
+        if seconds >= 3_600 {
+            return String(format: "%.1fh", locale: Locale(identifier: "en_US_POSIX"), seconds / 3_600)
+        }
+        return "\(Int(seconds / 60))m"
     }
 
     private var healthColor: Color {

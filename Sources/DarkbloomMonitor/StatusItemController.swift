@@ -57,7 +57,10 @@ private struct StatusItemRootView: View {
     @AppStorage("menuBarDisplayMode") private var displayModeRaw = MenuBarDisplayMode.automatic.rawValue
 
     var body: some View {
-        MenuBarLabel(presentation: store.menuPresentation(mode: displayMode))
+        MenuBarLabel(
+            presentation: store.menuPresentation(mode: displayMode),
+            uptime: store.observedUptime
+        )
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 

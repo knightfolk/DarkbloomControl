@@ -108,3 +108,23 @@ totals. Changed balances are stored at most once per hour; unchanged polls write
 no history. Raw per-job rows, account IDs, provider keys, tokens, prompts, and
 responses are not persisted. The menu's rolling 24-hour figure remains total
 earnings, including work and all rewards.
+
+## Monitor-observed uptime extension
+
+The menu's uptime row is a locally owned observation metric, not Darkbloom's
+official provider reputation or a server-reported availability score. The
+monitor records timestamped presentation states in
+`~/Library/Application Support/Darkbloom Monitor/observed-uptime.sqlite3`; the
+database is mode `0600` and survives app restarts.
+
+Only explicit `.online` and `.offline` samples are classified. Stale and
+unavailable samples are recorded as unknown and excluded from both numerator
+and denominator. A classified sample carries forward for at most ten seconds;
+longer app-off, sleep, or read-failure gaps are unobserved rather than guessed.
+Within the trailing 24 hours, the displayed percentage is classified online
+seconds divided by all classified seconds.
+
+The menu bar displays `warm` until five classified minutes have accumulated.
+After warm-up it displays the rounded percentage and a neutral progress bar.
+The popover and accessibility text disclose classified observed coverage so a
+high percentage over sparse evidence is not presented as full-day coverage.

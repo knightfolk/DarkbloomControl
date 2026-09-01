@@ -38,6 +38,9 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate {
         let earningsDatabase = try? EarningsDatabase(
             url: applicationSupport.appendingPathComponent("earnings.sqlite3")
         )
+        let observedUptimeDatabase = try? ObservedUptimeDatabase(
+            url: applicationSupport.appendingPathComponent("observed-uptime.sqlite3")
+        )
         let earningsClient = AuthenticatedEarningsClient(
             homeDirectory: home,
             database: earningsDatabase
@@ -45,7 +48,8 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate {
         let monitorStore = MonitorStore(
             service: service,
             initial: .unavailable(now: Date()),
-            earningsClient: earningsClient
+            earningsClient: earningsClient,
+            uptimeRecorder: observedUptimeDatabase
         )
         store = monitorStore
         statusItemController = StatusItemController(store: monitorStore)

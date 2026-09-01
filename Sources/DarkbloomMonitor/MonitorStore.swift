@@ -9,9 +9,11 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var snapshot: TelemetrySnapshot
     @Published private(set) var thermalState: SystemThermalState
     @Published private(set) var earnings: EarningsPresentationValue
+    @Published private(set) var observedUptime: ObservedUptimeValue
 
     private let service: TelemetryService
     private let earningsClient: any AccountEarningsFetching
+    private let uptimeRecorder: (any ObservedUptimeRecording)?
     private var observationTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var earningsPollingTask: Task<Void, Never>?
@@ -25,13 +27,18 @@ final class MonitorStore: ObservableObject {
         initial: TelemetrySnapshot,
         earningsClient: any AccountEarningsFetching = AuthenticatedEarningsClient(
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser
-        )
+        ),
+        uptimeRecorder: (any ObservedUptimeRecording)? = nil
     ) {
         self.service = service
         self.earningsClient = earningsClient
+        self.uptimeRecorder = uptimeRecorder
         snapshot = initial
         thermalState = SystemThermalState(ProcessInfo.processInfo.thermalState)
         earnings = .unavailable(reason: "Waiting for authenticated account earnings")
+        observedUptime = uptimeRecorder == nil
+            ? .unavailable(reason: "Local observed-uptime storage unavailable")
+            : .warming(observedSeconds: 0)
     }
 
     func start() {
@@ -58,6 +65,7 @@ final class MonitorStore: ObservableObject {
             for await snapshot in snapshots {
                 guard !Task.isCancelled else { return }
                 self.snapshot = snapshot
+                await self.recordObservedUptime(from: snapshot)
             }
         }
     }
@@ -167,6 +175,18 @@ final class MonitorStore: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.thermalState = SystemThermalState(ProcessInfo.processInfo.thermalState)
             }
+        }
+    }
+
+    private func recordObservedUptime(from snapshot: TelemetrySnapshot) async {
+        guard let uptimeRecorder else { return }
+        do {
+            observedUptime = try await uptimeRecorder.record(
+                status: snapshot.menuStatus,
+                at: snapshot.capturedAt
+            )
+        } catch {
+            observedUptime = .unavailable(reason: error.localizedDescription)
         }
     }
 
