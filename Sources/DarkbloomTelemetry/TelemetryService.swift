@@ -12,9 +12,23 @@ public actor TelemetryService {
         case cancelled
     }
 
+    private enum SourceFreshness: Equatable, Sendable {
+        case available
+        case stale(reason: String)
+        case unavailable(reason: String)
+    }
+
+    private struct FreshnessSignature: Equatable, Sendable {
+        let state: SourceFreshness
+        let loadedModels: SourceFreshness
+        let status: SourceFreshness
+        let menuStatus: MenuPresentationStatus
+    }
+
     private let source: any TelemetrySource
     private let now: @Sendable () -> Date
     private let unifiedEvents: AsyncThrowingStream<LogEvent, Error>?
+    private let freshnessTicks: AsyncStream<Void>?
 
     private var lastState: LastGood<DaemonState>?
     private var lastLoadedModels: LastGood<LoadedModelsState>?
@@ -35,6 +49,7 @@ public actor TelemetryService {
     )
     private var diagnosticsByID: [String: AcquisitionDiagnostic] = [:]
     private var continuations: [UUID: AsyncStream<TelemetrySnapshot>.Continuation] = [:]
+    private var lastPublishedFreshness: FreshnessSignature?
 
     private var activeRefreshTask: Task<TelemetrySnapshot, Never>?
     private var stateRefreshTask: Task<Void, Never>?
@@ -42,8 +57,10 @@ public actor TelemetryService {
     private var statusRefreshTask: Task<Void, Never>?
     private var legacyRefreshTask: Task<Void, Never>?
     private var statePollingTask: Task<Void, Never>?
+    private var loadedModelsPollingTask: Task<Void, Never>?
     private var legacyPollingTask: Task<Void, Never>?
     private var statusPollingTask: Task<Void, Never>?
+    private var freshnessTask: Task<Void, Never>?
     private var unifiedEventsTask: Task<Void, Never>?
     private var started = false
     private var stopped = false
@@ -56,6 +73,19 @@ public actor TelemetryService {
         self.source = source
         self.now = now
         self.unifiedEvents = unifiedEvents
+        freshnessTicks = nil
+    }
+
+    init(
+        source: any TelemetrySource,
+        now: @escaping @Sendable () -> Date,
+        unifiedEvents: AsyncThrowingStream<LogEvent, Error>? = nil,
+        testOnlyFreshnessTicks: AsyncStream<Void>
+    ) {
+        self.source = source
+        self.now = now
+        self.unifiedEvents = unifiedEvents
+        freshnessTicks = testOnlyFreshnessTicks
     }
 
     public func snapshots() -> AsyncStream<TelemetrySnapshot> {
@@ -83,7 +113,17 @@ public actor TelemetryService {
 
         statePollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refreshStateAndLoadedModels()
+                await self?.refreshState()
+                do {
+                    try await Task.sleep(for: DarkbloomSourcePolicy.stateInterval)
+                } catch {
+                    return
+                }
+            }
+        }
+        loadedModelsPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshLoadedModels()
                 do {
                     try await Task.sleep(for: DarkbloomSourcePolicy.stateInterval)
                 } catch {
@@ -108,6 +148,26 @@ public actor TelemetryService {
                     try await Task.sleep(for: DarkbloomSourcePolicy.statusInterval)
                 } catch {
                     return
+                }
+            }
+        }
+
+        if let freshnessTicks {
+            freshnessTask = Task { [weak self] in
+                for await _ in freshnessTicks {
+                    guard !Task.isCancelled else { return }
+                    await self?.publishFreshnessTransitionIfChanged()
+                }
+            }
+        } else {
+            freshnessTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do {
+                        try await Task.sleep(for: .seconds(1))
+                    } catch {
+                        return
+                    }
+                    await self?.publishFreshnessTransitionIfChanged()
                 }
             }
         }
@@ -160,8 +220,10 @@ public actor TelemetryService {
         started = false
 
         statePollingTask?.cancel()
+        loadedModelsPollingTask?.cancel()
         legacyPollingTask?.cancel()
         statusPollingTask?.cancel()
+        freshnessTask?.cancel()
         unifiedEventsTask?.cancel()
         activeRefreshTask?.cancel()
         stateRefreshTask?.cancel()
@@ -170,8 +232,10 @@ public actor TelemetryService {
         legacyRefreshTask?.cancel()
 
         statePollingTask = nil
+        loadedModelsPollingTask = nil
         legacyPollingTask = nil
         statusPollingTask = nil
+        freshnessTask = nil
         unifiedEventsTask = nil
         activeRefreshTask = nil
 
@@ -196,12 +260,6 @@ public actor TelemetryService {
         let snapshot = makeSnapshot(at: now())
         activeRefreshTask = nil
         return snapshot
-    }
-
-    private func refreshStateAndLoadedModels() async {
-        await refreshState()
-        guard !stopped, !Task.isCancelled else { return }
-        await refreshLoadedModels()
     }
 
     private func refreshState() async {
@@ -406,6 +464,16 @@ public actor TelemetryService {
 
     private func unifiedStreamEnded() {
         unifiedEventsTask = nil
+        guard started, !stopped else { return }
+        let reason = "Unified log stream ended unexpectedly"
+        unifiedFailureReason = reason
+        recordDiagnostic(
+            id: DiagnosticID.unifiedEvents,
+            source: "unified log",
+            message: reason,
+            occurredAt: now()
+        )
+        publishSnapshot()
     }
 
     private func unifiedStreamCancelled() {
@@ -443,8 +511,42 @@ public actor TelemetryService {
     private func publishSnapshot() {
         guard !stopped else { return }
         let snapshot = makeSnapshot(at: now())
+        lastPublishedFreshness = freshnessSignature(for: snapshot)
         for continuation in continuations.values {
             continuation.yield(snapshot)
+        }
+    }
+
+    private func publishFreshnessTransitionIfChanged() {
+        guard !stopped else { return }
+        let snapshot = makeSnapshot(at: now())
+        let freshness = freshnessSignature(for: snapshot)
+        guard freshness != lastPublishedFreshness else { return }
+        lastPublishedFreshness = freshness
+        for continuation in continuations.values {
+            continuation.yield(snapshot)
+        }
+    }
+
+    private func freshnessSignature(for snapshot: TelemetrySnapshot) -> FreshnessSignature {
+        FreshnessSignature(
+            state: sourceFreshness(snapshot.state),
+            loadedModels: sourceFreshness(snapshot.loadedModels),
+            status: sourceFreshness(snapshot.status),
+            menuStatus: snapshot.menuStatus
+        )
+    }
+
+    private func sourceFreshness<Value>(
+        _ availability: SourceAvailability<Value>
+    ) -> SourceFreshness where Value: Equatable & Sendable {
+        switch availability {
+        case .available:
+            .available
+        case .stale(_, _, let reason):
+            .stale(reason: reason)
+        case .unavailable(let reason):
+            .unavailable(reason: reason)
         }
     }
 

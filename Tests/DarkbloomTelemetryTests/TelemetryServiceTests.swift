@@ -213,6 +213,97 @@ struct TelemetryServiceTests {
         #expect(await source.legacyEventCalls == 0)
     }
 
+    @Test("slow state polling does not block loaded-model polling")
+    func pollsStateAndLoadedModelsIndependently() async {
+        let source = SlowStateTelemetrySource()
+        let service = TelemetryService(source: source)
+
+        await service.start()
+        await source.waitUntilStateReadStarts()
+        let loadedModelsStarted = await eventually {
+            await source.loadedModelCalls > 0
+        }
+        await source.releaseStateRead()
+        await service.stop()
+
+        #expect(loadedModelsStarted)
+    }
+
+    @Test("freshness heartbeat publishes canonical timestamp transitions")
+    func publishesFreshnessOnlyTransition() async {
+        let clock = LockedNow(1_000)
+        let source = ScriptedTelemetrySource.successful(
+            state: sample(tokens: 10, writtenAt: 1_000),
+            loadedModels: loadedModels(updatedAt: 1_000)
+        )
+        let (ticks, tickContinuation) = AsyncStream<Void>.makeStream()
+        let service = TelemetryService(
+            source: source,
+            now: clock.read,
+            testOnlyFreshnessTicks: ticks
+        )
+
+        _ = await service.refreshNow()
+        await service.start()
+        let pollersReady = await eventually {
+            let stateCalls = await source.stateCalls
+            let loadedModelCalls = await source.loadedModelCalls
+            let statusCalls = await source.statusCalls
+            let legacyEventCalls = await source.legacyEventCalls
+            return stateCalls >= 2 && loadedModelCalls >= 2
+                && statusCalls >= 2 && legacyEventCalls >= 2
+        }
+        let stream = await service.snapshots()
+        clock.set(1_011)
+        tickContinuation.yield()
+        let staleSnapshot = await firstSnapshot(in: stream) { snapshot in
+            guard case .stale = snapshot.state,
+                  case .stale = snapshot.loadedModels else { return false }
+            return snapshot.menuStatus == .stale
+        }
+        await service.stop()
+
+        #expect(pollersReady)
+        #expect(staleSnapshot != nil)
+        if case .stale(_, let capturedAt, _) = staleSnapshot?.state {
+            #expect(capturedAt == Date(timeIntervalSince1970: 1_000))
+        } else {
+            Issue.record("Expected stale state with its successful acquisition time")
+        }
+    }
+
+    @Test("normal unified-stream EOF publishes a stable termination diagnostic")
+    func reportsUnifiedStreamEOF() async {
+        let unifiedEvent = event(timestamp: 1_000, message: "Connected")
+        let unifiedEvents = AsyncThrowingStream<LogEvent, Error> { continuation in
+            continuation.yield(unifiedEvent)
+            continuation.finish()
+        }
+        let service = TelemetryService(
+            source: ScriptedTelemetrySource.successful(),
+            now: { Date(timeIntervalSince1970: 1_000) },
+            unifiedEvents: unifiedEvents
+        )
+        let stream = await service.snapshots()
+
+        await service.start()
+        let endedSnapshot = await firstSnapshot(in: stream) { snapshot in
+            snapshot.diagnostics.contains {
+                $0.id == "unified-events"
+                    && $0.message == "Unified log stream ended unexpectedly"
+            }
+        }
+        await service.stop()
+
+        #expect(endedSnapshot?.eventFeed.value?.events.map(\.message) == ["Connected"])
+        guard case .stale(_, let capturedAt, let reason) = endedSnapshot?.eventFeed else {
+            Issue.record("Expected the last unified event feed to become stale")
+            return
+        }
+        #expect(capturedAt == Date(timeIntervalSince1970: 1_000))
+        #expect(reason.contains("Unified log stream ended unexpectedly"))
+    }
+
     private func sample(
         tokens: Int64,
         writtenAt: TimeInterval,
@@ -447,6 +538,54 @@ private actor CancellationTelemetrySource: TelemetrySource {
     }
 }
 
+private actor SlowStateTelemetrySource: TelemetrySource {
+    private var stateStarted = false
+    private var stateStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var stateReleased = false
+    private var stateReleaseWaiter: CheckedContinuation<Void, Never>?
+    private(set) var loadedModelCalls = 0
+
+    func readDaemonState() async throws -> DaemonState {
+        stateStarted = true
+        let waiters = stateStartWaiters
+        stateStartWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+
+        if !stateReleased {
+            await withCheckedContinuation { continuation in
+                stateReleaseWaiter = continuation
+            }
+        }
+        return ScriptedTelemetrySource.defaultStateForBlocking
+    }
+
+    func readLoadedModels() async throws -> LoadedModelsState {
+        loadedModelCalls += 1
+        return .init(schema: 1, models: ["model"], updatedAt: Date().timeIntervalSince1970)
+    }
+
+    func readStatus() async throws -> StatusSnapshot {
+        StatusSnapshot()
+    }
+
+    func readLegacyEvents(limit: Int) async throws -> [LogEvent] {
+        []
+    }
+
+    func waitUntilStateReadStarts() async {
+        guard !stateStarted else { return }
+        await withCheckedContinuation { continuation in
+            stateStartWaiters.append(continuation)
+        }
+    }
+
+    func releaseStateRead() {
+        stateReleased = true
+        stateReleaseWaiter?.resume()
+        stateReleaseWaiter = nil
+    }
+}
+
 private extension ScriptedTelemetrySource {
     static var defaultStateForBlocking: DaemonState {
         defaultState
@@ -467,5 +606,40 @@ private final class LockedNow: @unchecked Sendable {
 
     func set(_ seconds: TimeInterval) {
         lock.withLock { self.seconds = seconds }
+    }
+}
+
+private func eventually(
+    timeout: Duration = .milliseconds(100),
+    condition: @escaping @Sendable () async -> Bool
+) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+        if await condition() { return true }
+        await Task.yield()
+    }
+    return await condition()
+}
+
+private func firstSnapshot(
+    in stream: AsyncStream<TelemetrySnapshot>,
+    timeout: Duration = .milliseconds(100),
+    matching predicate: @escaping @Sendable (TelemetrySnapshot) -> Bool
+) async -> TelemetrySnapshot? {
+    await withTaskGroup(of: TelemetrySnapshot?.self) { group in
+        group.addTask {
+            for await snapshot in stream where predicate(snapshot) {
+                return snapshot
+            }
+            return nil
+        }
+        group.addTask {
+            try? await Task.sleep(for: timeout)
+            return nil
+        }
+        let result = await group.next() ?? nil
+        group.cancelAll()
+        return result
     }
 }
