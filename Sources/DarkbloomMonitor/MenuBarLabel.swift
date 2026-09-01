@@ -47,8 +47,8 @@ struct DarkbloomLogo: View {
 }
 
 struct MenuBarMetric: View {
-    static let width: CGFloat = 78
-    static let height: CGFloat = 14
+    static let width: CGFloat = 96
+    static let height: CGFloat = 18
 
     let text: String?
 
@@ -57,7 +57,7 @@ struct MenuBarMetric: View {
             Color.clear
             if let text {
                 Text(text)
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .lineLimit(1)
             }
         }
@@ -70,12 +70,12 @@ struct MenuBarLabel: View {
     let uptime: ObservedUptimeValue
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 8) {
             DarkbloomLogo(
                 image: DarkbloomLogoAsset.menuBarImage(tint: statusNSColor),
                 tint: statusColor
             )
-            .frame(width: 12.25, height: 14)
+            .frame(width: 16, height: 18)
 
             MenuBarMetric(text: presentation.metricText)
         }

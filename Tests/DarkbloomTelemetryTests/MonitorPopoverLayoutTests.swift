@@ -49,8 +49,27 @@ struct MonitorPopoverLayoutTests {
 
         #expect(earnings.sizeThatFits(in: proposed) == expected)
         #expect(unavailable.sizeThatFits(in: proposed) == expected)
-        #expect(expected.width == MenuBarMetric.width)
-        #expect(expected.height <= 15)
+        #expect(expected.width == 96)
+        #expect(expected.height <= 19)
+    }
+
+    @Test("menu bar label scales icon spacing and metric as one readable unit")
+    func readableLabelScale() {
+        let presentation = MenuBarPresentation.make(
+            snapshot: .unavailable(now: Date(timeIntervalSince1970: 1_750_000_000)),
+            thermal: .nominal,
+            earnings: .available(microUSD: 2_640_000),
+            mode: .automatic
+        )
+        let hostingController = NSHostingController(rootView: MenuBarLabel(
+            presentation: presentation,
+            uptime: .available(percent: 100, observedSeconds: 600)
+        ))
+
+        let size = hostingController.sizeThatFits(in: NSSize(width: 500, height: 100))
+
+        #expect(size.width == 120)
+        #expect(size.height == 18)
     }
 
     @Test("native status item owns one fixed width")
@@ -62,7 +81,7 @@ struct MonitorPopoverLayoutTests {
         )
         let controller = StatusItemController(store: store)
 
-        #expect(controller.statusItemLength == StatusItemController.itemWidth)
+        #expect(controller.statusItemLength == 132)
     }
 
     @Test("all detailed sections start collapsed")

@@ -4,7 +4,7 @@ import SwiftUI
 
 @MainActor
 final class StatusItemController: NSObject {
-    static let itemWidth: CGFloat = 112
+    static let itemWidth: CGFloat = 132
 
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
