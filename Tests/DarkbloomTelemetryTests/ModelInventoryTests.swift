@@ -93,8 +93,71 @@ struct ModelInventoryTests {
         #expect(inventory.available.map(\.displayName) == ["Gemma 4 26B"])
     }
 
+    @Test("exact configured IDs win over family aliases in either input order")
+    func exactSelectorPrecedence() throws {
+        let catalog = try ModelCatalogDecoder.decode(fixture("model-catalog.json"))
+        for enabled in [["gpt-oss-20b", "gpt-oss"], ["gpt-oss", "gpt-oss-20b"]] {
+            let inventory = ModelInventoryBuilder.build(catalog: catalog, local: [], selection: ProviderModelSelection(enabled: enabled, preloaded: []), daemon: nil, loadedModels: [])
+            #expect(inventory.available.first { $0.catalogID == "gpt-oss-20b" }?.configuredSelector == "gpt-oss-20b")
+        }
+    }
+
+    @Test("idle current model is loaded-idle from daemon telemetry")
+    func idleCurrentModelIsResident() throws {
+        let catalog = try ModelCatalogDecoder.decode(fixture("model-catalog.json"))
+        let daemon = daemon(currentModel: "gpt-oss-20b", warmModels: [], slots: [], inferenceActive: false)
+        let inventory = ModelInventoryBuilder.build(catalog: catalog, local: [], selection: ProviderModelSelection(enabled: [], preloaded: []), daemon: daemon, loadedModels: [])
+        #expect(inventory.available.first { $0.catalogID == "gpt-oss-20b" }?.liveState == .loadedIdle)
+    }
+
+    @Test("warm and slot-only daemon models are loaded-idle")
+    func warmAndSlotModelsAreResident() throws {
+        let catalog = try ModelCatalogDecoder.decode(fixture("model-catalog.json"))
+        let daemon = daemon(currentModel: "", warmModels: ["gpt-oss-20b"], slots: [ModelSlot(model: "gemma-4-26b-qat-4bit", mtpEnabled: false, mtpActive: false, mtpReason: nil, kvBackend: "", requestedKVBackend: "")], inferenceActive: false)
+        let inventory = ModelInventoryBuilder.build(catalog: catalog, local: [], selection: ProviderModelSelection(enabled: [], preloaded: []), daemon: daemon, loadedModels: [])
+        #expect(inventory.available.allSatisfy { $0.liveState == .loadedIdle })
+    }
+
+    @Test("equal display names sort by catalog ID")
+    func equalNameTieBreak() {
+        let catalog = [
+            CatalogModel(id: "z-model", displayName: "Same", family: "z", modelType: "llm", capabilities: [], sizeGB: 1, minimumRAMGB: 1, active: true),
+            CatalogModel(id: "a-model", displayName: "Same", family: "a", modelType: "llm", capabilities: [], sizeGB: 1, minimumRAMGB: 1, active: true)
+        ]
+        let inventory = ModelInventoryBuilder.build(catalog: catalog, local: [], selection: ProviderModelSelection(enabled: [], preloaded: []), daemon: nil, loadedModels: [])
+        #expect(inventory.available.map(\.catalogID) == ["a-model", "z-model"])
+    }
+
+    @Test("unmatched selectors are reported as issues")
+    func unmatchedSelectorIssue() {
+        let inventory = ModelInventoryBuilder.build(catalog: [], local: [], selection: ProviderModelSelection(enabled: ["missing"], preloaded: []), daemon: nil, loadedModels: [])
+        #expect(inventory.issues == ["Configured selector 'missing' does not match a catalog model"])
+    }
+
+    @Test("ambiguous selector attaches the issue to every matching row")
+    func ambiguousSelectorRows() {
+        let catalog = [
+            CatalogModel(id: "one", displayName: "One", family: "shared", modelType: "llm", capabilities: [], sizeGB: 1, minimumRAMGB: 1, active: true),
+            CatalogModel(id: "two", displayName: "Two", family: "shared", modelType: "llm", capabilities: [], sizeGB: 1, minimumRAMGB: 1, active: true)
+        ]
+        let inventory = ModelInventoryBuilder.build(catalog: catalog, local: [], selection: ProviderModelSelection(enabled: ["shared"], preloaded: []), daemon: nil, loadedModels: [])
+        let rows = inventory.available.filter { $0.issue != nil }
+        #expect(rows.count == 2)
+        #expect(rows.allSatisfy { $0.issue == "Configured selector 'shared' matches multiple catalog models" })
+        #expect(rows.allSatisfy { $0.configuredSelector == nil && !$0.isEnabled })
+    }
+
     private func fixture(_ name: String) throws -> Data {
         let url = try #require(Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Fixtures"))
         return try Data(contentsOf: url)
+    }
+
+    private func daemon(currentModel: String, warmModels: [String], slots: [ModelSlot], inferenceActive: Bool) -> DaemonState {
+        DaemonState(schema: 1, version: "0.8.15", currentModel: currentModel, warmModels: warmModels,
+                    stats: ProviderStats(tokensGenerated: 0, requestsServed: 0, usageGaps: 0),
+                    trust: TrustState(level: "local", status: "online", reason: "", receivedAt: 0),
+                    capacity: MemoryCapacity(totalMemoryGB: 32, gpuMemoryActiveGB: 0, gpuMemoryCacheGB: 0), slots: slots,
+                    inferenceActive: inferenceActive, startedAt: 0, writtenAt: 0, pid: 1,
+                    processIdentity: ProcessIdentity(pid: 1, startTimeMicros: 1))
     }
 }

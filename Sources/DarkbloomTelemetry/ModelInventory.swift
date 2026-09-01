@@ -111,13 +111,20 @@ public enum ModelInventoryBuilder {
         var resolvedEnabled: [String: String] = [:]
         var resolvedPreloaded: [String: String] = [:]
 
-        func resolve(_ selector: String, into result: inout [String: String]) {
-            if let exact = catalog.first(where: { $0.id == selector }) {
-                result[exact.id] = selector
-            } else {
+        func resolve(_ selectors: [String], into result: inout [String: String]) {
+            // Resolve all exact IDs first so aliases cannot override them regardless
+            // of the order in which selectors appeared in the TOML array.
+            for selector in selectors {
+                if let exact = catalog.first(where: { $0.id == selector }) {
+                    result[exact.id] = selector
+                }
+            }
+            for selector in selectors where catalog.allSatisfy({ $0.id != selector }) {
                 let matches = catalog.filter { $0.family == selector }
                 if matches.count == 1 {
-                    result[matches[0].id] = selector
+                    if result[matches[0].id] == nil {
+                        result[matches[0].id] = selector
+                    }
                 } else if matches.count > 1 {
                     let issue = "Configured selector '\(selector)' matches multiple catalog models"
                     issues.append(issue)
@@ -127,10 +134,15 @@ public enum ModelInventoryBuilder {
                 }
             }
         }
-        selection.enabled.forEach { resolve($0, into: &resolvedEnabled) }
-        selection.preloaded.forEach { resolve($0, into: &resolvedPreloaded) }
+        resolve(selection.enabled, into: &resolvedEnabled)
+        resolve(selection.preloaded, into: &resolvedPreloaded)
 
-        let loaded = Set(loadedModels)
+        var loaded = Set(loadedModels)
+        if let daemon {
+            loaded.formUnion(daemon.warmModels)
+            loaded.formUnion(daemon.slots.map(\.model))
+            if !daemon.currentModel.isEmpty { loaded.insert(daemon.currentModel) }
+        }
         let activeID = daemon.flatMap { $0.inferenceActive ? $0.currentModel : nil }
         let items = catalog.map { model in
             let downloaded = localIDs.contains(model.id)
@@ -144,7 +156,10 @@ public enum ModelInventoryBuilder {
                 isPreloaded: resolvedPreloaded[model.id] != nil, liveState: live, issue: itemIssues[model.id]
             )
         }
-        let sorted = items.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        let sorted = items.sorted {
+            let comparison = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
+            return comparison == .orderedAscending || (comparison == .orderedSame && $0.catalogID < $1.catalogID)
+        }
         return ModelInventory(myCatalog: sorted.filter(\.isDownloaded), available: sorted.filter { !$0.isDownloaded }, issues: issues)
     }
 }
