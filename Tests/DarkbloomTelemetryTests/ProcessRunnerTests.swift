@@ -5,6 +5,19 @@ import Testing
 
 @Suite("Capped process runner")
 struct ProcessRunnerTests {
+    @Test("publishes chunks without bypassing the retained output cap")
+    func publishesOutputChunks() async throws {
+        let recorder = OutputChunkRecorder()
+        let result = try await CappedProcessRunner().run(
+            .testOnly(executable: URL(fileURLWithPath: "/usr/bin/printf"), arguments: ["progress"]),
+            timeout: .seconds(3),
+            outputLimit: 64,
+            onOutput: recorder.record
+        )
+        #expect(result.standardOutput == Data("progress".utf8))
+        #expect(recorder.data(for: .standardOutput) == Data("progress".utf8))
+    }
+
     @Test("captures a finite process result")
     func capturesOutput() async throws {
         let result = try await CappedProcessRunner().run(
@@ -263,7 +276,7 @@ struct ProcessRunnerTests {
         return url
     }
 
-    private func termResistantCommand(pidFile: URL) -> ReadOnlyCommand {
+    private func termResistantCommand(pidFile: URL) -> ProcessCommand {
         .testOnly(
             executable: URL(fileURLWithPath: "/bin/sh"),
             arguments: [
@@ -314,6 +327,22 @@ struct ProcessRunnerTests {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return !processExists(pid)
+    }
+}
+
+private final class OutputChunkRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var chunks: [ProcessOutputChunk] = []
+
+    func record(_ chunk: ProcessOutputChunk) {
+        lock.withLock { chunks.append(chunk) }
+    }
+
+    func data(for destination: ProcessOutputDestination) -> Data {
+        lock.withLock {
+            chunks.lazy.filter { $0.destination == destination }
+                .reduce(into: Data()) { $0.append($1.data) }
+        }
     }
 }
 

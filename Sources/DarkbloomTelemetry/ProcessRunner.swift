@@ -19,7 +19,7 @@ public enum ProcessRunnerError: Error, Equatable, Sendable {
     case nonzeroExit(code: Int32, message: String)
 }
 
-public struct CappedProcessRunner: Sendable {
+public struct CappedProcessRunner: ProcessExecuting, Sendable {
     private let testOnlyCleanupObserver: (@Sendable (ProcessCleanupState) -> Void)?
 
     public init() {
@@ -31,9 +31,10 @@ public struct CappedProcessRunner: Sendable {
     }
 
     public func run(
-        _ command: ReadOnlyCommand,
+        _ command: ProcessCommand,
         timeout: Duration,
-        outputLimit: Int
+        outputLimit: Int,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)? = nil
     ) async throws -> CommandResult {
         guard outputLimit > 0 else {
             throw ProcessRunnerError.outputLimitExceeded(limit: outputLimit)
@@ -42,7 +43,7 @@ public struct CappedProcessRunner: Sendable {
         let process = Process()
         let standardOutput = Pipe()
         let standardError = Pipe()
-        let session = ProcessSession(process: process, outputLimit: outputLimit)
+        let session = ProcessSession(process: process, outputLimit: outputLimit, onOutput: onOutput)
 
         process.executableURL = command.executable
         process.arguments = command.arguments
@@ -185,6 +186,7 @@ private final class ProcessSession: @unchecked Sendable {
 
     private weak var process: Process?
     private let outputLimit: Int
+    private let onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
     private let lock = NSLock()
     private let readerGroup = DispatchGroup()
     private var standardOutput = Data()
@@ -200,9 +202,10 @@ private final class ProcessSession: @unchecked Sendable {
     private var standardErrorReaderFinished = false
     private var readersClosed = false
 
-    init(process: Process, outputLimit: Int) {
+    init(process: Process, outputLimit: Int, onOutput: (@Sendable (ProcessOutputChunk) -> Void)?) {
         self.process = process
         self.outputLimit = outputLimit
+        self.onOutput = onOutput
     }
 
     var failure: ProcessRunnerError? {
@@ -226,6 +229,8 @@ private final class ProcessSession: @unchecked Sendable {
                 self.readerDidEnd(destination)
                 return
             }
+            let outputDestination: ProcessOutputDestination = destination == .standardOutput ? .standardOutput : .standardError
+            self.onOutput?(ProcessOutputChunk(destination: outputDestination, data: data))
             self.append(data, to: destination)
         }
     }
@@ -425,7 +430,7 @@ private final class ProcessSession: @unchecked Sendable {
 }
 
 public struct UnifiedLogStreamer: Sendable {
-    private let command: ReadOnlyCommand
+    private let command: ProcessCommand
     private let testOnlyReadChunkLimit: Int?
     private let testOnlyCleanupObserver: (@Sendable (UnifiedLogStreamCleanupState) -> Void)?
 
@@ -436,7 +441,7 @@ public struct UnifiedLogStreamer: Sendable {
     }
 
     init(
-        testOnlyCommand: ReadOnlyCommand,
+        testOnlyCommand: ProcessCommand,
         testOnlyReadChunkLimit: Int? = nil,
         testOnlyCleanupObserver: (@Sendable (UnifiedLogStreamCleanupState) -> Void)? = nil
     ) {
@@ -501,7 +506,7 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
     private var cleanedUp = false
 
     init(
-        command: ReadOnlyCommand,
+        command: ProcessCommand,
         testOnlyReadChunkLimit: Int?,
         testOnlyCleanupObserver: (@Sendable (UnifiedLogStreamCleanupState) -> Void)?
     ) {

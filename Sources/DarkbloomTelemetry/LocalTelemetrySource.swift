@@ -32,7 +32,7 @@ public struct LocalTelemetrySource: TelemetrySource, Sendable {
         }
 
         let result = try await runner.run(
-            .darkbloomStatus(executable: executable),
+            DarkbloomCommand.status(executable: executable),
             timeout: DarkbloomSourcePolicy.processTimeout,
             outputLimit: DarkbloomSourcePolicy.processOutputByteLimit
         )
