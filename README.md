@@ -110,8 +110,9 @@ command.
 
 ### Darkbloom CLI unavailable
 
-Open Advanced to see every executable candidate checked. Discovery tries
-`~/.darkbloom/bin/darkbloom`, the bundled Darkbloom app executable, then `PATH`.
+Open Advanced to see the executable candidate location categories. Discovery
+tries `~/.darkbloom/bin/darkbloom`, the bundled Darkbloom app executable, then
+the concrete entries in `PATH`.
 Install or restore the local CLI at one of those locations and use `Refresh Now`.
 The monitor does not download or repair Darkbloom.
 
