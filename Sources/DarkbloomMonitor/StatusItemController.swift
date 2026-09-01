@@ -8,11 +8,24 @@ final class StatusItemController: NSObject {
 
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
+    private let settingsWindowController: NSWindowController
 
     var statusItemLength: CGFloat { statusItem.length }
+    var settingsWindowTitle: String? { settingsWindowController.window?.title }
+    var settingsWindowIsReleasedWhenClosed: Bool? {
+        settingsWindowController.window?.isReleasedWhenClosed
+    }
 
     init(store: MonitorStore) {
         statusItem = NSStatusBar.system.statusItem(withLength: Self.itemWidth)
+        let settingsViewController = NSHostingController(rootView: MonitorSettingsView())
+        let settingsWindow = NSWindow(contentViewController: settingsViewController)
+        settingsWindow.title = "Darkbloom Monitor Settings"
+        settingsWindow.styleMask = [.titled, .closable, .miniaturizable]
+        settingsWindow.isReleasedWhenClosed = false
+        settingsWindow.setContentSize(NSSize(width: 420, height: 180))
+        settingsWindow.center()
+        settingsWindowController = NSWindowController(window: settingsWindow)
         super.init()
 
         guard let button = statusItem.button else { return }
@@ -31,11 +44,18 @@ final class StatusItemController: NSObject {
         ])
 
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 360, height: 520)
-        popover.contentViewController = NSHostingController(rootView: PopoverRootView(store: store))
+        popover.contentSize = NSSize(width: 400, height: 560)
+        popover.contentViewController = NSHostingController(
+            rootView: PopoverRootView(
+                store: store,
+                openSettings: { [weak self] in self?.showSettings() }
+            )
+        )
     }
 
     func invalidate() {
+        popover.performClose(nil)
+        settingsWindowController.close()
         NSStatusBar.system.removeStatusItem(statusItem)
     }
 
@@ -45,6 +65,14 @@ final class StatusItemController: NSObject {
         } else {
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         }
+    }
+
+    private func showSettings() {
+        popover.performClose(nil)
+        settingsWindowController.showWindow(nil)
+        NSApplication.shared.activate()
+        settingsWindowController.window?.orderFrontRegardless()
+        settingsWindowController.window?.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -71,17 +99,9 @@ private struct StatusItemRootView: View {
 
 private struct PopoverRootView: View {
     @ObservedObject var store: MonitorStore
-    @AppStorage("menuBarDisplayMode") private var displayModeRaw = MenuBarDisplayMode.automatic.rawValue
+    let openSettings: () -> Void
 
     var body: some View {
-        MonitorPopover(store: store, displayMode: displayModeBinding)
-    }
-
-    private var displayMode: MenuBarDisplayMode {
-        MenuBarDisplayMode(rawValue: displayModeRaw) ?? .automatic
-    }
-
-    private var displayModeBinding: Binding<MenuBarDisplayMode> {
-        Binding(get: { displayMode }, set: { displayModeRaw = $0.rawValue })
+        MonitorPopover(store: store, openSettings: openSettings)
     }
 }

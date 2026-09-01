@@ -82,16 +82,12 @@ struct MonitorPopoverLayoutTests {
         let controller = StatusItemController(store: store)
 
         #expect(controller.statusItemLength == 132)
+        #expect(controller.settingsWindowTitle == "Darkbloom Monitor Settings")
+        #expect(controller.settingsWindowIsReleasedWhenClosed == false)
     }
 
-    @Test("all detailed sections start collapsed")
-    func detailsStartCollapsed() {
-        #expect(PopoverSection.allCases.count == 7)
-        #expect(PopoverDisclosureDefaults.compact.expandedSections.isEmpty)
-    }
-
-    @Test("menu bar popover has a stable noncollapsed viewport")
-    func hasStableViewport() {
+    @Test("infographic popover has a compact stable viewport")
+    func hasCompactViewport() {
         let service = TelemetryService(source: UnusedTelemetrySource())
         let store = MonitorStore(
             service: service,
@@ -101,11 +97,11 @@ struct MonitorPopoverLayoutTests {
             rootView: MonitorPopover(store: store)
         )
         let proposedSize = hostingController.sizeThatFits(
-            in: NSSize(width: 420, height: 0)
+            in: NSSize(width: 400, height: 0)
         )
 
-        #expect(proposedSize.width == 420)
-        #expect(proposedSize.height == 680)
+        #expect(proposedSize.width == 400)
+        #expect(proposedSize.height == 560)
     }
 }
 

@@ -1,7 +1,7 @@
 # Darkbloom Monitor
 
 A native, read-only macOS menu-bar monitor for a locally running Darkbloom
-provider. It presents live provider state in a compact 420-point SwiftUI
+provider. It presents live provider state in a compact 400-by-560-point SwiftUI
 popover, reads authenticated account earnings, and never exposes provider
 controls.
 
@@ -30,11 +30,17 @@ ordinary application window.
 
 ## What the popover shows
 
-The always-visible summary shows routing health, activity, current model,
-thermal state, and token rate or rolling 24-hour earnings. Performance, models
-and slots, memory and process, trust, recent events, Advanced, and menu-bar
-settings are independent disclosure groups that start collapsed. Loaded and
-warm models remain separate.
+The popover is an infographic dashboard with four large values: current
+tokens per second, the active-session token-rate average, jobs completed today,
+and the average jobs per day across the prior seven complete calendar days.
+The average remains an em dash until local history proves that it covers the
+full period.
+
+Model capsules are green while actively processing, yellow when loaded but
+idle, and gray when available but unloaded. Two compact controls remain:
+Settings opens the monitor-owned Settings window containing the existing
+menu-bar metric picker, and a door icon stops the monitor cleanly. Detailed
+telemetry remains collected and tested without being rendered as a diagnostic wall.
 
 The complete field inventory and known gaps are documented in
 [`docs/TELEMETRY_CONTRACT.md`](docs/TELEMETRY_CONTRACT.md).
@@ -53,8 +59,8 @@ The complete field inventory and known gaps are documented in
 | Public 24-hour earnings leaderboard | Exact server-computed rolling account total when the account is ranked | Every 10 minutes |
 
 The state and loaded-model polls are independent, so a slow source does not
-delay the other. `Refresh Now` requests a non-overlapping refresh of all finite
-sources. Recent events are deduplicated, sorted newest first, and capped at 100.
+delay the other. Recent events are deduplicated, sorted newest first, and capped
+at 100 even though they are no longer displayed in the compact popover.
 
 ## Derivations and freshness
 
@@ -67,11 +73,12 @@ two samples with the same process identity and increasing `written_at`, it is:
        (new.written_at - old.written_at)
 ```
 
-Only a positive token delta produces `N.N tok/s · derived`. Before a second
-sample, after a process change, when time does not advance, when the counter
-moves backward, or when the polling window has no token progress, the row says
-`Unavailable` and gives the specific reason. Uptime, state age, and trust age
-are also labeled `derived`.
+Only a positive token delta produces a current rate. Unique positive samples
+also feed the active-session average; repeated publications of the same state
+sample do not skew it. Before a second sample, after a process change, when time
+does not advance, when the counter moves backward, or when the polling window
+has no token progress, the dashboard uses a compact em dash or `Idle` rather
+than diagnostic prose.
 
 - Structured state is fresh through 10 seconds, based on its embedded
   `written_at` value.
@@ -82,11 +89,11 @@ are also labeled `derived`.
 - A failed refresh retains the last good value as stale and shows the failure
   reason. A source with no last good value is unavailable.
 
-The Darkbloom logo is green for routable/nominal, yellow for routable/fair,
+The menu-bar logo remains green for routable/nominal, yellow for routable/fair,
 orange for routable/serious, and red whenever routing is blocked or cannot be
-confirmed. Critical thermal pressure is red, but red can also mean offline,
-stale, or unavailable. Text and accessibility labels expose the exact reason
-without relying on color.
+confirmed. Inside the popover, the logo follows the leading model state and all
+model capsules expose their status in accessibility labels and help text, so
+color is not the only signal.
 
 ## Privacy and safety boundary
 
@@ -130,26 +137,24 @@ command.
 
 ### Darkbloom CLI unavailable
 
-Open Advanced to see the executable candidate location categories. Discovery
-tries `~/.darkbloom/bin/darkbloom`, the bundled Darkbloom app executable, then
-the concrete entries in `PATH`.
-Install or restore the local CLI at one of those locations and use `Refresh Now`.
-The monitor does not download or repair Darkbloom.
+Discovery tries `~/.darkbloom/bin/darkbloom`, the bundled Darkbloom app
+executable, then the concrete entries in `PATH`. Install or restore the local
+CLI at one of those locations and relaunch the monitor. The monitor does not
+download or repair Darkbloom.
 
 ### State or loaded models unavailable
 
 Confirm the provider is running and that `~/.darkbloom/daemon-state.json` and
 `~/.darkbloom/loaded-models.json` exist and are readable by your user. A schema
-other than 1 is rejected explicitly rather than partially decoded. Advanced
-shows the acquisition reason and timestamp. The monitor never starts or restarts
-the provider.
+other than 1 is rejected explicitly rather than partially decoded. The compact
+dashboard shows an em dash for unavailable values. The monitor never starts or
+restarts the provider.
 
 ### Logs unavailable or stale
 
 The legacy file may be absent before Darkbloom writes it. Unified logging may
-redact messages or its local stream may end. Advanced reports legacy-read and
-unified-stream health separately; historical qualifying events remain bounded
-and visible when available. Use `Refresh Now` to retry finite sources or relaunch
+redact messages or its local stream may end. Historical qualifying events remain
+bounded internally but are intentionally omitted from the dashboard. Relaunch
 only this monitor to create a new unified-log stream.
 
 ### Token rate unavailable
@@ -165,3 +170,10 @@ recent account history at 1,000 records; the monitor never labels that partial
 history as a complete 24-hour total. It uses Darkbloom's public 24-hour aggregate
 when the authenticated account can be matched to a ranked pseudonym, while the
 local hourly database builds a durable chart and payout history over time.
+
+### Seven-day job average unavailable
+
+The dashboard shows an em dash until account history reaches the start of all
+seven prior complete calendar days. Today’s job count remains available while
+that local coverage accumulates; the monitor never presents missing history as
+a zero average.

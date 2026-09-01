@@ -44,13 +44,39 @@ struct MonitorStoreEarningsTests {
             reason: "Network unavailable"
         ))
     }
+
+    @Test("an authenticated refresh publishes completed-job dashboard metrics")
+    func refreshesJobSummary() async {
+        let summary = JobCompletionSummary(
+            completedToday: 18,
+            averagePerDay: 12.5,
+            averagingDays: 7
+        )
+        let store = MonitorStore(
+            service: TelemetryService(source: EmptySource()),
+            initial: .unavailable(now: Date(timeIntervalSince1970: 1_750_000_000)),
+            earningsClient: StubEarningsClient(
+                result: .success(.available(microUSD: 321_000)),
+                jobSummaryResult: .success(summary)
+            )
+        )
+
+        await store.refreshEarnings()
+
+        #expect(store.jobSummary.value == summary)
+    }
 }
 
 private struct StubEarningsClient: AccountEarningsFetching {
     let result: Result<EarningsPresentationValue, Error>
+    var jobSummaryResult: Result<JobCompletionSummary?, Error> = .success(nil)
 
     func fetch(now: Date) async throws -> EarningsPresentationValue {
         try result.get()
+    }
+
+    func jobCompletionSummary(now: Date, calendar: Calendar) async throws -> JobCompletionSummary? {
+        try jobSummaryResult.get()
     }
 }
 

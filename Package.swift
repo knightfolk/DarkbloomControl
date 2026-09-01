@@ -16,6 +16,7 @@ let package = Package(
         .executableTarget(
             name: "DarkbloomMonitor",
             dependencies: ["DarkbloomTelemetry"],
+            exclude: ["Resources/DarkbloomLogo.svg"],
             resources: [
                 .copy("Resources/darkbloom-mark.svg"),
                 .copy("Resources/darkbloom-menubar.svg"),

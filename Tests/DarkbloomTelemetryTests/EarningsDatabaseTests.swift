@@ -158,6 +158,87 @@ struct EarningsDatabaseTests {
         #expect(try await database.latestAccountSample()?.capturedAt == firstCapture)
     }
 
+    @Test("job summary separates today from the prior seven complete calendar days")
+    func summarizesCompletedJobs() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 9,
+            day: 1,
+            hour: 12
+        )))
+        let today = calendar.startOfDay(for: now)
+        let priorDays = try (1...7).map { offset in
+            try #require(calendar.date(byAdding: .day, value: -offset, to: today))
+                .addingTimeInterval(3_600)
+        }
+        let tooOld = try #require(calendar.date(byAdding: .day, value: -8, to: today))
+            .addingTimeInterval(3_600)
+        let response = AccountEarningsResponse(
+            accountID: "account-never-persisted",
+            earnings: [
+                earning(id: 1, model: "gemma", microUSD: 100, at: today.addingTimeInterval(3_600)),
+                earning(id: 2, model: "gemma", microUSD: 100, at: today.addingTimeInterval(7_200)),
+                earning(id: 3, model: "gpt-oss", microUSD: 100, at: today.addingTimeInterval(10_800)),
+                earning(id: 4, model: "base_reward", microUSD: 500, at: today.addingTimeInterval(14_400)),
+                earning(id: 5, model: "gemma", microUSD: 100, at: priorDays[0]),
+                earning(id: 6, model: "gemma", microUSD: 100, at: priorDays[1]),
+                earning(id: 7, model: "gemma", microUSD: 100, at: priorDays[2]),
+                earning(id: 8, model: "gemma", microUSD: 100, at: priorDays[3]),
+                earning(id: 9, model: "gemma", microUSD: 100, at: priorDays[4]),
+                earning(id: 10, model: "gemma", microUSD: 100, at: priorDays[5]),
+                earning(id: 11, model: "gemma", microUSD: 100, at: priorDays[6]),
+                earning(id: 12, model: "gemma", microUSD: 100, at: tooOld),
+            ],
+            count: 12,
+            historyLimit: 1_000,
+            recentCount: 12
+        )
+        let database = try EarningsDatabase(url: temporaryDatabaseURL())
+        try await database.ingest(response, capturedAt: now)
+
+        #expect(try await database.jobCompletionSummary(
+            now: now,
+            calendar: calendar,
+            averageDayCount: 7
+        ) == JobCompletionSummary(
+            completedToday: 3,
+            averagePerDay: 1,
+            averagingDays: 7
+        ))
+    }
+
+    @Test("job average stays unavailable when recent history does not cover seven days")
+    func doesNotFabricateIncompleteJobAverage() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 9,
+            day: 1,
+            hour: 12
+        )))
+        let database = try EarningsDatabase(url: temporaryDatabaseURL())
+        let response = AccountEarningsResponse(
+            accountID: "account-never-persisted",
+            earnings: [earning(id: 1, model: "gemma", microUSD: 100, at: now)],
+            count: 1_001,
+            historyLimit: 1_000,
+            recentCount: 1
+        )
+        try await database.ingest(response, capturedAt: now)
+
+        let summary = try await database.jobCompletionSummary(
+            now: now,
+            calendar: calendar,
+            averageDayCount: 7
+        )
+
+        #expect(summary.completedToday == 1)
+        #expect(summary.averagePerDay == nil)
+    }
+
     private func temporaryDatabaseURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("darkbloom-earnings-tests-\(UUID().uuidString).sqlite3")

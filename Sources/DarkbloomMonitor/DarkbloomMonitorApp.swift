@@ -7,7 +7,9 @@ struct DarkbloomMonitorApp: App {
     @NSApplicationDelegateAdaptor(DarkbloomMonitorAppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        Settings { EmptyView() }
+        Settings {
+            MonitorSettingsView()
+        }
     }
 }
 

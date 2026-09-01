@@ -10,14 +10,17 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var thermalState: SystemThermalState
     @Published private(set) var earnings: EarningsPresentationValue
     @Published private(set) var observedUptime: ObservedUptimeValue
+    @Published private(set) var jobSummary: SourceAvailability<JobCompletionSummary>
+    @Published private(set) var averageTokenRate: TokenRate
 
     private let service: TelemetryService
     private let earningsClient: any AccountEarningsFetching
     private let uptimeRecorder: (any ObservedUptimeRecording)?
+    private var tokenRateAccumulator = ActiveTokenRateAccumulator()
     private var observationTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var earningsPollingTask: Task<Void, Never>?
-    private var earningsRefreshTask: Task<EarningsPresentationValue, Never>?
+    private var earningsRefreshTask: Task<AccountRefreshState, Never>?
     private var shutdownTask: Task<Void, Never>?
     private var thermalObserver: NSObjectProtocol?
     private var hasStarted = false
@@ -39,6 +42,8 @@ final class MonitorStore: ObservableObject {
         observedUptime = uptimeRecorder == nil
             ? .unavailable(reason: "Local observed-uptime storage unavailable")
             : .warming(observedSeconds: 0)
+        jobSummary = .unavailable(reason: "Waiting for completed-job history")
+        averageTokenRate = .unavailable(reason: "Waiting for active inference samples")
     }
 
     func start() {
@@ -64,7 +69,7 @@ final class MonitorStore: ObservableObject {
 
             for await snapshot in snapshots {
                 guard !Task.isCancelled else { return }
-                self.snapshot = snapshot
+                self.accept(snapshot)
                 await self.recordObservedUptime(from: snapshot)
             }
         }
@@ -81,38 +86,73 @@ final class MonitorStore: ObservableObject {
             let snapshot = await refreshed
             await earningsRefresh
             guard !Task.isCancelled, shutdownTask == nil else { return }
-            self.snapshot = snapshot
+            self.accept(snapshot)
         }
     }
 
     func refreshEarnings() async {
         if let earningsRefreshTask {
-            earnings = await earningsRefreshTask.value
+            let refresh = await earningsRefreshTask.value
+            earnings = refresh.earnings
+            jobSummary = refresh.jobSummary
             return
         }
 
         let client = earningsClient
-        let previous = earnings
-        let task = Task<EarningsPresentationValue, Never> {
+        let previousEarnings = earnings
+        let previousJobSummary = jobSummary
+        let refreshedAt = Date()
+        let calendar = Calendar.current
+        let task = Task<AccountRefreshState, Never> {
+            let refreshedEarnings: EarningsPresentationValue
             do {
-                let value = try await client.fetch(now: Date())
+                let value = try await client.fetch(now: refreshedAt)
                 switch value {
                 case .available:
-                    return value
+                    refreshedEarnings = value
                 case .stale(let microUSD, let reason):
-                    return .stale(microUSD: microUSD, reason: reason)
+                    refreshedEarnings = .stale(microUSD: microUSD, reason: reason)
                 case .unavailable(let reason):
-                    return Self.staleOrUnavailable(previous: previous, reason: reason)
+                    refreshedEarnings = Self.staleOrUnavailable(
+                        previous: previousEarnings,
+                        reason: reason
+                    )
                 }
             } catch {
-                return Self.staleOrUnavailable(
-                    previous: previous,
+                refreshedEarnings = Self.staleOrUnavailable(
+                    previous: previousEarnings,
                     reason: error.localizedDescription
                 )
             }
+
+            let refreshedJobSummary: SourceAvailability<JobCompletionSummary>
+            do {
+                if let summary = try await client.jobCompletionSummary(
+                    now: refreshedAt,
+                    calendar: calendar
+                ) {
+                    refreshedJobSummary = .available(value: summary, capturedAt: refreshedAt)
+                } else {
+                    refreshedJobSummary = Self.staleOrUnavailable(
+                        previous: previousJobSummary,
+                        reason: "Local completed-job history is unavailable"
+                    )
+                }
+            } catch {
+                refreshedJobSummary = Self.staleOrUnavailable(
+                    previous: previousJobSummary,
+                    reason: error.localizedDescription
+                )
+            }
+            return AccountRefreshState(
+                earnings: refreshedEarnings,
+                jobSummary: refreshedJobSummary
+            )
         }
         earningsRefreshTask = task
-        earnings = await task.value
+        let refresh = await task.value
+        earnings = refresh.earnings
+        jobSummary = refresh.jobSummary
         earningsRefreshTask = nil
     }
 
@@ -178,6 +218,18 @@ final class MonitorStore: ObservableObject {
         }
     }
 
+    private func accept(_ snapshot: TelemetrySnapshot) {
+        if let state = snapshot.state.value {
+            tokenRateAccumulator.record(
+                snapshot.tokenRate,
+                processIdentity: state.processIdentity,
+                writtenAt: state.writtenAt
+            )
+            averageTokenRate = tokenRateAccumulator.value
+        }
+        self.snapshot = snapshot
+    }
+
     private func recordObservedUptime(from snapshot: TelemetrySnapshot) async {
         guard let uptimeRecorder else { return }
         do {
@@ -201,4 +253,21 @@ final class MonitorStore: ObservableObject {
             .unavailable(reason: reason)
         }
     }
+
+    private static func staleOrUnavailable(
+        previous: SourceAvailability<JobCompletionSummary>,
+        reason: String
+    ) -> SourceAvailability<JobCompletionSummary> {
+        switch previous {
+        case .available(let value, let capturedAt), .stale(let value, let capturedAt, _):
+            .stale(value: value, capturedAt: capturedAt, reason: reason)
+        case .unavailable:
+            .unavailable(reason: reason)
+        }
+    }
+}
+
+private struct AccountRefreshState: Sendable {
+    let earnings: EarningsPresentationValue
+    let jobSummary: SourceAvailability<JobCompletionSummary>
 }

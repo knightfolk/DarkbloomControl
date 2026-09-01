@@ -45,6 +45,13 @@ public enum AccountEarningsClientError: Error, LocalizedError, Equatable, Sendab
 
 public protocol AccountEarningsFetching: Sendable {
     func fetch(now: Date) async throws -> EarningsPresentationValue
+    func jobCompletionSummary(now: Date, calendar: Calendar) async throws -> JobCompletionSummary?
+}
+
+public extension AccountEarningsFetching {
+    func jobCompletionSummary(now: Date, calendar: Calendar) async throws -> JobCompletionSummary? {
+        nil
+    }
 }
 
 public struct AuthenticatedEarningsClient: AccountEarningsFetching, Sendable {
@@ -86,6 +93,13 @@ public struct AuthenticatedEarningsClient: AccountEarningsFetching, Sendable {
             leaderboardData,
             accountID: account.accountID
         )
+    }
+
+    public func jobCompletionSummary(
+        now: Date,
+        calendar: Calendar
+    ) async throws -> JobCompletionSummary? {
+        try await database?.jobCompletionSummary(now: now, calendar: calendar)
     }
 
     private func validate(_ response: URLResponse) throws {

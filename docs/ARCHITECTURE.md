@@ -46,9 +46,10 @@ read a file or launch a process directly.
    and uses the public 24-hour leaderboard aggregate when the 1,000-row account
    history cap cannot cover the full window.
 8. `@MainActor MonitorStore` subscribes once, observes native thermal-state
-   notifications, publishes completed snapshots to SwiftUI, coalesces manual
+   notifications, accumulates unique positive token-rate samples for the current
+   app session, publishes completed-job summaries from SQLite, coalesces account
    refresh work, and owns orderly shutdown. The views only format normalized
-   data and invoke store actions.
+   data and invoke the controller-owned Settings window or orderly Quit path.
 
 ```text
 approved files -----> LocalTelemetrySource --\
@@ -64,6 +65,7 @@ darkbloom status ---> CappedProcessRunner -----+--> TelemetryService actor
                                               SwiftUI MenuBarExtra popover
 
 authenticated earnings --> 10-minute fixed GET --> incremental hourly SQLite aggregates
+                                                   --> today + covered 7-day job metrics
                                                    --> menu presentation
 ```
 
@@ -94,6 +96,19 @@ user-only permissions; it excludes account
 IDs, provider keys, and credential material. The source policy does not offer an
 arbitrary command interface, and the application exposes no provider-control
 action.
+
+## Popover presentation boundary
+
+The 400-by-560-point popover intentionally renders only current and session-
+average throughput, today and covered seven-day job metrics, model-state
+capsules, plus a labeled Settings control and an icon-only door control for Quit.
+Model presentation is derived from the enabled-model filter plus loaded, warm,
+slot, and current-model state. Green
+means active, yellow means loaded but idle, and gray means available but
+unloaded. `StatusItemController` owns an in-process Settings window whose
+SwiftUI view owns the persisted menu-bar metric picker, avoiding delegation to
+another registered app bundle. Diagnostic telemetry remains in the library and
+tests rather than being exposed through disclosure groups.
 
 ## Failure and freshness model
 

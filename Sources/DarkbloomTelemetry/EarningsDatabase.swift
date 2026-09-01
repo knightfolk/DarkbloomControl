@@ -45,6 +45,18 @@ public struct RewardEarnings: Equatable, Sendable {
     }
 }
 
+public struct JobCompletionSummary: Equatable, Sendable {
+    public let completedToday: Int64
+    public let averagePerDay: Double?
+    public let averagingDays: Int
+
+    public init(completedToday: Int64, averagePerDay: Double?, averagingDays: Int) {
+        self.completedToday = completedToday
+        self.averagePerDay = averagePerDay
+        self.averagingDays = averagingDays
+    }
+}
+
 public struct PayoutCalculation: Equatable, Sendable {
     public let withdrawableNowMicroUSD: Int64
     public let pendingSettlementMicroUSD: Int64
@@ -137,6 +149,12 @@ public actor EarningsDatabase {
                 )
                 """)
             try Self.execute(database, sql: """
+                CREATE TABLE IF NOT EXISTS earnings_coverage (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    coverage_start REAL NOT NULL
+                )
+                """)
+            try Self.execute(database, sql: """
                 BEGIN IMMEDIATE;
                 INSERT INTO rewards_hourly (hour_start, amount_micro_usd, events)
                 SELECT hour_start, amount_micro_usd, jobs
@@ -167,6 +185,7 @@ public actor EarningsDatabase {
         do {
             try upsertHourlyEarnings(response, database: database)
             try upsertAccountSample(response, capturedAt: capturedAt, database: database)
+            try upsertHistoryCoverage(response)
             try Self.execute(database, sql: "COMMIT")
         } catch {
             try? Self.execute(database, sql: "ROLLBACK")
@@ -266,6 +285,36 @@ public actor EarningsDatabase {
         return RewardEarnings(
             microUSD: sqlite3_column_int64(statement, 0),
             events: sqlite3_column_int64(statement, 1)
+        )
+    }
+
+    public func jobCompletionSummary(
+        now: Date,
+        calendar: Calendar,
+        averageDayCount: Int = 7
+    ) throws -> JobCompletionSummary {
+        precondition(averageDayCount > 0)
+        let todayStart = calendar.startOfDay(for: now)
+        let tomorrowStart = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: todayStart
+        )!
+        let historyStart = calendar.date(
+            byAdding: .day,
+            value: -averageDayCount,
+            to: todayStart
+        )!
+        let completedToday = try jobCount(from: todayStart, to: tomorrowStart)
+        let completedInHistory = try jobCount(from: historyStart, to: todayStart)
+        let averagePerDay = try historyCovers(since: historyStart)
+            ? Double(completedInHistory) / Double(averageDayCount)
+            : nil
+
+        return JobCompletionSummary(
+            completedToday: completedToday,
+            averagePerDay: averagePerDay,
+            averagingDays: averageDayCount
         )
     }
 
@@ -428,6 +477,54 @@ public actor EarningsDatabase {
               let statement
         else { throw lastError() }
         return statement
+    }
+
+    private func jobCount(from start: Date, to end: Date) throws -> Int64 {
+        let statement = try prepare("""
+            SELECT COALESCE(SUM(jobs), 0)
+            FROM earnings_hourly
+            WHERE hour_start >= ? AND hour_start < ?
+            """)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 2, end.timeIntervalSince1970)
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw lastError() }
+        return sqlite3_column_int64(statement, 0)
+    }
+
+    private func historyCovers(since start: Date) throws -> Bool {
+        let statement = try prepare("""
+            SELECT coverage_start
+            FROM earnings_coverage
+            WHERE singleton = 1
+            """)
+        defer { sqlite3_finalize(statement) }
+        let result = sqlite3_step(statement)
+        guard result == SQLITE_ROW else {
+            if result == SQLITE_DONE { return false }
+            throw lastError()
+        }
+        return sqlite3_column_double(statement, 0) <= start.timeIntervalSince1970
+    }
+
+    private func upsertHistoryCoverage(_ response: AccountEarningsResponse) throws {
+        let coverageStart: TimeInterval?
+        if response.count <= Int64(response.earnings.count) {
+            coverageStart = 0
+        } else {
+            coverageStart = response.earnings.map(\.createdAt.timeIntervalSince1970).min()
+        }
+        guard let coverageStart else { return }
+
+        let statement = try prepare("""
+            INSERT INTO earnings_coverage (singleton, coverage_start)
+            VALUES (1, ?)
+            ON CONFLICT(singleton) DO UPDATE SET
+                coverage_start = MIN(coverage_start, excluded.coverage_start)
+            """)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, coverageStart)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError() }
     }
 
     private func requireConnection() throws -> OpaquePointer {
