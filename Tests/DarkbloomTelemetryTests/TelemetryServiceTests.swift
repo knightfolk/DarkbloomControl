@@ -304,6 +304,36 @@ struct TelemetryServiceTests {
         #expect(reason.contains("Unified log stream ended unexpectedly"))
     }
 
+    @Test("stop waits for unified iterator cleanup acknowledgment")
+    func stopWaitsForUnifiedIteratorCleanup() async {
+        let probe = BlockingUnifiedIterator()
+        let unifiedEvents = AsyncThrowingStream<LogEvent, Error>(unfolding: {
+            try await probe.next()
+        })
+        let service = TelemetryService(
+            source: ScriptedTelemetrySource.successful(),
+            unifiedEvents: unifiedEvents
+        )
+        let stopReturned = LockedFlag()
+
+        await service.start()
+        await probe.waitUntilStarted()
+        let stopTask = Task {
+            await service.stop()
+            stopReturned.set()
+        }
+        await probe.waitUntilCancelled()
+
+        let returnedBeforeCleanup = await eventually {
+            stopReturned.read()
+        }
+        #expect(!returnedBeforeCleanup)
+
+        await probe.releaseCleanup()
+        await stopTask.value
+        #expect(stopReturned.read())
+    }
+
     private func sample(
         tokens: Int64,
         writtenAt: TimeInterval,
@@ -606,6 +636,77 @@ private final class LockedNow: @unchecked Sendable {
 
     func set(_ seconds: TimeInterval) {
         lock.withLock { self.seconds = seconds }
+    }
+}
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func read() -> Bool {
+        lock.withLock { value }
+    }
+
+    func set() {
+        lock.withLock { value = true }
+    }
+}
+
+private actor BlockingUnifiedIterator {
+    private var started = false
+    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cancelled = false
+    private var cancelledWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cleanupReleased = false
+    private var nextContinuation: CheckedContinuation<LogEvent?, Error>?
+
+    func next() async throws -> LogEvent? {
+        started = true
+        let waiters = startedWaiters
+        startedWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                nextContinuation = continuation
+                finishCancellationIfReady()
+            }
+        } onCancel: {
+            Task { await self.recordCancellation() }
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            startedWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilCancelled() async {
+        guard !cancelled else { return }
+        await withCheckedContinuation { continuation in
+            cancelledWaiters.append(continuation)
+        }
+    }
+
+    func releaseCleanup() {
+        cleanupReleased = true
+        finishCancellationIfReady()
+    }
+
+    private func recordCancellation() {
+        cancelled = true
+        let waiters = cancelledWaiters
+        cancelledWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        finishCancellationIfReady()
+    }
+
+    private func finishCancellationIfReady() {
+        guard cancelled, cleanupReleased, let continuation = nextContinuation else { return }
+        nextContinuation = nil
+        continuation.resume(throwing: CancellationError())
     }
 }
 

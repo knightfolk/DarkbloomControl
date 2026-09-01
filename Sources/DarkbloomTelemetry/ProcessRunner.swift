@@ -550,6 +550,16 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
             return continuation
         }
 
+        if case .cancelled = state, terminateProcess {
+            let terminationRequested = terminateAndReapOwnedProcess()
+            cleanup(
+                terminateProcess: false,
+                terminationRequestedOverride: terminationRequested
+            )
+            continuation?.resume(throwing: CancellationError())
+            return
+        }
+
         cleanup(terminateProcess: terminateProcess)
 
         switch state {
@@ -564,7 +574,27 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
         }
     }
 
-    private func cleanup(terminateProcess: Bool) {
+    private func terminateAndReapOwnedProcess() -> Bool {
+        guard process.isRunning else { return false }
+
+        let processID = process.processIdentifier
+        process.terminate()
+
+        let graceDeadline = Date().addingTimeInterval(0.25)
+        while process.isRunning, Date() < graceDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if process.isRunning {
+            kill(processID, SIGKILL)
+        }
+        process.waitUntilExit()
+        return true
+    }
+
+    private func cleanup(
+        terminateProcess: Bool,
+        terminationRequestedOverride: Bool? = nil
+    ) {
         let shouldCleanup = lock.withLock { () -> Bool in
             guard !cleanedUp else { return false }
             cleanedUp = true
@@ -573,8 +603,10 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
         guard shouldCleanup else { return }
 
         let processID = process.processIdentifier
-        let terminationRequested = terminateProcess && process.isRunning
-        if terminationRequested {
+        let shouldTerminateNow = terminateProcess && process.isRunning
+        let terminationRequested = terminationRequestedOverride
+            ?? shouldTerminateNow
+        if shouldTerminateNow {
             process.terminate()
         }
         process.terminationHandler = nil

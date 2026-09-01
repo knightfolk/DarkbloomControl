@@ -196,10 +196,10 @@ struct UnifiedLogTests {
         await Task.yield()
         nextEvent.cancel()
         do {
-            _ = try await nextEvent.value
-            Issue.record("Expected stream iteration cancellation")
+            let event = try await nextEvent.value
+            #expect(event == nil)
         } catch is CancellationError {
-            // Expected: cancelling the consumer owns cancellation of this child.
+            // AsyncThrowingStream may propagate cancellation after iteration begins.
         } catch {
             Issue.record("Expected CancellationError, got \(error)")
         }
@@ -215,6 +215,53 @@ struct UnifiedLogTests {
         #expect(state.standardErrorWriteHandleClosed)
         let processExited = await waitForProcessExit(state.processID)
         #expect(processExited)
+    }
+
+    @Test("consumer cancellation returns only after an owned resistant child exits")
+    func cancellationAwaitsOwnedChildExit() async throws {
+        let line = String(decoding: unifiedLine(message: "Connected before cancellation"), as: UTF8.self)
+            .trimmingCharacters(in: .newlines)
+        let recorder = UnifiedLogCleanupRecorder()
+        let streamer = UnifiedLogStreamer(
+            testOnlyCommand: .testOnly(
+                executable: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "trap '' TERM; printf '%s\\n' \"$1\"; while :; do :; done",
+                    "sh",
+                    line,
+                ]
+            ),
+            testOnlyCleanupObserver: recorder.record
+        )
+        let stream = streamer.events()
+        let (ready, readyContinuation) = AsyncStream<Void>.makeStream()
+        let nextEvent = Task {
+            var iterator = stream.makeAsyncIterator()
+            _ = try await iterator.next()
+            readyContinuation.yield()
+            return try await iterator.next()
+        }
+        var readyIterator = ready.makeAsyncIterator()
+        _ = await readyIterator.next()
+
+        nextEvent.cancel()
+        do {
+            _ = try await nextEvent.value
+            Issue.record("Expected stream iteration cancellation")
+        } catch is CancellationError {
+            // Expected after the owned child is reaped.
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+
+        let state = try #require(await recorder.wait())
+        defer {
+            if processExists(state.processID) {
+                kill(state.processID, SIGKILL)
+            }
+        }
+        #expect(!processExists(state.processID))
     }
 
     private func fixtureLine(_ name: String) throws -> Data {

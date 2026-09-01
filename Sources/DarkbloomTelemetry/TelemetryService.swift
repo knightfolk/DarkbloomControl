@@ -62,6 +62,7 @@ public actor TelemetryService {
     private var statusPollingTask: Task<Void, Never>?
     private var freshnessTask: Task<Void, Never>?
     private var unifiedEventsTask: Task<Void, Never>?
+    private var unifiedShutdownTask: Task<Void, Never>?
     private var started = false
     private var stopped = false
 
@@ -214,7 +215,11 @@ public actor TelemetryService {
         publishSnapshot()
     }
 
-    public func stop() {
+    public func stop() async {
+        if let unifiedShutdownTask {
+            await unifiedShutdownTask.value
+            return
+        }
         guard !stopped else { return }
         stopped = true
         started = false
@@ -224,7 +229,13 @@ public actor TelemetryService {
         legacyPollingTask?.cancel()
         statusPollingTask?.cancel()
         freshnessTask?.cancel()
+        let unifiedEventsTask = unifiedEventsTask
         unifiedEventsTask?.cancel()
+        if let unifiedEventsTask {
+            unifiedShutdownTask = Task {
+                await unifiedEventsTask.value
+            }
+        }
         activeRefreshTask?.cancel()
         stateRefreshTask?.cancel()
         loadedModelsRefreshTask?.cancel()
@@ -236,13 +247,16 @@ public actor TelemetryService {
         legacyPollingTask = nil
         statusPollingTask = nil
         freshnessTask = nil
-        unifiedEventsTask = nil
         activeRefreshTask = nil
 
         for continuation in continuations.values {
             continuation.finish()
         }
         continuations.removeAll()
+
+        await unifiedShutdownTask?.value
+        unifiedShutdownTask = nil
+        self.unifiedEventsTask = nil
     }
 
     private func performManualRefresh() async -> TelemetrySnapshot {
