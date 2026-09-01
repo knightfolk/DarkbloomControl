@@ -172,16 +172,35 @@ public enum LogSeverity: String, Equatable, Sendable {
     case error
 }
 
+public enum LogSource: String, Equatable, Sendable {
+    case legacy
+    case unified
+}
+
 public struct LogEvent: Equatable, Sendable {
     public let timestamp: Date?
     public let severity: LogSeverity
     public let category: String
     public let message: String
+    public let source: LogSource
+    public let processID: Int32?
+    public let processImage: String?
 
-    public init(timestamp: Date?, severity: LogSeverity, category: String, message: String) {
+    public init(
+        timestamp: Date?,
+        severity: LogSeverity,
+        category: String,
+        message: String,
+        source: LogSource,
+        processID: Int32?,
+        processImage: String?
+    ) {
         self.timestamp = timestamp
         self.severity = severity
         self.category = category
         self.message = message
+        self.source = source
+        self.processID = processID
+        self.processImage = processImage
     }
 }

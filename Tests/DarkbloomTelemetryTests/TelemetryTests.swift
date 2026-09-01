@@ -81,6 +81,8 @@ struct TelemetryTests {
 
         #expect(events.map(\.severity) == [.warning, .error])
         #expect(events.map(\.message) == ["Model load is taking longer than expected", "Model load failed"])
+        #expect(events.map(\.source) == [.legacy, .legacy])
+        #expect(events.allSatisfy { $0.processID == nil && $0.processImage == nil })
     }
 
     @Test("bounded tail discards a partial first line")

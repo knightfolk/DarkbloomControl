@@ -23,7 +23,10 @@ public enum LegacyLogParser {
             timestamp: formatter.date(from: String(fields[0])),
             severity: severity,
             category: category,
-            message: message
+            message: message,
+            source: .legacy,
+            processID: nil,
+            processImage: nil
         )
     }
 
@@ -38,8 +41,69 @@ public enum LegacyLogParser {
     }
 
     private static func isLifecycle(_ message: String) -> Bool {
-        let lower = message.lowercased()
-        return [" started", " starting", " stopped", " stopping", " loaded", " loading", " unloaded", " unloading", " connected", " connecting", " disconnected"]
-            .contains(where: lower.contains)
+        lifecycleMessage(message)
     }
+}
+
+public enum UnifiedLogParser {
+    public static func parse(line: Data) -> LogEvent? {
+        guard let record = try? JSONDecoder().decode(UnifiedLogRecord.self, from: line),
+              let severity = severity(record.messageType)
+        else {
+            return nil
+        }
+
+        let message = record.eventMessage == "<private>"
+            ? "Message unavailable (privacy redacted)"
+            : record.eventMessage
+        guard severity == .warning || severity == .error || lifecycleMessage(message) else {
+            return nil
+        }
+
+        return LogEvent(
+            timestamp: unifiedLogDate(record.timestamp),
+            severity: severity,
+            category: record.category,
+            message: message,
+            source: .unified,
+            processID: record.processID,
+            processImage: record.processImagePath
+        )
+    }
+
+    private static func severity(_ value: String) -> LogSeverity? {
+        switch value.lowercased() {
+        case "debug", "info": .info
+        case "notice", "default": .notice
+        case "warning", "warn": .warning
+        case "error", "fault": .error
+        default: nil
+        }
+    }
+}
+
+private struct UnifiedLogRecord: Decodable {
+    let timestamp: String
+    let messageType: String
+    let category: String
+    let processID: Int32?
+    let processImagePath: String?
+    let eventMessage: String
+}
+
+private func lifecycleMessage(_ message: String) -> Bool {
+    let lower = message.lowercased()
+    return [
+        "started", "starting", "stopped", "stopping", "loaded", "loading",
+        "unloaded", "unloading", "connected", "connecting", "disconnected",
+    ].contains { keyword in
+        lower.hasPrefix(keyword) || lower.contains(" \(keyword)")
+    }
+}
+
+private func unifiedLogDate(_ timestamp: String) -> Date? {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSSSSZZZZZ"
+    return formatter.date(from: timestamp)
 }
