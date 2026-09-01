@@ -75,6 +75,53 @@ struct ProviderConfigStoreTests {
         #expect(!FileManager.default.fileExists(atPath: candidateURL.path))
     }
 
+    @Test("a permissions-only change during validation is an external conflict")
+    func rejectsPermissionsChangeDuringValidation() async throws {
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o644,
+            backupData: Data("existing-last-known-good".utf8),
+            chmodDuringValidation: 0o600
+        )
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+
+        await #expect(throws: ProviderConfigError.changedExternally) {
+            try await harness.store.save(draft.withSelection(
+                ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+            ))
+        }
+
+        #expect(try Data(contentsOf: harness.configURL) == harness.originalData)
+        #expect(try fileMode(harness.configURL) == 0o600)
+        #expect(try Data(contentsOf: harness.backupURL) == Data("existing-last-known-good".utf8))
+        let candidateURL = try #require(await harness.executor.validatedCandidateURL)
+        #expect(!FileManager.default.fileExists(atPath: candidateURL.path))
+    }
+
+    @Test("an external write after the final snapshot is restored and rejected")
+    func rejectsMutationAtPublicationBoundary() async throws {
+        let externalData = Data("enabled_models=[]\npreload_models=[]\n# last-window external edit\n".utf8)
+        let existingBackup = Data("existing-last-known-good".utf8)
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o600,
+            backupData: existingBackup,
+            externalWriteAfterFinalSnapshot: externalData
+        )
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+
+        await #expect(throws: ProviderConfigError.changedExternally) {
+            try await harness.store.save(draft.withSelection(
+                ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+            ))
+        }
+
+        #expect(try Data(contentsOf: harness.configURL) == externalData)
+        #expect(try Data(contentsOf: harness.backupURL) == existingBackup)
+        let candidateURL = try #require(await harness.executor.validatedCandidateURL)
+        #expect(!FileManager.default.fileExists(atPath: candidateURL.path))
+    }
+
     @Test("a pre-existing external change is rejected without validation or backup")
     func rejectsExternalChangeBeforeValidation() async throws {
         let harness = try ConfigStoreHarness.make(mode: 0o600)
@@ -141,6 +188,35 @@ struct ProviderConfigStoreTests {
         #expect(!FileManager.default.fileExists(atPath: harness.backupURL.path))
     }
 
+    @Test("candidate cleanup failure is explicit, bounded, and path-redacted")
+    func reportsCandidateCleanupFailure() async throws {
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o600,
+            behavior: .nonzero(stderr: "validation failed"),
+            candidateCleanupFailure: "/Users/private/provider.toml api_token=secret-value"
+        )
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+
+        do {
+            _ = try await harness.store.save(draft.withSelection(
+                ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+            ))
+            Issue.record("Expected candidate cleanup to fail")
+        } catch {
+            #expect(error as? ProviderConfigError == .validationFailed(
+                "Could not remove the candidate configuration; recovery data was preserved beside the provider configuration"
+            ))
+            #expect(!String(describing: error).contains("/Users/private"))
+            #expect(!String(describing: error).contains("secret-value"))
+        }
+
+        let candidateURL = try #require(await harness.executor.validatedCandidateURL)
+        #expect(FileManager.default.fileExists(atPath: candidateURL.path))
+        #expect(try Data(contentsOf: harness.configURL) == harness.originalData)
+        #expect(!FileManager.default.fileExists(atPath: harness.backupURL.path))
+    }
+
     @Test("saving an unchanged draft performs no validation or file mutation")
     func savesNoChangesAsNoOp() async throws {
         let harness = try ConfigStoreHarness.make(mode: 0o600)
@@ -173,7 +249,10 @@ private struct ConfigStoreHarness: Sendable {
         mode: Int,
         backupData: Data? = nil,
         behavior: FakeConfigExecutor.Behavior = .succeed,
-        externalWriteDuringValidation: Data? = nil
+        externalWriteDuringValidation: Data? = nil,
+        chmodDuringValidation: Int? = nil,
+        externalWriteAfterFinalSnapshot: Data? = nil,
+        candidateCleanupFailure: String? = nil
     ) throws -> Self {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DarkbloomConfigStoreTests-\(UUID().uuidString)", isDirectory: true)
@@ -199,10 +278,31 @@ private struct ConfigStoreHarness: Sendable {
         let hook: (@Sendable (ProcessCommand) throws -> Void)?
         if let externalWriteDuringValidation {
             hook = { _ in try externalWriteDuringValidation.write(to: configURL) }
+        } else if let chmodDuringValidation {
+            hook = { _ in
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: chmodDuringValidation],
+                    ofItemAtPath: configURL.path
+                )
+            }
         } else {
             hook = nil
         }
         let executor = FakeConfigExecutor(behavior: behavior, hook: hook)
+        let cleanupHook: (@Sendable (URL) throws -> Void)?
+        if let candidateCleanupFailure {
+            cleanupHook = { _ in throw FakeExecutorError(message: candidateCleanupFailure) }
+        } else {
+            cleanupHook = nil
+        }
+        let storeHooks = ProviderConfigStoreHooks(
+            afterFinalSnapshot: {
+                if let externalWriteAfterFinalSnapshot {
+                    try externalWriteAfterFinalSnapshot.write(to: configURL)
+                }
+            },
+            removeCandidate: cleanupHook
+        )
         return Self(
             directory: directory,
             configURL: configURL,
@@ -213,7 +313,9 @@ private struct ConfigStoreHarness: Sendable {
             store: LocalProviderConfigStore(
                 configURL: configURL,
                 executable: executableURL,
-                runner: executor
+                runner: executor,
+                fileManager: .default,
+                hooks: storeHooks
             )
         )
     }
