@@ -1,0 +1,4 @@
+darkbloom 0.8.15
+Provider: darkbloom-test
+Backend port: not-a-number
+Trust: hardware / online

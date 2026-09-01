@@ -25,13 +25,24 @@ public enum TelemetryDeriver {
         return .available(tokensPerSecond: Double(generated) / elapsed, label: "derived")
     }
 
-    public static func uptime(state: DaemonState, now: TimeInterval) -> TimeInterval? {
+    public static func uptime(state: DaemonState, now: TimeInterval) -> DerivedDuration {
         let value = now - state.startedAt
-        return value >= 0 ? value : nil
+        return value >= 0
+            ? .available(seconds: value, label: "derived")
+            : .unavailable(reason: "Provider start time is in the future")
     }
 
-    public static func snapshotAge(state: DaemonState, now: TimeInterval) -> TimeInterval? {
+    public static func snapshotAge(state: DaemonState, now: TimeInterval) -> DerivedDuration {
         let value = now - state.writtenAt
-        return value >= 0 ? value : nil
+        return value >= 0
+            ? .available(seconds: value, label: "derived")
+            : .unavailable(reason: "State write time is in the future")
+    }
+
+    public static func trustAge(state: DaemonState, now: TimeInterval) -> DerivedDuration {
+        let value = now - state.trust.receivedAt
+        return value >= 0
+            ? .available(seconds: value, label: "derived")
+            : .unavailable(reason: "Trust receipt time is in the future")
     }
 }

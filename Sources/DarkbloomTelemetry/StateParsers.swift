@@ -2,6 +2,7 @@ import Foundation
 
 public enum DaemonStateParser {
     public static func parse(_ data: Data) throws -> DaemonState {
+        try SchemaValidation.requireSchema1(data, source: "daemon-state.json")
         let raw = try JSONDecoder().decode(RawDaemonState.self, from: data)
         return DaemonState(
             schema: raw.schema,
@@ -48,8 +49,26 @@ public enum DaemonStateParser {
 
 public enum LoadedModelsParser {
     public static func parse(_ data: Data) throws -> LoadedModelsState {
+        try SchemaValidation.requireSchema1(data, source: "loaded-models.json")
         let raw = try JSONDecoder().decode(RawLoadedModels.self, from: data)
         return LoadedModelsState(schema: raw.schema, models: raw.models, updatedAt: raw.updatedAt)
+    }
+}
+
+private struct SchemaEnvelope: Decodable {
+    let schema: Int
+}
+
+private enum SchemaValidation {
+    static func requireSchema1(_ data: Data, source: String) throws {
+        let found = try JSONDecoder().decode(SchemaEnvelope.self, from: data).schema
+        guard found == 1 else {
+            throw TelemetryContractError.unsupportedSchema(
+                source: source,
+                found: found,
+                supported: 1
+            )
+        }
     }
 }
 
