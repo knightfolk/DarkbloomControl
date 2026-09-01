@@ -267,21 +267,47 @@ private final class ProcessSession: @unchecked Sendable {
 
 public struct UnifiedLogStreamer: Sendable {
     private let command: ReadOnlyCommand
+    private let testOnlyReadChunkLimit: Int?
+    private let testOnlyCleanupObserver: (@Sendable (UnifiedLogStreamCleanupState) -> Void)?
 
     public init() {
         command = .unifiedLogStream
+        testOnlyReadChunkLimit = nil
+        testOnlyCleanupObserver = nil
     }
 
-    init(testOnlyCommand: ReadOnlyCommand) {
+    init(
+        testOnlyCommand: ReadOnlyCommand,
+        testOnlyReadChunkLimit: Int? = nil,
+        testOnlyCleanupObserver: (@Sendable (UnifiedLogStreamCleanupState) -> Void)? = nil
+    ) {
         command = testOnlyCommand
+        self.testOnlyReadChunkLimit = testOnlyReadChunkLimit.flatMap { $0 > 0 ? $0 : nil }
+        self.testOnlyCleanupObserver = testOnlyCleanupObserver
     }
 
     public func events() -> AsyncThrowingStream<LogEvent, Error> {
-        let session = UnifiedLogStreamSession(command: command)
+        let session = UnifiedLogStreamSession(
+            command: command,
+            testOnlyReadChunkLimit: testOnlyReadChunkLimit,
+            testOnlyCleanupObserver: testOnlyCleanupObserver
+        )
         return AsyncThrowingStream(unfolding: {
             try await session.next()
         })
     }
+}
+
+struct UnifiedLogStreamCleanupState: Equatable, Sendable {
+    let processID: Int32
+    let terminationRequested: Bool
+    let terminationHandlerCleared: Bool
+    let standardOutputHandlerCleared: Bool
+    let standardErrorHandlerCleared: Bool
+    let standardOutputReadHandleClosed: Bool
+    let standardErrorReadHandleClosed: Bool
+    let standardOutputWriteHandleClosed: Bool
+    let standardErrorWriteHandleClosed: Bool
 }
 
 private final class UnifiedLogStreamSession: @unchecked Sendable {
@@ -300,9 +326,11 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
     private let process = Process()
     private let standardOutput = Pipe()
     private let standardError = Pipe()
+    private let testOnlyReadChunkLimit: Int?
+    private let testOnlyCleanupObserver: (@Sendable (UnifiedLogStreamCleanupState) -> Void)?
     private let lineLimit = DarkbloomSourcePolicy.processOutputByteLimit
     private let lock = NSLock()
-    private var queuedEvents: [LogEvent] = []
+    private var queuedEvents = EventBuffer(capacity: 100)
     private var waiter: CheckedContinuation<LogEvent?, Error>?
     private var standardOutputBuffer = Data()
     private var droppingOversizedLine = false
@@ -313,7 +341,13 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
     private var terminalState = TerminalState.active
     private var cleanedUp = false
 
-    init(command: ReadOnlyCommand) {
+    init(
+        command: ReadOnlyCommand,
+        testOnlyReadChunkLimit: Int?,
+        testOnlyCleanupObserver: (@Sendable (UnifiedLogStreamCleanupState) -> Void)?
+    ) {
+        self.testOnlyReadChunkLimit = testOnlyReadChunkLimit
+        self.testOnlyCleanupObserver = testOnlyCleanupObserver
         process.executableURL = command.executable
         process.arguments = command.arguments
         process.standardOutput = standardOutput
@@ -343,8 +377,7 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
                 lock.lock()
-                if !queuedEvents.isEmpty {
-                    let event = queuedEvents.removeFirst()
+                if let event = queuedEvents.popFirst() {
                     lock.unlock()
                     continuation.resume(returning: event)
                     return
@@ -385,10 +418,25 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
 
             switch reader {
             case .standardOutput:
-                self.consumeStandardOutput(data)
+                self.consumeStandardOutputRead(data)
             case .standardError:
                 self.drainStandardError(data)
             }
+        }
+    }
+
+    private func consumeStandardOutputRead(_ data: Data) {
+        guard let testOnlyReadChunkLimit else {
+            consumeStandardOutput(data)
+            return
+        }
+
+        var start = data.startIndex
+        while start < data.endIndex {
+            let length = min(testOnlyReadChunkLimit, data.distance(from: start, to: data.endIndex))
+            let end = data.index(start, offsetBy: length)
+            consumeStandardOutput(Data(data[start..<end]))
+            start = end
         }
     }
 
@@ -438,7 +486,7 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
         let continuation = lock.withLock { () -> CheckedContinuation<LogEvent?, Error>? in
             guard case .active = terminalState else { return nil }
             guard let waiter else {
-                queuedEvents.append(event)
+                queuedEvents.insert([event])
                 return nil
             }
             self.waiter = nil
@@ -497,7 +545,7 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
             let continuation = waiter
             waiter = nil
             if case .cancelled = state {
-                queuedEvents.removeAll(keepingCapacity: false)
+                queuedEvents = EventBuffer(capacity: 100)
             }
             return continuation
         }
@@ -524,15 +572,39 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
         }
         guard shouldCleanup else { return }
 
+        let processID = process.processIdentifier
+        let terminationRequested = terminateProcess && process.isRunning
+        if terminationRequested {
+            process.terminate()
+        }
         process.terminationHandler = nil
         standardOutput.fileHandleForReading.readabilityHandler = nil
         standardError.fileHandleForReading.readabilityHandler = nil
-        if terminateProcess && process.isRunning {
-            process.terminate()
+        let standardOutputReadHandleClosed = close(standardOutput.fileHandleForReading)
+        let standardErrorReadHandleClosed = close(standardError.fileHandleForReading)
+        let standardOutputWriteHandleClosed = close(standardOutput.fileHandleForWriting)
+        let standardErrorWriteHandleClosed = close(standardError.fileHandleForWriting)
+        testOnlyCleanupObserver?(
+            UnifiedLogStreamCleanupState(
+                processID: processID,
+                terminationRequested: terminationRequested,
+                terminationHandlerCleared: process.terminationHandler == nil,
+                standardOutputHandlerCleared: standardOutput.fileHandleForReading.readabilityHandler == nil,
+                standardErrorHandlerCleared: standardError.fileHandleForReading.readabilityHandler == nil,
+                standardOutputReadHandleClosed: standardOutputReadHandleClosed,
+                standardErrorReadHandleClosed: standardErrorReadHandleClosed,
+                standardOutputWriteHandleClosed: standardOutputWriteHandleClosed,
+                standardErrorWriteHandleClosed: standardErrorWriteHandleClosed
+            )
+        )
+    }
+
+    private func close(_ handle: FileHandle) -> Bool {
+        do {
+            try handle.close()
+            return true
+        } catch {
+            return false
         }
-        try? standardOutput.fileHandleForReading.close()
-        try? standardError.fileHandleForReading.close()
-        try? standardOutput.fileHandleForWriting.close()
-        try? standardError.fileHandleForWriting.close()
     }
 }

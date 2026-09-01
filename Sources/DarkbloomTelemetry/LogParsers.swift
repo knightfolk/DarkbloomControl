@@ -92,13 +92,13 @@ private struct UnifiedLogRecord: Decodable {
 }
 
 private func lifecycleMessage(_ message: String) -> Bool {
-    let lower = message.lowercased()
-    return [
+    let keywords = Set([
         "started", "starting", "stopped", "stopping", "loaded", "loading",
         "unloaded", "unloading", "connected", "connecting", "disconnected",
-    ].contains { keyword in
-        lower.hasPrefix(keyword) || lower.contains(" \(keyword)")
-    }
+    ])
+    return message.lowercased()
+        .split { !$0.isLetter && !$0.isNumber }
+        .contains { keywords.contains(String($0)) }
 }
 
 private func unifiedLogDate(_ timestamp: String) -> Date? {

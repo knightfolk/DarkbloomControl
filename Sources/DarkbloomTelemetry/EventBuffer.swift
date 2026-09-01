@@ -5,7 +5,7 @@ public struct EventBuffer: Equatable, Sendable {
     public let capacity: Int
 
     public init(capacity: Int) {
-        self.capacity = max(0, capacity)
+        self.capacity = min(max(0, capacity), 100)
         events = []
     }
 
@@ -21,6 +21,11 @@ public struct EventBuffer: Equatable, Sendable {
         if events.count > capacity {
             events.removeLast(events.count - capacity)
         }
+    }
+
+    mutating func popFirst() -> LogEvent? {
+        guard !events.isEmpty else { return nil }
+        return events.removeFirst()
     }
 }
 
