@@ -1,0 +1,11 @@
+# Darkbloom provider settings
+enabled_models = [
+    "legacy-model", # previous choice
+]
+engine_v2_max_concurrent = 4 # preserve this comment
+private_value = "never-display-me"
+preload_models = ["legacy-model"] # preserve this trailing comment
+
+[unrelated]
+enabled_models = ["section-model"] # not a top-level provider selection
+note = "characters inside a string: # ] , \""
