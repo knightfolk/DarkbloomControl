@@ -9,6 +9,7 @@ final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     private let settingsWindowController: NSWindowController
+    private(set) var controlStore: ProviderControlStore?
 
     var statusItemLength: CGFloat { statusItem.length }
     var settingsWindowTitle: String? { settingsWindowController.window?.title }
@@ -16,9 +17,12 @@ final class StatusItemController: NSObject {
         settingsWindowController.window?.isReleasedWhenClosed
     }
 
-    init(store: MonitorStore) {
+    init(store: MonitorStore, controlStore: ProviderControlStore? = nil) {
         statusItem = NSStatusBar.system.statusItem(withLength: Self.itemWidth)
-        let settingsViewController = NSHostingController(rootView: MonitorSettingsView())
+        self.controlStore = controlStore
+        let settingsViewController = NSHostingController(
+            rootView: SettingsRootView(controlStore: controlStore)
+        )
         let settingsWindow = NSWindow(contentViewController: settingsViewController)
         settingsWindow.title = "Darkbloom Monitor Settings"
         settingsWindow.styleMask = [.titled, .closable, .miniaturizable]
@@ -48,6 +52,7 @@ final class StatusItemController: NSObject {
         popover.contentViewController = NSHostingController(
             rootView: PopoverRootView(
                 store: store,
+                controlStore: controlStore,
                 openSettings: { [weak self] in self?.showSettings() }
             )
         )
@@ -99,9 +104,30 @@ private struct StatusItemRootView: View {
 
 private struct PopoverRootView: View {
     @ObservedObject var store: MonitorStore
+    let controlStore: ProviderControlStore?
     let openSettings: () -> Void
 
+    @ViewBuilder
     var body: some View {
-        MonitorPopover(store: store, openSettings: openSettings)
+        if let controlStore {
+            MonitorPopover(store: store, openSettings: openSettings)
+                .environmentObject(controlStore)
+        } else {
+            MonitorPopover(store: store, openSettings: openSettings)
+        }
+    }
+}
+
+private struct SettingsRootView: View {
+    let controlStore: ProviderControlStore?
+
+    @ViewBuilder
+    var body: some View {
+        if let controlStore {
+            MonitorSettingsView()
+                .environmentObject(controlStore)
+        } else {
+            MonitorSettingsView()
+        }
     }
 }

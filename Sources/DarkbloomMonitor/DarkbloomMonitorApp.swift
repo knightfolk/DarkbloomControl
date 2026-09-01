@@ -16,6 +16,7 @@ struct DarkbloomMonitorApp: App {
 @MainActor
 final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private var store: MonitorStore?
+    private var controlStore: ProviderControlStore?
     private var statusItemController: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -25,10 +26,8 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate {
             homeDirectory: home,
             environmentPath: ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
         )
-        let source = LocalTelemetrySource(
-            policy: policy,
-            runner: CappedProcessRunner()
-        )
+        let runner = CappedProcessRunner()
+        let source = LocalTelemetrySource(policy: policy, runner: runner)
         let service = TelemetryService(
             source: source,
             unifiedEvents: UnifiedLogStreamer().events()
@@ -53,13 +52,36 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate {
             earningsClient: earningsClient,
             uptimeRecorder: observedUptimeDatabase
         )
+        let configExecutable = policy.cliCandidates.first(where: {
+            FileManager.default.isExecutableFile(atPath: $0.path)
+        }) ?? policy.cliCandidates[0]
+        let configStore = LocalProviderConfigStore(
+            configURL: policy.providerConfig,
+            executable: configExecutable,
+            runner: runner
+        )
+        let controlService = ProviderControlService(
+            policy: policy,
+            telemetrySource: source,
+            configStore: configStore,
+            runner: runner
+        )
+        let providerControlStore = ProviderControlStore(controller: controlService)
         store = monitorStore
-        statusItemController = StatusItemController(store: monitorStore)
+        controlStore = providerControlStore
+        statusItemController = StatusItemController(
+            store: monitorStore,
+            controlStore: providerControlStore
+        )
         monitorStore.start()
+        Task { @MainActor [weak providerControlStore] in
+            await providerControlStore?.refresh()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         statusItemController?.invalidate()
+        controlStore?.cancelCurrentOperation()
         guard let store else { return }
         Task { await store.stop() }
     }
