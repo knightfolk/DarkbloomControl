@@ -20,7 +20,15 @@ public enum ProcessRunnerError: Error, Equatable, Sendable {
 }
 
 public struct CappedProcessRunner: Sendable {
-    public init() {}
+    private let testOnlyCleanupObserver: (@Sendable (ProcessCleanupState) -> Void)?
+
+    public init() {
+        testOnlyCleanupObserver = nil
+    }
+
+    init(testOnlyCleanupObserver: @escaping @Sendable (ProcessCleanupState) -> Void) {
+        self.testOnlyCleanupObserver = testOnlyCleanupObserver
+    }
 
     public func run(
         _ command: ReadOnlyCommand,
@@ -40,18 +48,26 @@ public struct CappedProcessRunner: Sendable {
         process.arguments = command.arguments
         process.standardOutput = standardOutput
         process.standardError = standardError
-        process.terminationHandler = { _ in
-            session.didTerminate()
+        process.terminationHandler = { [weak session] _ in
+            session?.didTerminate()
         }
 
         session.beginReading(standardOutput.fileHandleForReading, destination: .standardOutput)
         session.beginReading(standardError.fileHandleForReading, destination: .standardError)
+        var processWasLaunched = false
+        defer {
+            cleanup(
+                process: process,
+                standardOutput: standardOutput,
+                standardError: standardError,
+                processWasLaunched: processWasLaunched
+            )
+        }
 
         do {
             try process.run()
+            processWasLaunched = true
         } catch {
-            close(standardOutput.fileHandleForReading)
-            close(standardError.fileHandleForReading)
             throw ProcessRunnerError.launchFailed(error.localizedDescription)
         }
 
@@ -69,8 +85,6 @@ public struct CappedProcessRunner: Sendable {
         await session.waitForTermination()
         timeoutTask.cancel()
         await session.waitForReaders()
-        close(standardOutput.fileHandleForReading)
-        close(standardError.fileHandleForReading)
 
         if let error = session.failure {
             throw error
@@ -89,6 +103,44 @@ public struct CappedProcessRunner: Sendable {
     private func close(_ handle: FileHandle) {
         try? handle.close()
     }
+
+    private func cleanup(
+        process: Process,
+        standardOutput: Pipe,
+        standardError: Pipe,
+        processWasLaunched: Bool
+    ) {
+        let standardOutputHandle = standardOutput.fileHandleForReading
+        let standardErrorHandle = standardError.fileHandleForReading
+        standardOutputHandle.readabilityHandler = nil
+        standardErrorHandle.readabilityHandler = nil
+        process.terminationHandler = nil
+        if !processWasLaunched {
+            process.standardOutput = nil
+            process.standardError = nil
+        }
+        // Foundation makes Process stream setters immutable after launch. The session holds
+        // the process weakly, so after this scope closes its completed process releases pipes.
+        close(standardOutputHandle)
+        close(standardErrorHandle)
+        testOnlyCleanupObserver?(
+            ProcessCleanupState(
+                terminationHandlerCleared: process.terminationHandler == nil,
+                standardOutputCleared: !processWasLaunched && process.standardOutput == nil,
+                standardErrorCleared: !processWasLaunched && process.standardError == nil,
+                standardOutputHandlerCleared: standardOutputHandle.readabilityHandler == nil,
+                standardErrorHandlerCleared: standardErrorHandle.readabilityHandler == nil
+            )
+        )
+    }
+}
+
+struct ProcessCleanupState: Equatable, Sendable {
+    let terminationHandlerCleared: Bool
+    let standardOutputCleared: Bool
+    let standardErrorCleared: Bool
+    let standardOutputHandlerCleared: Bool
+    let standardErrorHandlerCleared: Bool
 }
 
 private final class ProcessSession: @unchecked Sendable {
@@ -97,7 +149,7 @@ private final class ProcessSession: @unchecked Sendable {
         case standardError
     }
 
-    private let process: Process
+    private weak var process: Process?
     private let outputLimit: Int
     private let lock = NSLock()
     private let readerGroup = DispatchGroup()
@@ -167,7 +219,7 @@ private final class ProcessSession: @unchecked Sendable {
     }
 
     func requestTermination(for error: ProcessRunnerError) {
-        guard process.isRunning else { return }
+        guard process?.isRunning == true else { return }
         let shouldTerminate = lock.withLock { () -> Bool in
             guard recordedFailure == nil else { return false }
             recordedFailure = error
@@ -175,8 +227,8 @@ private final class ProcessSession: @unchecked Sendable {
             terminationRequested = true
             return true
         }
-        if shouldTerminate && process.isRunning {
-            process.terminate()
+        if shouldTerminate && process?.isRunning == true {
+            process?.terminate()
         }
     }
 
@@ -207,8 +259,8 @@ private final class ProcessSession: @unchecked Sendable {
             }
             return false
         }
-        if shouldTerminate && process.isRunning {
-            process.terminate()
+        if shouldTerminate && process?.isRunning == true {
+            process?.terminate()
         }
     }
 }

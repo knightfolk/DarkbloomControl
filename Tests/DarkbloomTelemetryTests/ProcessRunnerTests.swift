@@ -37,4 +37,55 @@ struct ProcessRunnerTests {
             )
         }
     }
+
+    @Test("cleans handlers and pipes after a launch failure")
+    func cleansUpAfterLaunchFailure() async {
+        let recorder = CleanupRecorder()
+        let runner = CappedProcessRunner(testOnlyCleanupObserver: { state in
+            recorder.recordCleanup(state)
+        })
+
+        do {
+            _ = try await runner.run(
+                .testOnly(
+                    executable: URL(fileURLWithPath: "/tmp/darkbloom-monitor-missing-executable"),
+                    arguments: []
+                ),
+                timeout: .seconds(3),
+                outputLimit: 256
+            )
+            Issue.record("Expected a launch failure")
+        } catch let error as ProcessRunnerError {
+            guard case .launchFailed = error else {
+                Issue.record("Expected a launch failure, got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Expected ProcessRunnerError, got \(error)")
+            return
+        }
+
+        #expect(recorder.cleanupState == ProcessCleanupState(
+            terminationHandlerCleared: true,
+            standardOutputCleared: true,
+            standardErrorCleared: true,
+            standardOutputHandlerCleared: true,
+            standardErrorHandlerCleared: true
+        ))
+    }
+}
+
+private final class CleanupRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state: ProcessCleanupState?
+
+    var cleanupState: ProcessCleanupState? {
+        lock.withLock { state }
+    }
+
+    func recordCleanup(_ state: ProcessCleanupState) {
+        lock.withLock {
+            self.state = state
+        }
+    }
 }
