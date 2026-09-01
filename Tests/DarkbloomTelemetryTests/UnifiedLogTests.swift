@@ -12,6 +12,7 @@ struct UnifiedLogTests {
         #expect(event.severity == .error)
         #expect(event.category == "loop")
         #expect(event.message == "Message unavailable (privacy redacted)")
+        #expect(event.timestamp != nil)
         #expect(event.processID == 10004)
         #expect(event.processImage == "/Users/example/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom")
         #expect(event.source == .unified)
@@ -24,6 +25,7 @@ struct UnifiedLogTests {
         #expect(event.severity == .info)
         #expect(event.category == "coordinator")
         #expect(event.message == "Connected to coordinator")
+        #expect(event.timestamp != nil)
         #expect(event.processID == 10004)
         #expect(event.source == .unified)
     }

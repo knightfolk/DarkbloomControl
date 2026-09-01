@@ -10,11 +10,18 @@ public enum TelemetryDeriver {
         }
 
         let elapsed = current.writtenAt - previous.writtenAt
+        guard elapsed.isFinite else {
+            return .unavailable(reason: "State timestamp delta is not finite")
+        }
         guard elapsed > 0 else {
             return .unavailable(reason: "State timestamp did not advance")
         }
 
-        let generated = current.stats.tokensGenerated - previous.stats.tokensGenerated
+        let (generated, overflow) = current.stats.tokensGenerated
+            .subtractingReportingOverflow(previous.stats.tokensGenerated)
+        guard !overflow else {
+            return .unavailable(reason: "Token counter overflowed")
+        }
         guard generated >= 0 else {
             return .unavailable(reason: "Token counter moved backwards")
         }
@@ -22,7 +29,11 @@ public enum TelemetryDeriver {
             return .unavailable(reason: "No token progress in the polling window")
         }
 
-        return .available(tokensPerSecond: Double(generated) / elapsed, label: "derived")
+        let tokensPerSecond = Double(generated) / elapsed
+        guard tokensPerSecond.isFinite else {
+            return .unavailable(reason: "Derived token rate is not finite")
+        }
+        return .available(tokensPerSecond: tokensPerSecond, label: "derived")
     }
 
     public static func uptime(state: DaemonState, now: TimeInterval) -> DerivedDuration {

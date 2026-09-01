@@ -60,76 +60,106 @@ public struct CappedProcessRunner: Sendable {
                 process: process,
                 standardOutput: standardOutput,
                 standardError: standardError,
-                processWasLaunched: processWasLaunched
+                processWasLaunched: processWasLaunched,
+                session: session
             )
         }
 
-        do {
-            try process.run()
-            processWasLaunched = true
-        } catch {
-            throw ProcessRunnerError.launchFailed(error.localizedDescription)
-        }
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
 
-        let timeoutTask = Task {
             do {
-                try await Task.sleep(for: timeout)
-                if !Task.isCancelled {
-                    session.requestTermination(for: .timedOut)
-                }
+                try process.run()
+                processWasLaunched = true
+                // The parent never writes to either pipe. Closing its write ends immediately
+                // makes EOF a reliable completion signal once the owned child exits.
+                _ = close(standardOutput.fileHandleForWriting)
+                _ = close(standardError.fileHandleForWriting)
             } catch {
-                // Cancellation ends the timeout race after the child exits.
+                throw ProcessRunnerError.launchFailed(error.localizedDescription)
             }
-        }
 
-        await session.waitForTermination()
-        timeoutTask.cancel()
-        await session.waitForReaders()
+            if session.didLaunch() {
+                session.requestCancellation()
+            }
 
-        if let error = session.failure {
-            throw error
-        }
+            let timeoutTask = Task {
+                do {
+                    try await Task.sleep(for: timeout)
+                    if !Task.isCancelled {
+                        session.requestTermination(for: .timedOut)
+                    }
+                } catch {
+                    // Cancellation ends the timeout race after the child exits.
+                }
+            }
+            defer { timeoutTask.cancel() }
 
-        let result = session.result(exitCode: process.terminationStatus)
-        guard result.exitCode == 0 else {
-            throw ProcessRunnerError.nonzeroExit(
-                code: result.exitCode,
-                message: String(decoding: result.standardError, as: UTF8.self)
-            )
+            await session.waitForTermination()
+            await session.waitForReaders(timeout: .milliseconds(250))
+            try Task.checkCancellation()
+            if session.cancellationWasRequested {
+                throw CancellationError()
+            }
+
+            if let error = session.failure {
+                throw error
+            }
+
+            let result = session.result(exitCode: process.terminationStatus)
+            guard result.exitCode == 0 else {
+                throw ProcessRunnerError.nonzeroExit(
+                    code: result.exitCode,
+                    message: String(decoding: result.standardError, as: UTF8.self)
+                )
+            }
+            return result
+        } onCancel: {
+            session.requestCancellation()
         }
-        return result
     }
 
-    private func close(_ handle: FileHandle) {
-        try? handle.close()
+    private func close(_ handle: FileHandle) -> Bool {
+        do {
+            try handle.close()
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func cleanup(
         process: Process,
         standardOutput: Pipe,
         standardError: Pipe,
-        processWasLaunched: Bool
+        processWasLaunched: Bool,
+        session: ProcessSession
     ) {
         let standardOutputHandle = standardOutput.fileHandleForReading
         let standardErrorHandle = standardError.fileHandleForReading
         standardOutputHandle.readabilityHandler = nil
         standardErrorHandle.readabilityHandler = nil
+        session.finishReaders()
         process.terminationHandler = nil
         if !processWasLaunched {
             process.standardOutput = nil
             process.standardError = nil
         }
-        // Foundation makes Process stream setters immutable after launch. The session holds
-        // the process weakly, so after this scope closes its completed process releases pipes.
-        close(standardOutputHandle)
-        close(standardErrorHandle)
+        let standardOutputReadHandleClosed = close(standardOutputHandle)
+        let standardErrorReadHandleClosed = close(standardErrorHandle)
+        let standardOutputWriteHandleClosed = close(standardOutput.fileHandleForWriting)
+        let standardErrorWriteHandleClosed = close(standardError.fileHandleForWriting)
         testOnlyCleanupObserver?(
             ProcessCleanupState(
                 terminationHandlerCleared: process.terminationHandler == nil,
                 standardOutputCleared: !processWasLaunched && process.standardOutput == nil,
                 standardErrorCleared: !processWasLaunched && process.standardError == nil,
                 standardOutputHandlerCleared: standardOutputHandle.readabilityHandler == nil,
-                standardErrorHandlerCleared: standardErrorHandle.readabilityHandler == nil
+                standardErrorHandlerCleared: standardErrorHandle.readabilityHandler == nil,
+                standardOutputReadHandleClosed: standardOutputReadHandleClosed,
+                standardErrorReadHandleClosed: standardErrorReadHandleClosed,
+                standardOutputWriteHandleClosed: standardOutputWriteHandleClosed,
+                standardErrorWriteHandleClosed: standardErrorWriteHandleClosed
             )
         )
     }
@@ -141,6 +171,10 @@ struct ProcessCleanupState: Equatable, Sendable {
     let standardErrorCleared: Bool
     let standardOutputHandlerCleared: Bool
     let standardErrorHandlerCleared: Bool
+    let standardOutputReadHandleClosed: Bool
+    let standardErrorReadHandleClosed: Bool
+    let standardOutputWriteHandleClosed: Bool
+    let standardErrorWriteHandleClosed: Bool
 }
 
 private final class ProcessSession: @unchecked Sendable {
@@ -156,9 +190,15 @@ private final class ProcessSession: @unchecked Sendable {
     private var standardOutput = Data()
     private var standardError = Data()
     private var recordedFailure: ProcessRunnerError?
-    private var terminationRequested = false
+    private var cancellationRequested = false
+    private var terminationStarted = false
     private var terminated = false
     private var terminationContinuation: CheckedContinuation<Void, Never>?
+    private var readerWaitContinuation: CheckedContinuation<Void, Never>?
+    private var ownedProcessID: Int32?
+    private var standardOutputReaderFinished = false
+    private var standardErrorReaderFinished = false
+    private var readersClosed = false
 
     init(process: Process, outputLimit: Int) {
         self.process = process
@@ -167,6 +207,10 @@ private final class ProcessSession: @unchecked Sendable {
 
     var failure: ProcessRunnerError? {
         lock.withLock { recordedFailure }
+    }
+
+    var cancellationWasRequested: Bool {
+        lock.withLock { cancellationRequested }
     }
 
     func beginReading(_ handle: FileHandle, destination: Destination) {
@@ -179,7 +223,7 @@ private final class ProcessSession: @unchecked Sendable {
             }
             guard !data.isEmpty else {
                 readableHandle.readabilityHandler = nil
-                self.readerGroup.leave()
+                self.readerDidEnd(destination)
                 return
             }
             self.append(data, to: destination)
@@ -188,6 +232,7 @@ private final class ProcessSession: @unchecked Sendable {
 
     func didTerminate() {
         let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            guard !terminated else { return nil }
             terminated = true
             defer { terminationContinuation = nil }
             return terminationContinuation
@@ -210,25 +255,60 @@ private final class ProcessSession: @unchecked Sendable {
         }
     }
 
-    func waitForReaders() async {
+    func waitForReaders(timeout: Duration) async {
+        // A direct child can exit while a descendant still holds an inherited pipe.
+        // Give normal readers a short drain window, then close the session-owned ends
+        // rather than allowing a finite acquisition to wait forever for EOF.
         await withCheckedContinuation { continuation in
-            readerGroup.notify(queue: .global()) {
+            let shouldResume = lock.withLock { () -> Bool in
+                guard !readersClosed,
+                      !(standardOutputReaderFinished && standardErrorReaderFinished)
+                else {
+                    return true
+                }
+                readerWaitContinuation = continuation
+                return false
+            }
+            if shouldResume {
                 continuation.resume()
+                return
+            }
+
+            Task { [weak self] in
+                do {
+                    try await Task.sleep(for: timeout)
+                } catch {
+                    // The bounded cleanup still runs when this timer is cancelled.
+                }
+                self?.finishReaders()
             }
         }
     }
 
+    func didLaunch() -> Bool {
+        lock.withLock {
+            ownedProcessID = process?.processIdentifier
+            return cancellationRequested
+        }
+    }
+
+    func requestCancellation() {
+        lock.withLock {
+            cancellationRequested = true
+        }
+        terminateIfNeeded()
+    }
+
     func requestTermination(for error: ProcessRunnerError) {
-        guard process?.isRunning == true else { return }
         let shouldTerminate = lock.withLock { () -> Bool in
-            guard recordedFailure == nil else { return false }
+            guard !terminated, process?.isRunning == true, recordedFailure == nil else {
+                return false
+            }
             recordedFailure = error
-            guard !terminationRequested else { return false }
-            terminationRequested = true
             return true
         }
-        if shouldTerminate && process?.isRunning == true {
-            process?.terminate()
+        if shouldTerminate {
+            terminateIfNeeded()
         }
     }
 
@@ -244,11 +324,12 @@ private final class ProcessSession: @unchecked Sendable {
 
     private func append(_ data: Data, to destination: Destination) {
         let shouldTerminate = lock.withLock { () -> Bool in
-            guard recordedFailure == nil else { return false }
+            guard recordedFailure == nil, !cancellationRequested, !readersClosed else {
+                return false
+            }
             let combinedCount = standardOutput.count + standardError.count
             guard data.count <= outputLimit - combinedCount else {
                 recordedFailure = .outputLimitExceeded(limit: outputLimit)
-                terminationRequested = true
                 return true
             }
             switch destination {
@@ -259,9 +340,87 @@ private final class ProcessSession: @unchecked Sendable {
             }
             return false
         }
-        if shouldTerminate && process?.isRunning == true {
-            process?.terminate()
+        if shouldTerminate {
+            terminateIfNeeded()
         }
+    }
+
+    func finishReaders() {
+        let result = lock.withLock { () -> (Int, CheckedContinuation<Void, Never>?) in
+            guard !readersClosed else { return (0, nil) }
+            readersClosed = true
+            var count = 0
+            if !standardOutputReaderFinished {
+                standardOutputReaderFinished = true
+                count += 1
+            }
+            if !standardErrorReaderFinished {
+                standardErrorReaderFinished = true
+                count += 1
+            }
+            let continuation = readerWaitContinuation
+            readerWaitContinuation = nil
+            return (count, continuation)
+        }
+        for _ in 0..<result.0 {
+            readerGroup.leave()
+        }
+        result.1?.resume()
+    }
+
+    private func readerDidEnd(_ destination: Destination) {
+        let result: (Bool, CheckedContinuation<Void, Never>?) = lock.withLock {
+            switch destination {
+            case .standardOutput:
+                guard !standardOutputReaderFinished else { return (false, nil) }
+                standardOutputReaderFinished = true
+            case .standardError:
+                guard !standardErrorReaderFinished else { return (false, nil) }
+                standardErrorReaderFinished = true
+            }
+            let continuation: CheckedContinuation<Void, Never>?
+            if standardOutputReaderFinished && standardErrorReaderFinished {
+                continuation = readerWaitContinuation
+                readerWaitContinuation = nil
+            } else {
+                continuation = nil
+            }
+            return (true, continuation)
+        }
+        if result.0 {
+            readerGroup.leave()
+        }
+        result.1?.resume()
+    }
+
+    private func terminateIfNeeded() {
+        let target = lock.withLock { () -> (Process, Int32)? in
+            guard !terminationStarted,
+                  let process,
+                  let ownedProcessID,
+                  ownedProcessID > 0
+            else {
+                return nil
+            }
+            terminationStarted = true
+            return (process, ownedProcessID)
+        }
+        guard let (process, ownedProcessID) = target else { return }
+
+        if process.isRunning {
+            process.terminate()
+            let graceDeadline = ContinuousClock.now.advanced(by: .milliseconds(250))
+            while process.isRunning, ContinuousClock.now < graceDeadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            if process.isRunning, process.processIdentifier == ownedProcessID {
+                kill(ownedProcessID, SIGKILL)
+            }
+        }
+
+        process.waitUntilExit()
+        didTerminate()
+        finishReaders()
     }
 }
 
@@ -577,15 +736,16 @@ private final class UnifiedLogStreamSession: @unchecked Sendable {
     private func terminateAndReapOwnedProcess() -> Bool {
         guard process.isRunning else { return false }
 
-        let processID = process.processIdentifier
+        let ownedProcessID = process.processIdentifier
+        guard ownedProcessID > 0 else { return false }
         process.terminate()
 
-        let graceDeadline = Date().addingTimeInterval(0.25)
-        while process.isRunning, Date() < graceDeadline {
+        let graceDeadline = ContinuousClock.now.advanced(by: .milliseconds(250))
+        while process.isRunning, ContinuousClock.now < graceDeadline {
             Thread.sleep(forTimeInterval: 0.01)
         }
-        if process.isRunning {
-            kill(processID, SIGKILL)
+        if process.isRunning, process.processIdentifier == ownedProcessID {
+            kill(ownedProcessID, SIGKILL)
         }
         process.waitUntilExit()
         return true

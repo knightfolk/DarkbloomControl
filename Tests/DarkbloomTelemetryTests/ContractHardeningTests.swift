@@ -43,6 +43,30 @@ struct ContractHardeningTests {
         ) == .unavailable(reason: "Token counter moved backwards"))
     }
 
+    @Test("token counter overflow is unavailable instead of trapping")
+    func rejectsTokenCounterOverflow() {
+        #expect(TelemetryDeriver.tokenRate(
+            previous: sample(tokens: .min, writtenAt: 1_000),
+            current: sample(tokens: .max, writtenAt: 1_004)
+        ) == .unavailable(reason: "Token counter overflowed"))
+    }
+
+    @Test("non-finite state time is unavailable")
+    func rejectsNonFiniteStateTime() {
+        #expect(TelemetryDeriver.tokenRate(
+            previous: sample(tokens: 10, writtenAt: 1_000),
+            current: sample(tokens: 20, writtenAt: .infinity)
+        ) == .unavailable(reason: "State timestamp delta is not finite"))
+    }
+
+    @Test("non-finite derived rate is unavailable")
+    func rejectsNonFiniteDerivedRate() {
+        #expect(TelemetryDeriver.tokenRate(
+            previous: sample(tokens: 0, writtenAt: 0),
+            current: sample(tokens: .max, writtenAt: .leastNonzeroMagnitude)
+        ) == .unavailable(reason: "Derived token rate is not finite"))
+    }
+
     @Test("first sample is unavailable")
     func waitsForSecondSample() {
         #expect(TelemetryDeriver.tokenRate(
@@ -87,6 +111,27 @@ struct ContractHardeningTests {
             """)
         #expect(exposedEmpty.warmModels == [])
         #expect(exposedEmpty.slotPosture == [])
+    }
+
+    @Test("malformed slot posture does not become a state age")
+    func rejectsMalformedStateAge() {
+        let malformed = StatusParser.parse("""
+            darkbloom 0.8.15
+            Slot posture: state age unavailable
+            """)
+        #expect(malformed.stateAge == nil)
+
+        let incomplete = StatusParser.parse("""
+            darkbloom 0.8.15
+            Slot posture: state written
+            """)
+        #expect(incomplete.stateAge == nil)
+
+        let expected = StatusParser.parse("""
+            darkbloom 0.8.15
+            Slot posture: state written 4s ago
+            """)
+        #expect(expected.stateAge == "4s ago")
     }
 
     @Test("slot detail remains available without its summary header")

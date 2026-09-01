@@ -62,7 +62,7 @@ public actor TelemetryService {
     private var statusPollingTask: Task<Void, Never>?
     private var freshnessTask: Task<Void, Never>?
     private var unifiedEventsTask: Task<Void, Never>?
-    private var unifiedShutdownTask: Task<Void, Never>?
+    private var shutdownTask: Task<Void, Never>?
     private var started = false
     private var stopped = false
 
@@ -216,8 +216,8 @@ public actor TelemetryService {
     }
 
     public func stop() async {
-        if let unifiedShutdownTask {
-            await unifiedShutdownTask.value
+        if let shutdownTask {
+            await shutdownTask.value
             return
         }
         guard !stopped else { return }
@@ -231,31 +231,60 @@ public actor TelemetryService {
         freshnessTask?.cancel()
         let unifiedEventsTask = unifiedEventsTask
         unifiedEventsTask?.cancel()
-        if let unifiedEventsTask {
-            unifiedShutdownTask = Task {
-                await unifiedEventsTask.value
-            }
-        }
         activeRefreshTask?.cancel()
         stateRefreshTask?.cancel()
         loadedModelsRefreshTask?.cancel()
         statusRefreshTask?.cancel()
         legacyRefreshTask?.cancel()
 
+        let pollingTasks = [
+            statePollingTask,
+            loadedModelsPollingTask,
+            legacyPollingTask,
+            statusPollingTask,
+            freshnessTask,
+        ].compactMap { $0 }
+        let refreshTasks = [
+            stateRefreshTask,
+            loadedModelsRefreshTask,
+            statusRefreshTask,
+            legacyRefreshTask,
+        ].compactMap { $0 }
+        let activeRefreshTask = activeRefreshTask
+
         statePollingTask = nil
         loadedModelsPollingTask = nil
         legacyPollingTask = nil
         statusPollingTask = nil
         freshnessTask = nil
-        activeRefreshTask = nil
 
         for continuation in continuations.values {
             continuation.finish()
         }
         continuations.removeAll()
 
-        await unifiedShutdownTask?.value
-        unifiedShutdownTask = nil
+        let shutdownTask = Task {
+            for task in pollingTasks {
+                await task.value
+            }
+            for task in refreshTasks {
+                await task.value
+            }
+            if let activeRefreshTask {
+                _ = await activeRefreshTask.value
+            }
+            if let unifiedEventsTask {
+                await unifiedEventsTask.value
+            }
+        }
+        self.shutdownTask = shutdownTask
+        await shutdownTask.value
+        self.shutdownTask = nil
+        self.activeRefreshTask = nil
+        self.stateRefreshTask = nil
+        self.loadedModelsRefreshTask = nil
+        self.statusRefreshTask = nil
+        self.legacyRefreshTask = nil
         self.unifiedEventsTask = nil
     }
 

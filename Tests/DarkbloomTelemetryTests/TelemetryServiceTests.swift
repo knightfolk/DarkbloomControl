@@ -1,9 +1,38 @@
 import Foundation
+import Darwin
 import Testing
 @testable import DarkbloomTelemetry
 
 @Suite("Telemetry snapshot service")
 struct TelemetryServiceTests {
+    @Test("production status acquisition completes from the main-actor launch context")
+    @MainActor
+    func productionStatusAcquiresFromMainActor() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-monitor-main-actor-\(UUID().uuidString)")
+        let executable = root
+            .appendingPathComponent(".darkbloom/bin/darkbloom")
+        try FileManager.default.createDirectory(
+            at: executable.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try Data("#!/bin/sh\nprintf 'darkbloom 0.8.15\\n'\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o755)],
+            ofItemAtPath: executable.path
+        )
+
+        let source = LocalTelemetrySource(
+            policy: DarkbloomSourcePolicy(homeDirectory: root, environmentPath: ""),
+            runner: CappedProcessRunner()
+        )
+        let status = try await source.readStatus()
+
+        #expect(status.version == "0.8.15")
+    }
+
     @Test("successful refresh emits every source and first-sample rate gap")
     func emitsCompleteSnapshot() async throws {
         let source = ScriptedTelemetrySource.successful(
@@ -334,6 +363,97 @@ struct TelemetryServiceTests {
         #expect(stopReturned.read())
     }
 
+    @Test("stop awaits finite acquisition cleanup and coalesces concurrent callers")
+    func stopAwaitsFiniteAcquisitionCleanup() async throws {
+        let pidFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-monitor-service-\(UUID().uuidString).pid")
+        try Data().write(to: pidFile)
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+
+        let source = ResistantStatusTelemetrySource(pidFile: pidFile)
+        let service = TelemetryService(source: source)
+        await service.start()
+        await source.waitUntilStatusStarts()
+        guard let pid = await waitForPID(at: pidFile) else {
+            Issue.record("The finite status child did not publish its PID")
+            await service.stop()
+            return
+        }
+
+        let firstReturned = LockedFlag()
+        let secondReturned = LockedFlag()
+        let firstStop = Task {
+            await service.stop()
+            firstReturned.set()
+        }
+        await Task.yield()
+        let secondStop = Task {
+            await service.stop()
+            secondReturned.set()
+        }
+
+        let firstReturnedWhileActive = await eventually(timeout: .milliseconds(500)) {
+            guard firstReturned.read() else { return false }
+            return !(await source.statusFinished)
+        }
+        let secondReturnedWhileActive = await eventually(timeout: .milliseconds(500)) {
+            guard secondReturned.read() else { return false }
+            return !(await source.statusFinished)
+        }
+
+        if processExists(pid), !(await source.statusFinished) {
+            kill(pid, SIGKILL)
+        }
+        await firstStop.value
+        await secondStop.value
+        await service.stop()
+        await service.stop()
+
+        #expect(!firstReturnedWhileActive)
+        #expect(!secondReturnedWhileActive)
+        #expect(await source.statusFinished)
+        #expect(!processExists(pid))
+    }
+
+    @Test("stop awaits a finite manual refresh cleanup")
+    func stopAwaitsManualFiniteAcquisitionCleanup() async throws {
+        let pidFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-monitor-manual-service-\(UUID().uuidString).pid")
+        try Data().write(to: pidFile)
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+
+        let source = ResistantStatusTelemetrySource(pidFile: pidFile)
+        let service = TelemetryService(source: source)
+        let refreshTask = Task { await service.refreshNow() }
+        await source.waitUntilStatusStarts()
+        guard let pid = await waitForPID(at: pidFile) else {
+            Issue.record("The finite manual-refresh child did not publish its PID")
+            await service.stop()
+            _ = await refreshTask.value
+            return
+        }
+
+        let stopReturned = LockedFlag()
+        let stopTask = Task {
+            await service.stop()
+            stopReturned.set()
+        }
+        let returnedWhileActive = await eventually(timeout: .milliseconds(500)) {
+            guard stopReturned.read() else { return false }
+            return !(await source.statusFinished)
+        }
+
+        if processExists(pid), !(await source.statusFinished) {
+            kill(pid, SIGKILL)
+        }
+        await stopTask.value
+        _ = await refreshTask.value
+
+        #expect(!returnedWhileActive)
+        #expect(await source.statusFinished)
+        #expect(!processExists(pid))
+    }
+
     private func sample(
         tokens: Int64,
         writtenAt: TimeInterval,
@@ -383,6 +503,26 @@ struct TelemetryServiceTests {
             processID: 42,
             processImage: "darkbloom"
         )
+    }
+
+    private func waitForPID(at url: URL) async -> Int32? {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while clock.now < deadline {
+            if let value = try? String(contentsOf: url),
+               let pid = Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)),
+               pid > 0 {
+                return pid
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return nil
+    }
+
+    private func processExists(_ pid: Int32) -> Bool {
+        errno = 0
+        if kill(pid, 0) == 0 { return true }
+        return errno != ESRCH
     }
 }
 
@@ -707,6 +847,60 @@ private actor BlockingUnifiedIterator {
         guard cancelled, cleanupReleased, let continuation = nextContinuation else { return }
         nextContinuation = nil
         continuation.resume(throwing: CancellationError())
+    }
+}
+
+private actor ResistantStatusTelemetrySource: TelemetrySource {
+    private let pidFile: URL
+    private let runner = CappedProcessRunner()
+    private var statusStarted = false
+    private var statusStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var statusFinished = false
+
+    init(pidFile: URL) {
+        self.pidFile = pidFile
+    }
+
+    func readDaemonState() async throws -> DaemonState {
+        ScriptedTelemetrySource.defaultStateForBlocking
+    }
+
+    func readLoadedModels() async throws -> LoadedModelsState {
+        .init(schema: 1, models: ["model"], updatedAt: Date().timeIntervalSince1970)
+    }
+
+    func readStatus() async throws -> StatusSnapshot {
+        statusStarted = true
+        let waiters = statusStartWaiters
+        statusStartWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        defer { statusFinished = true }
+
+        _ = try await runner.run(
+            .testOnly(
+                executable: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "printf '%s' \"$$\" > \"$1\"; trap '' TERM; while :; do :; done",
+                    "sh",
+                    pidFile.path,
+                ]
+            ),
+            timeout: .seconds(30),
+            outputLimit: 256
+        )
+        return StatusSnapshot()
+    }
+
+    func readLegacyEvents(limit: Int) async throws -> [LogEvent] {
+        []
+    }
+
+    func waitUntilStatusStarts() async {
+        guard !statusStarted else { return }
+        await withCheckedContinuation { continuation in
+            statusStartWaiters.append(continuation)
+        }
     }
 }
 

@@ -28,8 +28,14 @@ public enum StatusParser {
         snapshot.trustReason = value(after: "→ coordinator reason:", in: lines)
         snapshot.warmModels = commaSeparatedValue(after: "Warm models:", in: lines)
         snapshot.mostRecentlyUsed = value(after: "Most recently used:", in: lines)
-        snapshot.stateAge = value(after: "Slot posture:", in: lines)
-            .map { $0.replacingOccurrences(of: "state written ", with: "") }
+        if let posture = value(after: "Slot posture:", in: lines),
+           posture.hasPrefix("state written ") {
+            let age = String(posture.dropFirst("state written ".count))
+                .trimmingCharacters(in: .whitespaces)
+            if !age.isEmpty {
+                snapshot.stateAge = age
+            }
+        }
         let slotPosture = lines.compactMap { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             return trimmed.contains(": kv=") ? trimmed : nil
