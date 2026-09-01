@@ -1,0 +1,22 @@
+darkbloom 0.8.15
+Provider: darkbloom-mac17-9
+Config: /Users/example/.config/darkbloom/provider.toml
+Coordinator: wss://api.darkbloom.dev/ws/provider
+Backend port: 8100
+Configured model: auto-select
+Idle timeout: 60m
+Beta features: gemma-prefill-layer18=on, gemma-weighted-r1=on, mtp=on
+Auto-restart: on (watchdog active; relaunches ~5 min after a crash)
+Hardware: Apple M5 Pro, 64 GB RAM, 20 GPU cores
+Inference memory: 60 GB available
+Schedule: always available
+Local MLX models: 3
+
+Daemon: running (pid 10004, up 3m)
+Trust: hardware / online
+  → coordinator reason: same_binary
+Warm models: gemma-4-26b-qat-4bit
+Most recently used: gemma-4-26b-qat-4bit
+Requests served: 7  |  tokens: 420
+Slot posture: state written 0s ago
+  gemma-4-26b-qat-4bit: kv=contiguous (requested auto) | mtp=enabled, active

@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "stats": {"tokens_generated": 120, "requests_served": 3, "usage_gaps": 1},
+  "version": "0.8.15",
+  "current_model": "gemma-4-26b-qat-4bit",
+  "trust": {
+    "trust_level": "hardware",
+    "status": "online",
+    "reason": "same_binary",
+    "received_at": 1788223560.418243
+  },
+  "warm_models": ["gemma-4-26b-qat-4bit"],
+  "pid": 10004,
+  "capacity": {
+    "gpu_memory_cache_gb": 0.270594360306859,
+    "total_memory_gb": 64,
+    "gpu_memory_active_gb": 14.759410054422915
+  },
+  "slots": [{
+    "model": "gemma-4-26b-qat-4bit",
+    "mtp_active": true,
+    "kv_backend": "contiguous",
+    "kv_backend_requested": "auto",
+    "mtp_enabled": true
+  }],
+  "inference_active": false,
+  "started_at": 1788223533.155068,
+  "written_at": 1788223723.1593251,
+  "attestation_public_key": "ignored-by-monitor",
+  "process_identity": {"pid": 10004, "start_time_micros": 1788223520528023}
+}

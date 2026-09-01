@@ -1,0 +1,3 @@
+2026-08-31T17:45:21-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for gemma-4-26b-qat-4bit (10 files)...
+2026-08-31T17:45:32-0700 warning darkbloom.Provider: Model load is taking longer than expected
+2026-08-31T17:45:58-0700 error darkbloom.Provider: Model load failed

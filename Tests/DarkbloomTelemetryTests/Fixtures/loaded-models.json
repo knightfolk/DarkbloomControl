@@ -1,0 +1,5 @@
+{
+  "models": ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
+  "schema": 1,
+  "updated_at": 1788223558.748022
+}
