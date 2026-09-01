@@ -1,6 +1,8 @@
 # Darkbloom 0.8.15 Local Telemetry Contract
 
-Inventory captured locally on 2026-08-31. No credential file was opened and no
+Inventory captured locally on 2026-08-31 and revalidated against a fresh,
+read-only Darkbloom 0.8.15 run the same day. The live schema remained 1 and the
+field inventory below did not change. No credential file was opened and no
 network diagnostic was invoked.
 
 ## `~/.darkbloom/daemon-state.json` (schema 1)
@@ -39,11 +41,14 @@ for attestation material.
 ## `~/.darkbloom/loaded-models.json` (schema 1)
 
 `models[]` and `updated_at` are direct. “Loaded” and “warm” are retained as
-separate concepts because the files expose them separately.
+separate concepts because the files expose them separately. The revalidation
+confirmed that both lists can report the same model while remaining distinct
+source fields.
 
 ## `darkbloom status`
 
-Observed direct text fields: CLI version, provider name, config path,
+Observed direct text fields, revalidated in the live 0.8.15 output: CLI version,
+provider name, config path,
 coordinator URL, backend port, configured model selection, idle timeout, beta
 feature states, watchdog/auto-restart posture, hardware summary, inference
 memory allowance, local boot checks, schedule, enabled model filter, local MLX
@@ -63,6 +68,10 @@ unified log exposes timestamp, severity (`messageType`), category, process ID,
 and image path, but messages were privacy-redacted as `<private>` in the
 current session. The monitor can surface these real fields and must label the
 message unavailable when redacted.
+
+The live revalidation did not reveal a structured MTP-reason field or any
+request-level timing/input-token fields. Those remain explicit gaps rather than
+being inferred from slot booleans, log prose, or cumulative counters.
 
 Recent events are normalized only when their source is lifecycle, warning, or
 error/fault. Log input is bounded by bytes and retained event count.
