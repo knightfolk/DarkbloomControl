@@ -26,7 +26,8 @@ swift run DarkbloomMonitor
 
 From Xcode, open `Package.swift`, select the `DarkbloomMonitor` executable
 scheme, and run it. The app appears only in the menu bar; it has no Dock icon or
-ordinary application window.
+main/document window. It retains a monitor-owned, resizable Settings `NSWindow`
+when Settings is opened.
 
 ## What the popover shows
 
@@ -48,7 +49,7 @@ tested without being rendered as a diagnostic wall.
 The complete field inventory and known gaps are documented in
 [`docs/TELEMETRY_CONTRACT.md`](docs/TELEMETRY_CONTRACT.md).
 
-## Sources and cadence
+## Telemetry sources and cadence
 
 | Source | Use | Cadence or lifetime |
 |---|---|---|
@@ -61,6 +62,8 @@ The complete field inventory and known gaps are documented in
 | Authenticated account earnings API | Recent earning records and account balances | Every 10 minutes |
 | Public 24-hour earnings leaderboard | Exact server-computed rolling account total when the account is ranked | Every 10 minutes |
 
+These are periodic telemetry reads, not a complete list of the monitor's
+separate bounded provider-control, config, or authenticated-earnings surfaces.
 The state and loaded-model polls are independent, so a slow source does not
 delay the other. Recent events are deduplicated, sorted newest first, and capped
 at 100 even though they are no longer displayed in the compact popover.
@@ -102,7 +105,7 @@ color is not the only signal.
 
 The monitor has a deliberately narrow management allowlist:
 
-- reads only the fixed local and remote sources listed above;
+- uses the fixed telemetry sources listed above for periodic polling;
 - reads and may change only top-level `enabled_models` and `preload_models` in
   the fixed `~/.config/darkbloom/provider.toml`; it preserves unrelated TOML
   bytes and comments when a save completes with the observed source revision;
@@ -156,9 +159,15 @@ shows `Model state unavailable` rather than guessing an unloaded state.
 User-visible control diagnostics are bounded and redact the configured home
 path and credential-shaped values. Fixed, safe error categories remain distinct
 for conditions such as changed settings, busy configuration, rejected
-candidates, and blocked model actions; arbitrary CLI output is not displayed.
-Model and lifecycle controls include target-specific accessibility labels and
-hints, including their disabled or cancellation effect.
+candidates, and blocked model actions. Raw or unbounded CLI output is never
+presented. During a current download only, the Settings view may show at most
+one latest progress line from stdout or stderr; its input is bounded to 4,096
+bytes per line and sanitized before display.
+
+Model-row actions include target-specific accessibility labels and hints,
+including disabled or cancellation effects. Lifecycle controls provide their
+own labels, help text, and identifiers; customer-impact information is supplied
+by the explicit Stop/Restart confirmation alert rather than a lifecycle hint.
 
 Stop and Restart can interrupt customer work. The monitor checks activity, but
 that check can be unavailable or become stale between checking and execution.

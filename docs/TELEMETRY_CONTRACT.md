@@ -98,8 +98,12 @@ renders model pills only when both telemetry model sources and the independent
 provider-control residency sources are fresh; otherwise it states that model
 state is unavailable. User-facing diagnostics redact home paths and
 credential-shaped text, preserve only fixed safe error categories, and do not
-surface arbitrary command output. Model and lifecycle controls identify their
-targets and effects in accessibility labels and hints.
+surface raw or unbounded command output. During a current download, the Settings
+view may show one latest sanitized progress line from stdout or stderr with a
+4,096-byte input bound; all other command output remains unrendered. Model-row controls identify their
+targets and effects in accessibility labels and hints. Lifecycle controls have
+labels, help text, and identifiers, while customer-impact detail is supplied by
+the Stop/Restart confirmation alert.
 
 ## Logs
 

@@ -10,8 +10,8 @@ The Swift 6 package has two targets:
   control service, and the immutable values consumed by the app.
 - `DarkbloomMonitor` owns the AppKit/SwiftUI lifecycle and presentation. It is
   an accessory application built around an `NSStatusItem` and `NSPopover`, with
-  SwiftUI content hosted inside the popover and Settings window. It has no Dock
-  icon or ordinary window.
+  SwiftUI content hosted inside the popover and a retained, resizable Settings
+  `NSWindow`. It has no Dock icon or main/document window.
 
 The telemetry library does not import SwiftUI or AppKit, and the views never
 read a file or launch a process directly.
@@ -154,8 +154,13 @@ After lifecycle completion, the shared control store requests an immediate
 telemetry/status refresh and refreshes its control snapshot. Popup model pills
 are withheld when their independent freshness conditions are not satisfied.
 Control diagnostics redact home paths and credential-shaped values, and expose
-only fixed safe categories for config and model-control failures. Model and
-lifecycle controls carry target-specific accessibility labels and hints.
+only fixed safe categories for config and model-control failures. Raw or
+unbounded command output is not rendered, except for one latest sanitized
+download-progress line from stdout or stderr with a 4,096-byte input bound.
+Model-row actions carry
+target-specific accessibility labels and hints. Lifecycle controls carry labels,
+help text, and identifiers; their customer-impact explanation is the explicit
+Stop/Restart confirmation alert.
 
 Configuration saves preserve unrelated bytes and comments only within their
 observed/revalidated source revision. Bounded advisory locks require a

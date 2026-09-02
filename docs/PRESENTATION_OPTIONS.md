@@ -25,9 +25,13 @@ operators still use the CLI or logs for low-level diagnostics.
 The presentation uses typed source freshness to gate Save and Download, while
 the service repeats fresh validation before those commands. Model pills fail
 closed to `Model state unavailable` when the required residency sources are not
-fresh. Model and lifecycle actions name their target in accessibility labels and
-include hints for disabled, cancellation, or customer-impact behavior. Rendered
-control diagnostics are bounded and redacted; raw CLI output is not presented.
+fresh. Model-row actions name their target in accessibility labels and include
+hints for disabled or cancellation behavior. Lifecycle controls use labels,
+help text, and identifiers; their customer-impact detail appears in the
+Stop/Restart confirmation alert. Rendered diagnostics are bounded and redacted.
+Raw or unbounded CLI output is not presented, except that a current download may
+show one latest sanitized progress line from stdout or stderr with a 4,096-byte
+input bound.
 
 ## Option A: Structured popover (superseded)
 
