@@ -22,6 +22,13 @@ restart-required rather than restarting automatically. Detailed diagnostics
 stay in the telemetry layer rather than becoming popover prose. Trade-off:
 operators still use the CLI or logs for low-level diagnostics.
 
+The presentation uses typed source freshness to gate Save and Download, while
+the service repeats fresh validation before those commands. Model pills fail
+closed to `Model state unavailable` when the required residency sources are not
+fresh. Model and lifecycle actions name their target in accessibility labels and
+include hints for disabled, cancellation, or customer-impact behavior. Rendered
+control diagnostics are bounded and redacted; raw CLI output is not presented.
+
 ## Option A: Structured popover (superseded)
 
 A compact SwiftUI popover with a top health row, primary live metrics, model

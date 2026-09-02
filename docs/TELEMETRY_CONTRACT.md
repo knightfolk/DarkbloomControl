@@ -82,6 +82,25 @@ or stale observation is possible and is not treated as safe. Active or unknown
 activity requires an explicit user override before either lifecycle command is
 issued; that confirmation cannot make the operation atomic.
 
+For activity and delete-residency checks, `written_at` and `updated_at` must be
+finite, no more than ten seconds old, and not in the future. A stale, future,
+invalid, or unavailable activity read is unknown; Delete fails closed before
+constructing a remove command unless daemon and loaded-model residency are both
+fresh. Save and Download each reread catalog/local sources without stale
+fallback immediately before the command: saved selections must be unambiguous
+downloaded catalog models, and a download target must be a fresh Available
+entry. The UI receives typed source states for the corresponding gates, but the
+service repeats the validation for direct callers.
+
+After a successful Start, Stop, or Restart, the app requests immediate telemetry
+and status reads before refreshing the provider-control snapshot. The popup
+renders model pills only when both telemetry model sources and the independent
+provider-control residency sources are fresh; otherwise it states that model
+state is unavailable. User-facing diagnostics redact home paths and
+credential-shaped text, preserve only fixed safe error categories, and do not
+surface arbitrary command output. Model and lifecycle controls identify their
+targets and effects in accessibility labels and hints.
+
 ## Logs
 
 The legacy `provider.log` currently exposes timestamp, severity, logger, and

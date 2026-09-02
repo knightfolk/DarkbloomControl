@@ -136,6 +136,30 @@ when external change or recovery certainty is lost, the save is rejected or
 reports recovery and preserves the visible versions rather than claiming an
 unconditional safe publication.
 
+Provider safety decisions use the daemon and loaded-model timestamps only when
+they are finite, no more than ten seconds old, and not in the future. A stale,
+future, invalid, or unavailable activity read becomes unknown and therefore
+requires the Stop/Restart override; Delete is blocked before a remove command
+when residency is not fresh. Save and Download independently reread the model
+catalog and local-model list without stale fallback immediately before acting.
+Save requires every requested selector to resolve unambiguously to a downloaded
+catalog model; Download requires a fresh Available entry. These checks are at
+the service boundary, not just in the visible controls.
+
+The Settings UI carries typed source freshness and eligibility state, so it can
+disable Save and Available-row Download before dispatch. After a successful
+lifecycle command, it requests an immediate telemetry/status refresh and then
+refreshes model controls. Popup model pills fail closed: if either model source
+is unavailable or the provider-control residency state is not fresh, the popup
+shows `Model state unavailable` rather than guessing an unloaded state.
+
+User-visible control diagnostics are bounded and redact the configured home
+path and credential-shaped values. Fixed, safe error categories remain distinct
+for conditions such as changed settings, busy configuration, rejected
+candidates, and blocked model actions; arbitrary CLI output is not displayed.
+Model and lifecycle controls include target-specific accessibility labels and
+hints, including their disabled or cancellation effect.
+
 Stop and Restart can interrupt customer work. The monitor checks activity, but
 that check can be unavailable or become stale between checking and execution.
 When activity is active or unknown, the UI requires an explicit destructive

@@ -4,8 +4,8 @@ import Testing
 
 @Suite("Source policy")
 struct SourcePolicyTests {
-    @Test("only approved Darkbloom files are readable")
-    func allowlistsFiles() {
+    @Test("telemetry reads use the approved telemetry-file allowlist")
+    func allowlistsTelemetryFiles() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
         let policy = DarkbloomSourcePolicy(homeDirectory: home, environmentPath: "/usr/bin:/bin")
         #expect(policy.daemonState.path == "/Users/example/.darkbloom/daemon-state.json")
@@ -14,6 +14,8 @@ struct SourcePolicyTests {
         #expect(policy.providerConfig.path == "/Users/example/.config/darkbloom/provider.toml")
         #expect(policy.allowedFiles == [policy.daemonState, policy.loadedModels, policy.legacyLog])
         #expect(!policy.allowedFiles.map(\.lastPathComponent).contains("auth_token"))
+        // The provider config is a separate, narrowly managed control surface,
+        // not a read-only telemetry file.
         #expect(!policy.allowedFiles.map(\.lastPathComponent).contains("provider.toml"))
     }
 

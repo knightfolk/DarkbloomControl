@@ -9,8 +9,9 @@ The Swift 6 package has two targets:
   earnings reads, compact SQLite persistence, diagnostics, the narrow provider
   control service, and the immutable values consumed by the app.
 - `DarkbloomMonitor` owns the AppKit/SwiftUI lifecycle and presentation. It is
-  an accessory application built around a window-style `MenuBarExtra`; it has no
-  Dock icon or ordinary window.
+  an accessory application built around an `NSStatusItem` and `NSPopover`, with
+  SwiftUI content hosted inside the popover and Settings window. It has no Dock
+  icon or ordinary window.
 
 The telemetry library does not import SwiftUI or AppKit, and the views never
 read a file or launch a process directly.
@@ -66,6 +67,17 @@ read a file or launch a process directly.
    open descriptor can still race publication. On an observed external change
    or lost recovery certainty, the store rejects the save or preserves the
    visible versions; it does not claim unconditional serialization or success.
+10. `ProviderControlService` treats daemon and loaded-model residency as fresh
+    only when their timestamps are finite, at most ten seconds old, and not in
+    the future. Save and Download reread model sources without stale fallback
+    at the service boundary; Delete additionally requires fresh residency
+    before it can construct a remove command. Typed source states reach the UI
+    for control gating, while sanitized diagnostics preserve only fixed safe
+    error distinctions.
+11. After a successful lifecycle command, `ProviderControlStore` awaits an
+    immediate `MonitorStore` telemetry/status refresh before refreshing its
+    own provider-control snapshot. The popup withholds model pills unless both
+    telemetry model sources and provider-control residency sources are fresh.
 
 ```text
 approved files -----> LocalTelemetrySource --\
@@ -78,7 +90,7 @@ darkbloom status ---> CappedProcessRunner -----+--> TelemetryService actor
                                                 @MainActor MonitorStore
                                                            |
                                                            v
-                                              SwiftUI MenuBarExtra popover
+                              NSStatusItem --> NSPopover --> SwiftUI MonitorPopover
 
 authenticated earnings --> 10-minute fixed GET --> incremental hourly SQLite aggregates
                                                    --> today + covered 7-day job metrics
@@ -129,6 +141,21 @@ Stop and Restart check provider activity, but that read may be unknown and can
 change before the command runs. Active or unknown activity therefore requires a
 user's explicit destructive override; this is a customer-impact warning, not an
 atomic no-interruption guarantee.
+
+For provider-control safety decisions, daemon and loaded-model timestamps must
+be finite, no more than ten seconds old, and not in the future. Stale or future
+activity is unknown; stale, future, invalid, or unavailable residency blocks
+Delete before a CLI remove command. Save and Download reread catalog/local
+sources without stale fallback immediately before acting, and their UI gates are
+driven by typed source state rather than rendered diagnostic text. The service
+still performs those validations when called outside the UI.
+
+After lifecycle completion, the shared control store requests an immediate
+telemetry/status refresh and refreshes its control snapshot. Popup model pills
+are withheld when their independent freshness conditions are not satisfied.
+Control diagnostics redact home paths and credential-shaped values, and expose
+only fixed safe categories for config and model-control failures. Model and
+lifecycle controls carry target-specific accessibility labels and hints.
 
 Configuration saves preserve unrelated bytes and comments only within their
 observed/revalidated source revision. Bounded advisory locks require a
