@@ -239,6 +239,96 @@ struct ProviderControlStoreTests {
         }
     }
 
+    @Test("diagnostics normalize control and ANSI obfuscation before matching")
+    func sanitizesObfuscatedDiagnostics() async throws {
+        let store = ProviderControlStore(
+            controller: FakeProviderController.fixture(),
+            homeDirectory: URL(
+                fileURLWithPath: "/Volumes/Network Homes/kevin",
+                isDirectory: true
+            )
+        )
+        let diagnostic = """
+        to\u{0000}ken=control-secret \
+        Authori\u{0007}zation: Bearer bearer-secret \
+        api_\u{001B}[\u{0000}31mkey=ansi-secret \
+        /Volumes/Net\u{001B}[34mwork\u{0000} Homes/kevin/private
+        """
+
+        let sanitized = store.sanitizedDiagnostic(diagnostic)
+
+        #expect(!sanitized.contains("control-secret"))
+        #expect(!sanitized.contains("bearer-secret"))
+        #expect(!sanitized.contains("ansi-secret"))
+        #expect(!sanitized.contains("/Volumes/Network Homes/kevin"))
+        #expect(sanitized.contains("<redacted>"))
+        #expect(sanitized.contains("~/private"))
+    }
+
+    @Test("progress normalizes split control-obfuscated keys values and home paths")
+    func sanitizesAdversarialSplitProgress() async throws {
+        let chunks = [
+            ProcessOutputChunk(destination: .standardError, data: Data("acc".utf8)),
+            ProcessOutputChunk(
+                destination: .standardError,
+                data: Data("ess_to\u{0000}".utf8)
+            ),
+            ProcessOutputChunk(
+                destination: .standardError,
+                data: Data("ken=".utf8)
+            ),
+            ProcessOutputChunk(
+                destination: .standardError,
+                data: Data("split-\u{0000}secret /Volumes/Net".utf8)
+            ),
+            ProcessOutputChunk(
+                destination: .standardError,
+                data: Data("work\u{0000} Homes/kevin/private\n".utf8)
+            ),
+        ]
+        let controller = FakeProviderController.fixture(downloadChunks: chunks)
+        let store = ProviderControlStore(
+            controller: controller,
+            homeDirectory: URL(
+                fileURLWithPath: "/Volumes/Network Homes/kevin",
+                isDirectory: true
+            )
+        )
+        await store.refresh()
+
+        await store.download("available-model")
+
+        let progress = try #require(store.latestDownloadProgressLine)
+        #expect(!progress.contains("split-secret"))
+        #expect(!progress.contains("/Volumes/Network Homes/kevin"))
+        #expect(progress.contains("access_token=<redacted>"))
+        #expect(progress.contains("~/private"))
+    }
+
+    @Test("truncated progress never publishes a credential value tail")
+    func rejectsTruncatedCredentialLines() async throws {
+        let secret = String(repeating: "long-secret-", count: 500)
+        for terminator in ["", "\n"] {
+            let chunks = [
+                ProcessOutputChunk(
+                    destination: .standardError,
+                    data: Data("token=".utf8)
+                ),
+                ProcessOutputChunk(
+                    destination: .standardError,
+                    data: Data("\(secret)\(terminator)".utf8)
+                ),
+            ]
+            let controller = FakeProviderController.fixture(downloadChunks: chunks)
+            let store = ProviderControlStore(controller: controller)
+            await store.refresh()
+
+            await store.download("available-model")
+
+            #expect(!store.latestDownloadProgressLine.orEmpty.contains("long-secret"))
+        }
+    }
+
     @Test("download sanitization joins split credential and home-path chunks")
     func sanitizesSplitProgressChunks() async throws {
         let chunks = [

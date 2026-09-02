@@ -483,16 +483,11 @@ private final class UserDiagnosticSanitizer: @unchecked Sendable {
     private let homePath: String
 
     init(homeDirectory: URL) {
-        homePath = homeDirectory.standardizedFileURL.path
+        homePath = Self.normalizedForMatching(homeDirectory.standardizedFileURL.path)
     }
 
     func sanitize(_ value: String) -> String {
-        var result = value
-        result = Self.replacing(
-            pattern: #"\x1B\[[0-?]*[ -/]*[@-~]"#,
-            in: result,
-            with: ""
-        )
+        var result = Self.normalizedForMatching(value)
         if homePath != "/" && !homePath.isEmpty {
             result = result.replacingOccurrences(of: homePath, with: "~")
         }
@@ -506,11 +501,35 @@ private final class UserDiagnosticSanitizer: @unchecked Sendable {
             in: result,
             with: "$1=<redacted>"
         )
-        result = String(result.unicodeScalars.filter {
-            $0.value == 0x09 || $0.value >= 0x20
-        })
+        result = Self.normalizedForMatching(result)
         result = result.trimmingCharacters(in: .whitespacesAndNewlines)
         return String(result.prefix(Self.maximumLength))
+    }
+
+    private static func normalizedForMatching(_ value: String) -> String {
+        var normalized = value.precomposedStringWithCanonicalMapping
+        // Collapse obfuscating controls while retaining ANSI delimiters long
+        // enough to remove the entire sequence, including its visible payload.
+        normalized = String(normalized.unicodeScalars.filter {
+            !CharacterSet.controlCharacters.contains($0)
+                || $0.value == 0x07
+                || $0.value == 0x1B
+        })
+        let ansiPatterns = [
+            #"\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)"#,
+            #"\x1B\[[0-?]*[ -/]*[@-~]"#,
+            #"\x1B[@-_]"#,
+        ]
+        for pattern in ansiPatterns {
+            normalized = replacing(
+                pattern: pattern,
+                in: normalized,
+                with: ""
+            )
+        }
+        return String(normalized.unicodeScalars.filter {
+            !CharacterSet.controlCharacters.contains($0)
+        })
     }
 
     private static func replacing(
@@ -529,63 +548,119 @@ private final class UserDiagnosticSanitizer: @unchecked Sendable {
 }
 
 private final class DownloadProgressAccumulator: @unchecked Sendable {
+    private struct StreamState {
+        var line = Data()
+        var isTruncated = false
+        var lastUpdate: UInt64 = 0
+
+        mutating func accept(
+            _ data: Data,
+            maximumLineBytes: Int,
+            sanitizer: UserDiagnosticSanitizer
+        ) -> String? {
+            var latestCompletedLine: String?
+            for byte in data {
+                if byte == 0x0A || byte == 0x0D {
+                    if !isTruncated,
+                       let candidate = Self.sanitized(line, using: sanitizer) {
+                        latestCompletedLine = candidate
+                    }
+                    line.removeAll(keepingCapacity: true)
+                    isTruncated = false
+                } else if !isTruncated {
+                    if line.count < maximumLineBytes {
+                        line.append(byte)
+                    } else {
+                        // Never retain a suffix after losing its identifying
+                        // prefix: the entire logical line becomes unrenderable.
+                        line.removeAll(keepingCapacity: false)
+                        isTruncated = true
+                    }
+                }
+            }
+            return latestCompletedLine
+        }
+
+        func sanitizedIncompleteLine(
+            using sanitizer: UserDiagnosticSanitizer
+        ) -> String? {
+            guard !isTruncated else { return nil }
+            return Self.sanitized(line, using: sanitizer)
+        }
+
+        private static func sanitized(
+            _ data: Data,
+            using sanitizer: UserDiagnosticSanitizer
+        ) -> String? {
+            guard !data.isEmpty else { return nil }
+            let value = sanitizer.sanitize(String(decoding: data, as: UTF8.self))
+            return value.isEmpty ? nil : value
+        }
+    }
+
+    private struct StoredLine {
+        let sequence: UInt64
+        let value: String
+    }
+
+    private static let maximumLineBytes = 4_096
     private let lock = NSLock()
     private let sanitizer: UserDiagnosticSanitizer
-    private var standardOutput = Data()
-    private var standardError = Data()
-    private var storedLatestLine: String?
+    private var standardOutput = StreamState()
+    private var standardError = StreamState()
+    private var storedLatestLine: StoredLine?
+    private var sequence: UInt64 = 0
 
     init(sanitizer: UserDiagnosticSanitizer) {
         self.sanitizer = sanitizer
     }
 
     var latestLine: String? {
-        lock.withLock { storedLatestLine }
+        lock.withLock {
+            var candidates = [StoredLine]()
+            if let storedLatestLine {
+                candidates.append(storedLatestLine)
+            }
+            if let value = standardOutput.sanitizedIncompleteLine(using: sanitizer) {
+                candidates.append(StoredLine(
+                    sequence: standardOutput.lastUpdate,
+                    value: value
+                ))
+            }
+            if let value = standardError.sanitizedIncompleteLine(using: sanitizer) {
+                candidates.append(StoredLine(
+                    sequence: standardError.lastUpdate,
+                    value: value
+                ))
+            }
+            return candidates.max { $0.sequence < $1.sequence }?.value
+        }
     }
 
     func accept(_ chunk: ProcessOutputChunk) -> String? {
         lock.withLock {
-            let hasLineBoundary = Self.containsLineBoundary(chunk.data)
+            sequence &+= 1
+            let completed: String?
             switch chunk.destination {
             case .standardOutput:
-                append(chunk.data, to: &standardOutput)
-                storedLatestLine = Self.latestLine(
-                    in: standardOutput,
+                standardOutput.lastUpdate = sequence
+                completed = standardOutput.accept(
+                    chunk.data,
+                    maximumLineBytes: Self.maximumLineBytes,
                     sanitizer: sanitizer
-                ) ?? storedLatestLine
+                )
             case .standardError:
-                append(chunk.data, to: &standardError)
-                storedLatestLine = Self.latestLine(
-                    in: standardError,
+                standardError.lastUpdate = sequence
+                completed = standardError.accept(
+                    chunk.data,
+                    maximumLineBytes: Self.maximumLineBytes,
                     sanitizer: sanitizer
-                ) ?? storedLatestLine
+                )
             }
-            return hasLineBoundary ? storedLatestLine : nil
+            if let completed {
+                storedLatestLine = StoredLine(sequence: sequence, value: completed)
+            }
+            return completed
         }
-    }
-
-    private func append(_ data: Data, to buffer: inout Data) {
-        buffer.append(data)
-        if buffer.count > 4_096 {
-            buffer = Data(buffer.suffix(4_096))
-        }
-    }
-
-    private static func containsLineBoundary(_ data: Data) -> Bool {
-        data.contains(0x0A) || data.contains(0x0D)
-    }
-
-    private static func latestLine(
-        in data: Data,
-        sanitizer: UserDiagnosticSanitizer
-    ) -> String? {
-        let decoded = String(decoding: data, as: UTF8.self)
-        guard let candidate = decoded
-            .split(whereSeparator: { $0 == "\n" || $0 == "\r" })
-            .last
-        else { return nil }
-        let line = sanitizer.sanitize(String(candidate))
-        guard !line.isEmpty else { return nil }
-        return line
     }
 }
