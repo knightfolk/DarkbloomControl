@@ -1,9 +1,9 @@
 import AppKit
-import DarkbloomTelemetry
 import Foundation
 import SwiftUI
 import Testing
 @testable import DarkbloomMonitor
+@testable import DarkbloomTelemetry
 
 private let providerControlTestNow = Date(timeIntervalSince1970: 1_750_000_000)
 
@@ -270,6 +270,72 @@ struct ProviderControlStoreTests {
         #expect(store.snapshot?.sources == .unknown)
         #expect(!store.canDownload("available-model"))
         #expect(store.errorMessage == "Download completed, but model controls could not refresh.")
+    }
+
+    @Test(
+        "post-exit cancellation reconciles real runner mutations instead of retaining stale state",
+        arguments: PostExitProviderMutation.allCases
+    )
+    func reconcilesPostExitRunnerCancellation(
+        _ mutation: PostExitProviderMutation
+    ) async throws {
+        let harness = try PostExitProviderHarness.make(mutation: mutation)
+        defer { harness.cleanup() }
+        let store = ProviderControlStore(controller: harness.service)
+        await store.refresh()
+        let initialSnapshot = try #require(store.snapshot)
+
+        switch mutation {
+        case .download:
+            #expect(store.canDownload("available-model"))
+        case .delete:
+            #expect(initialSnapshot.inventory.myCatalog.contains { $0.localID == "second-model" })
+        case .lifecycle:
+            #expect(initialSnapshot.inventory.myCatalog.first {
+                $0.catalogID == "saved-model"
+            }?.liveState == .loadedIdle)
+        }
+
+        let mutationTask: Task<Void, Never>
+        switch mutation {
+        case .download:
+            mutationTask = Task { await store.download("available-model") }
+        case .delete:
+            mutationTask = Task { await store.delete("second-model") }
+        case .lifecycle:
+            mutationTask = Task { await store.request(.stop) }
+        }
+
+        guard await harness.gate.waitUntilStarted() else {
+            mutationTask.cancel()
+            await harness.gate.release()
+            await mutationTask.value
+            Issue.record("The provider command did not reach the post-exit return window")
+            return
+        }
+        #expect(try String(contentsOf: harness.sentinelURL) == mutation.rawValue)
+        mutationTask.cancel()
+        await harness.gate.release()
+        await mutationTask.value
+
+        #expect(store.operation == .idle)
+        #expect(store.snapshot != initialSnapshot)
+        #expect(store.errorMessage == nil)
+        switch mutation {
+        case .download:
+            #expect(!store.canDownload("available-model"))
+            #expect(store.snapshot?.inventory.myCatalog.contains {
+                $0.localID == "available-model"
+            } == true)
+        case .delete:
+            #expect(store.snapshot?.inventory.myCatalog.contains {
+                $0.localID == "second-model"
+            } == false)
+        case .lifecycle:
+            #expect(store.snapshot?.inventory.myCatalog.first {
+                $0.catalogID == "saved-model"
+            }?.liveState == .unloaded)
+        }
     }
 
     @Test("download progress publishes only a sanitized bounded latest line")
@@ -939,6 +1005,266 @@ struct ProviderControlStoreTests {
         #expect(statusIdentity == appIdentity)
     }
 }
+
+enum PostExitProviderMutation: String, CaseIterable, Sendable {
+    case download
+    case delete
+    case lifecycle
+
+    func matches(_ command: ProcessCommand) -> Bool {
+        switch self {
+        case .download:
+            return Array(command.arguments.prefix(2)) == ["models", "download"]
+        case .delete:
+            return Array(command.arguments.prefix(2)) == ["models", "remove"]
+        case .lifecycle:
+            return command.arguments.first == "stop"
+        }
+    }
+}
+
+private final class PostExitProviderHarness: @unchecked Sendable {
+    let directory: URL
+    let sentinelURL: URL
+    let gate: PostExitProviderGate
+    let service: ProviderControlService
+
+    static func make(mutation: PostExitProviderMutation) throws -> PostExitProviderHarness {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-post-exit-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let executableURL = directory.appendingPathComponent("darkbloom")
+            try Data(postExitProviderScript.utf8).write(to: executableURL)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: executableURL.path
+            )
+            try postExitCatalogJSON.write(to: directory.appendingPathComponent("catalog.json"))
+            try postExitLocalInitialJSON.write(
+                to: directory.appendingPathComponent("local-initial.json")
+            )
+            try postExitLocalDownloadedJSON.write(
+                to: directory.appendingPathComponent("local-downloaded.json")
+            )
+            try postExitLocalDeletedJSON.write(
+                to: directory.appendingPathComponent("local-deleted.json")
+            )
+
+            let stateURL = directory.appendingPathComponent("model-state")
+            let sentinelURL = directory.appendingPathComponent("mutation.sentinel")
+            let gate = PostExitProviderGate(mutation: mutation)
+            let runner = CappedProcessRunner(testOnlyPostExitObserver: { command in
+                await gate.pauseIfTarget(command)
+            })
+            let selection = ProviderModelSelection(enabled: ["saved-model"], preloaded: [])
+            let configStore = PostExitConfigStore(selection: selection)
+            let telemetry = PostExitTelemetrySource(stateURL: stateURL)
+            let policy = DarkbloomSourcePolicy(
+                homeDirectory: directory,
+                environmentPath: directory.path
+            )
+            let service = ProviderControlService(
+                policy: policy,
+                telemetrySource: telemetry,
+                configStore: configStore,
+                runner: runner,
+                now: { providerControlTestNow }
+            )
+            return PostExitProviderHarness(
+                directory: directory,
+                sentinelURL: sentinelURL,
+                gate: gate,
+                service: service
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    private init(
+        directory: URL,
+        sentinelURL: URL,
+        gate: PostExitProviderGate,
+        service: ProviderControlService
+    ) {
+        self.directory = directory
+        self.sentinelURL = sentinelURL
+        self.gate = gate
+        self.service = service
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+private actor PostExitProviderGate {
+    private let mutation: PostExitProviderMutation
+    private var started = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(mutation: PostExitProviderMutation) {
+        self.mutation = mutation
+    }
+
+    func pauseIfTarget(_ command: ProcessCommand) async {
+        guard mutation.matches(command), !started else { return }
+        started = true
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilStarted(timeout: Duration = .seconds(1)) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !started {
+            guard clock.now < deadline else { return false }
+            await Task.yield()
+        }
+        return true
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor PostExitConfigStore: ProviderConfigManaging {
+    private let draft: ProviderConfigDraft
+
+    init(selection: ProviderModelSelection) {
+        draft = ProviderConfigDraft(
+            sourceRevision: "post-exit-fixture",
+            original: selection,
+            selection: selection
+        )
+    }
+
+    func load() async throws -> ProviderConfigDraft { draft }
+
+    func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
+        ProviderConfigSaveResult(draft: draft, restartRequired: true)
+    }
+}
+
+private struct PostExitTelemetrySource: TelemetrySource, Sendable {
+    let stateURL: URL
+
+    func readDaemonState() async throws -> DaemonState {
+        postExitDaemon(currentModel: mutationState == "stopped" ? "" : "saved-model")
+    }
+
+    func readLoadedModels() async throws -> LoadedModelsState {
+        LoadedModelsState(
+            schema: 1,
+            models: mutationState == "stopped" ? [] : ["saved-model"],
+            updatedAt: providerControlTestNow.timeIntervalSince1970
+        )
+    }
+
+    func readStatus() async throws -> StatusSnapshot { StatusSnapshot() }
+    func readLegacyEvents(limit: Int) async throws -> [LogEvent] { [] }
+
+    private var mutationState: String {
+        guard let data = try? Data(contentsOf: stateURL) else { return "initial" }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+private func postExitDaemon(currentModel: String) -> DaemonState {
+    DaemonState(
+        schema: 1,
+        version: "test",
+        currentModel: currentModel,
+        warmModels: [],
+        stats: ProviderStats(tokensGenerated: 0, requestsServed: 0, usageGaps: 0),
+        trust: TrustState(level: "local", status: "online", reason: "", receivedAt: 0),
+        capacity: MemoryCapacity(
+            totalMemoryGB: 32,
+            gpuMemoryActiveGB: 0,
+            gpuMemoryCacheGB: 0
+        ),
+        slots: [],
+        inferenceActive: false,
+        startedAt: 0,
+        writtenAt: providerControlTestNow.timeIntervalSince1970,
+        pid: 1,
+        processIdentity: ProcessIdentity(pid: 1, startTimeMicros: 1)
+    )
+}
+
+private let postExitProviderScript = #"""
+#!/bin/sh
+root=$(dirname "$0")
+case "$1:$2" in
+    "models:catalog")
+        /bin/cat "$root/catalog.json"
+        ;;
+    "models:list")
+        state=initial
+        if [ -f "$root/model-state" ]; then
+            state=$(/bin/cat "$root/model-state")
+        fi
+        case "$state" in
+            downloaded) /bin/cat "$root/local-downloaded.json" ;;
+            deleted) /bin/cat "$root/local-deleted.json" ;;
+            *) /bin/cat "$root/local-initial.json" ;;
+        esac
+        ;;
+    "models:download")
+        /usr/bin/printf download > "$root/mutation.sentinel"
+        /usr/bin/printf downloaded > "$root/model-state"
+        ;;
+    "models:remove")
+        /usr/bin/printf delete > "$root/mutation.sentinel"
+        /usr/bin/printf deleted > "$root/model-state"
+        ;;
+    "stop:")
+        /usr/bin/printf lifecycle > "$root/mutation.sentinel"
+        /usr/bin/printf stopped > "$root/model-state"
+        ;;
+    *)
+        exit 64
+        ;;
+esac
+exit 0
+"""#
+
+private let postExitCatalogJSON = Data(#"""
+[
+  {"id":"saved-model","display_name":"Saved Model","family":"saved","model_type":"llm","capabilities":["text"],"size_gb":1,"min_ram_gb":4,"active":true},
+  {"id":"second-model","display_name":"Second Model","family":"second","model_type":"llm","capabilities":["text"],"size_gb":2,"min_ram_gb":8,"active":true},
+  {"id":"available-model","display_name":"Available Model","family":"available","model_type":"llm","capabilities":["text"],"size_gb":3,"min_ram_gb":12,"active":true}
+]
+"""#.utf8)
+
+private let postExitLocalInitialJSON = Data(#"""
+{"cache_directory":"/inert/cache","filtered_by_config":false,"models":[
+  {"id":"saved-model","model_type":"llm","size_bytes":1,"estimated_memory_gb":1},
+  {"id":"second-model","model_type":"llm","size_bytes":2,"estimated_memory_gb":2}
+]}
+"""#.utf8)
+
+private let postExitLocalDownloadedJSON = Data(#"""
+{"cache_directory":"/inert/cache","filtered_by_config":false,"models":[
+  {"id":"saved-model","model_type":"llm","size_bytes":1,"estimated_memory_gb":1},
+  {"id":"second-model","model_type":"llm","size_bytes":2,"estimated_memory_gb":2},
+  {"id":"available-model","model_type":"llm","size_bytes":3,"estimated_memory_gb":3}
+]}
+"""#.utf8)
+
+private let postExitLocalDeletedJSON = Data(#"""
+{"cache_directory":"/inert/cache","filtered_by_config":false,"models":[
+  {"id":"saved-model","model_type":"llm","size_bytes":1,"estimated_memory_gb":1}
+]}
+"""#.utf8)
 
 private actor FakeProviderController: ProviderControlling {
     enum Failure: Error, Sendable {

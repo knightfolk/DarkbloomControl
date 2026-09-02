@@ -30,6 +30,49 @@ struct ProcessRunnerTests {
         #expect(result.standardError.isEmpty)
     }
 
+    @Test("caller cancellation after a successful owned exit preserves the result")
+    func successfulExitWinsLateCancellation() async throws {
+        let sentinel = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-monitor-\(UUID().uuidString).sentinel")
+        defer { try? FileManager.default.removeItem(at: sentinel) }
+        let enteredPostExitWindow = CompletionFlag()
+        let releasePostExitWindow = AsyncReleaseGate()
+        let runner = CappedProcessRunner(testOnlyPostExitObserver: { _ in
+            enteredPostExitWindow.set()
+            await releasePostExitWindow.wait()
+        })
+        let runTask = Task {
+            try await runner.run(
+                .testOnly(
+                    executable: URL(fileURLWithPath: "/bin/sh"),
+                    arguments: [
+                        "-c",
+                        "printf mutation-complete > \"$1\"; exit 0",
+                        "sh",
+                        sentinel.path,
+                    ]
+                ),
+                timeout: .seconds(3),
+                outputLimit: 256
+            )
+        }
+
+        guard await waitForCompletion(enteredPostExitWindow, timeout: .seconds(1)) else {
+            runTask.cancel()
+            await releasePostExitWindow.release()
+            _ = await runTask.result
+            Issue.record("The runner did not enter its post-exit return window")
+            return
+        }
+        #expect(try String(contentsOf: sentinel) == "mutation-complete")
+
+        runTask.cancel()
+        await releasePostExitWindow.release()
+        let result = try await runTask.value
+
+        #expect(result.exitCode == 0)
+    }
+
     @Test("terminates output beyond the cap")
     func capsOutput() async {
         await #expect(throws: ProcessRunnerError.outputLimitExceeded(limit: 8)) {
@@ -395,5 +438,23 @@ private final class CompletionFlag: @unchecked Sendable {
 
     func read() -> Bool {
         lock.withLock { completed }
+    }
+}
+
+private actor AsyncReleaseGate {
+    private var released = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        continuations.forEach { $0.resume() }
+        continuations.removeAll()
     }
 }

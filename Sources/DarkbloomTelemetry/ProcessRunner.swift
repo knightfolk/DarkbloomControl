@@ -21,13 +21,21 @@ public enum ProcessRunnerError: Error, Equatable, Sendable {
 
 public struct CappedProcessRunner: ProcessExecuting, Sendable {
     private let testOnlyCleanupObserver: (@Sendable (ProcessCleanupState) -> Void)?
+    private let testOnlyPostExitObserver: (@Sendable (ProcessCommand) async -> Void)?
 
     public init() {
         testOnlyCleanupObserver = nil
+        testOnlyPostExitObserver = nil
     }
 
     init(testOnlyCleanupObserver: @escaping @Sendable (ProcessCleanupState) -> Void) {
         self.testOnlyCleanupObserver = testOnlyCleanupObserver
+        testOnlyPostExitObserver = nil
+    }
+
+    init(testOnlyPostExitObserver: @escaping @Sendable (ProcessCommand) async -> Void) {
+        testOnlyCleanupObserver = nil
+        self.testOnlyPostExitObserver = testOnlyPostExitObserver
     }
 
     public func run(
@@ -98,7 +106,7 @@ public struct CappedProcessRunner: ProcessExecuting, Sendable {
 
             await session.waitForTermination()
             await session.waitForReaders(timeout: .milliseconds(250))
-            try Task.checkCancellation()
+            await testOnlyPostExitObserver?(command)
             if session.cancellationWasRequested {
                 throw CancellationError()
             }
@@ -298,10 +306,14 @@ private final class ProcessSession: @unchecked Sendable {
     }
 
     func requestCancellation() {
-        lock.withLock {
+        let shouldTerminate = lock.withLock { () -> Bool in
+            guard !terminated else { return false }
             cancellationRequested = true
+            return true
         }
-        terminateIfNeeded()
+        if shouldTerminate {
+            terminateIfNeeded()
+        }
     }
 
     func requestTermination(for error: ProcessRunnerError) {
