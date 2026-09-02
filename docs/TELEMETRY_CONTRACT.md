@@ -63,6 +63,13 @@ uses a UUID-named candidate beside that file and maintains one fixed backup;
 it reports restart-required rather than restarting automatically. Start repeats
 `--model` for every enabled model to bypass the CLI picker.
 
+Config publication uses revision checks, bounded advisory locks, and atomic
+replacement. The locks coordinate only cooperating writers that reopen and
+revalidate the path; a noncooperating writer that retains an open descriptor is
+outside that guarantee. Detected external changes reject the save. When recovery
+cannot establish a safe outcome, the store preserves visible versions and
+reports the bounded recovery failure instead of claiming a completed save.
+
 All other config fields, credentials, account commands, launchd internals, and
 direct cache operations remain forbidden. The monitor does not execute
 `darkbloom local`, `verify`, `doctor`, or update commands. It never runs a

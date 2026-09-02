@@ -24,8 +24,11 @@ read a file or launch a process directly.
 2. `LocalTelemetrySource` reads schema-1 state and loaded models, retries a
    transient daemon-state decode once after 100 milliseconds, reads only the
    final 128 KiB of the legacy log, and parses the fixed status result.
-3. `CappedProcessRunner` is the only code that constructs `Process`. Finite
-   child output is capped at 256 KiB and times out after three seconds.
+3. `CappedProcessRunner` is the only code that constructs `Process`. Telemetry
+   `status` reads and candidate-config validation retain at most 256 KiB and
+   time out after three seconds. Provider catalog/list reads use the separate
+   1 MiB mutation cap and a 15-second bound; lifecycle and model removal use
+   1 MiB and 30 seconds; a model download uses 1 MiB and a six-hour bound.
    `UnifiedLogStreamer` owns its long-lived `/usr/bin/log` child and incrementally
    frames capped JSON lines.
 4. Actor-owned `TelemetryService` starts independent state, loaded-model,
@@ -57,6 +60,12 @@ read a file or launch a process directly.
    `ProviderControlService` owns catalog/list/download/remove/start/stop/restart
    commands; `ProviderControlStore` serializes their UI state. A config save
    reports restart-required rather than restarting the provider itself.
+
+   Its revision checks, bounded advisory locks, and atomic replacement
+   coordinate cooperating writers only. A noncooperating writer that keeps an
+   open descriptor can still race publication. On an observed external change
+   or lost recovery certainty, the store rejects the save or preserves the
+   visible versions; it does not claim unconditional serialization or success.
 
 ```text
 approved files -----> LocalTelemetrySource --\
@@ -121,9 +130,17 @@ change before the command runs. Active or unknown activity therefore requires a
 user's explicit destructive override; this is a customer-impact warning, not an
 atomic no-interruption guarantee.
 
+Configuration saves preserve unrelated bytes and comments only within their
+observed/revalidated source revision. Bounded advisory locks require a
+cooperating writer to reopen and revalidate the path after contention; they do
+not serialize a noncooperating writer retaining an open descriptor. Detected
+changes reject the save. If recovery cannot establish which version is current,
+the store preserves visible versions and reports the bounded recovery failure
+rather than representing publication as safe or complete.
+
 ## Popover presentation boundary
 
-The 400-by-560-point popover intentionally renders current and session-average
+The 400-by-600-point popover intentionally renders current and session-average
 throughput, today and covered seven-day job metrics, model-state capsules, a
 labeled Settings control, an icon-only door control for Quit, and compact
 Start/Stop/Restart controls. The Settings window has General and Models tabs;

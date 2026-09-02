@@ -2,7 +2,7 @@
 
 A native macOS menu-bar monitor and narrowly scoped provider-control surface
 for a local Darkbloom provider. It presents live provider state in a compact
-400-by-560-point SwiftUI popover, reads authenticated account earnings, and
+400-by-600-point SwiftUI popover, reads authenticated account earnings, and
 keeps provider changes behind explicit, bounded actions.
 
 ## Requirements
@@ -105,7 +105,7 @@ The monitor has a deliberately narrow management allowlist:
 - reads only the fixed local and remote sources listed above;
 - reads and may change only top-level `enabled_models` and `preload_models` in
   the fixed `~/.config/darkbloom/provider.toml`; it preserves unrelated TOML
-  bytes and comments;
+  bytes and comments when a save completes with the observed source revision;
 - invokes only `darkbloom status`, `models catalog`, `models list`, `models
   download`, `models remove`, `start`, `stop`, and `restart`, using an
   executable plus separate arguments rather than a shell;
@@ -127,6 +127,14 @@ validates a candidate before publication, then reports that a provider restart
 is required; a save itself does not restart the provider. Download/Delete and
 Enable/Preload remain independent states, so one action does not silently
 perform another.
+
+Configuration publication uses bounded advisory locking, revision checks, and
+atomic replacement. The locks coordinate only writers that cooperate by
+reopening and revalidating the config path after contention. A noncooperating
+writer that retains an open descriptor cannot be serialized by this monitor;
+when external change or recovery certainty is lost, the save is rejected or
+reports recovery and preserves the visible versions rather than claiming an
+unconditional safe publication.
 
 Stop and Restart can interrupt customer work. The monitor checks activity, but
 that check can be unavailable or become stale between checking and execution.
@@ -166,8 +174,9 @@ download or repair Darkbloom.
 Confirm the provider is running and that `~/.darkbloom/daemon-state.json` and
 `~/.darkbloom/loaded-models.json` exist and are readable by your user. A schema
 other than 1 is rejected explicitly rather than partially decoded. The compact
-dashboard shows an em dash for unavailable values. The monitor never starts or
-restarts the provider.
+dashboard shows an em dash for unavailable values. To start a stopped provider,
+save at least one enabled model and use Start. Stop and Restart require an
+explicit confirmation when customer activity is active or cannot be confirmed.
 
 ### Logs unavailable or stale
 

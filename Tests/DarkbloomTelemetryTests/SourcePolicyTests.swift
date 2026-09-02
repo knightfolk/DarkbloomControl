@@ -32,7 +32,7 @@ struct SourcePolicyTests {
             DarkbloomCommand.restart(executable: executable, config: config),
         ]
 
-        #expect(commands.allSatisfy { $0.executable != URL(fileURLWithPath: "/bin/sh") })
+        #expect(commands.allSatisfy { $0.executable == executable })
         #expect(DarkbloomCommand.stop(executable: executable).arguments == ["stop"])
         #expect(!DarkbloomCommand.stop(executable: executable).arguments.contains("--uninstall"))
         #expect(DarkbloomCommand.start(executable: executable, config: config, models: ["first", "second"]).arguments == [
@@ -76,10 +76,11 @@ struct SourcePolicyTests {
         private_value = "never-display-me"
         preload_models = []
         """.utf8).write(to: config)
+        let runner = RejectingConfigValidationRunner()
         let store = LocalProviderConfigStore(
             configURL: config,
             executable: directory.appendingPathComponent("darkbloom"),
-            runner: RejectingConfigValidationRunner()
+            runner: runner
         )
         let draft = try await store.load()
 
@@ -89,19 +90,28 @@ struct SourcePolicyTests {
             ))
             Issue.record("Expected candidate validation to fail")
         } catch {
+            #expect(error as? ProviderConfigError == .validationFailed(
+                "Darkbloom rejected the candidate configuration"
+            ))
             #expect(!String(describing: error).contains("never-display-me"))
         }
+        #expect(await runner.invocationCount == 1)
     }
 }
 
 private actor RejectingConfigValidationRunner: ProcessExecuting {
+    private var invocations = 0
+
+    var invocationCount: Int { invocations }
+
     func run(
         _ command: ProcessCommand,
         timeout: Duration,
         outputLimit: Int,
         onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
     ) async throws -> CommandResult {
-        CommandResult(
+        invocations += 1
+        return CommandResult(
             exitCode: 2,
             standardOutput: Data(),
             standardError: Data("never-display-me".utf8)

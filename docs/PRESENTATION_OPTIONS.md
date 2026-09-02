@@ -7,7 +7,7 @@ and C remain design history and are not alternate modes in the application.
 
 ## Option D: Infographic dashboard (current)
 
-A fixed 400-by-560-point SwiftUI popover shows two large throughput values, two
+A fixed 400-by-600-point SwiftUI popover shows two large throughput values, two
 large completed-job values, and color-coded model capsules. Its first row keeps
 a labeled Settings control and an icon-only door control that stops the
 accessory app cleanly; a second row exposes Start, Stop, and Restart provider
