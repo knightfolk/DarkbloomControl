@@ -139,10 +139,64 @@ struct ProviderLifecyclePresentationTests {
         let input = lifecycleInput(
             daemon: .unavailable(reason: "Waiting for daemon state"),
             daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
-            controlDaemon: .fresh
+            controlDaemon: .fresh,
+            controlCapturedAt: now,
+            currentTime: now
         )
 
         #expect(input.providerKnownRunning == true)
+    }
+
+    @Test("fresh control fallback remains valid at exactly ten seconds")
+    func controlFreshnessBoundaryIsInclusive() {
+        let input = lifecycleInput(
+            daemon: .unavailable(reason: "Waiting for daemon state"),
+            daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
+            controlDaemon: .fresh,
+            controlCapturedAt: now.addingTimeInterval(-10),
+            currentTime: now
+        )
+
+        #expect(input.providerKnownRunning == true)
+    }
+
+    @Test("fresh control fallback expires just beyond ten seconds")
+    func controlFreshnessExpires() {
+        let input = lifecycleInput(
+            daemon: .unavailable(reason: "Waiting for daemon state"),
+            daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
+            controlDaemon: .fresh,
+            controlCapturedAt: now.addingTimeInterval(-10.001),
+            currentTime: now
+        )
+
+        expectUnknownLifecycle(input)
+    }
+
+    @Test("future control capture cannot establish running")
+    func futureControlCaptureIsUnknown() {
+        let input = lifecycleInput(
+            daemon: .unavailable(reason: "Waiting for daemon state"),
+            daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
+            controlDaemon: .fresh,
+            controlCapturedAt: now.addingTimeInterval(0.001),
+            currentTime: now
+        )
+
+        expectUnknownLifecycle(input)
+    }
+
+    @Test("non-finite control capture cannot establish running")
+    func nonFiniteControlCaptureIsUnknown() {
+        let input = lifecycleInput(
+            daemon: .unavailable(reason: "Waiting for daemon state"),
+            daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
+            controlDaemon: .fresh,
+            controlCapturedAt: Date(timeIntervalSince1970: .infinity),
+            currentTime: now
+        )
+
+        expectUnknownLifecycle(input)
     }
 
     @Test("popup model pills require fresh daemon and loaded-model evidence")
@@ -391,13 +445,30 @@ private let now = Date(timeIntervalSince1970: 1_788_282_000)
 private func lifecycleInput(
     daemon: SourceAvailability<DaemonState>,
     daemonStatus: SourceAvailability<StatusSnapshot>,
-    controlDaemon: ProviderControlSourceState?
+    controlDaemon: ProviderControlSourceState?,
+    controlCapturedAt: Date? = now,
+    currentTime: Date = now
 ) -> ProviderLifecycleSourceInput {
     ProviderLifecycleSourceInput(
         daemonState: daemon,
         status: daemonStatus,
-        controlDaemonState: controlDaemon
+        controlDaemonState: controlDaemon,
+        controlCapturedAt: controlCapturedAt,
+        currentTime: currentTime
     )
+}
+
+private func expectUnknownLifecycle(_ input: ProviderLifecycleSourceInput) {
+    #expect(input.providerKnownRunning == nil)
+    let value = ProviderLifecyclePresentation.make(
+        sourceInput: input,
+        operation: .idle,
+        enabledModels: ["gpt-oss"]
+    )
+    #expect(!value.canStart)
+    #expect(!value.canStop)
+    #expect(!value.canRestart)
+    #expect(value.unavailableReason == "Provider state is unavailable")
 }
 
 private func status(daemon: String?, enabled: String? = nil) -> StatusSnapshot {

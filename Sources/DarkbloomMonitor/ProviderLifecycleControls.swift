@@ -1,10 +1,15 @@
 import DarkbloomTelemetry
+import Foundation
 import SwiftUI
 
 struct ProviderLifecycleSourceInput: Equatable {
+    private static let controlMaximumAge: TimeInterval = 10
+
     let daemonState: SourceAvailability<DaemonState>
     let status: SourceAvailability<StatusSnapshot>
     let controlDaemonState: ProviderControlSourceState?
+    let controlCapturedAt: Date?
+    let currentTime: Date
 
     var providerKnownRunning: Bool? {
         if case .available(let status, _) = status,
@@ -14,10 +19,20 @@ struct ProviderLifecycleSourceInput: Equatable {
         if case .available = daemonState {
             return true
         }
-        if controlDaemonState == .fresh {
+        if hasCurrentControlDaemonEvidence {
             return true
         }
         return nil
+    }
+
+    private var hasCurrentControlDaemonEvidence: Bool {
+        guard controlDaemonState == .fresh,
+              let controlCapturedAt,
+              controlCapturedAt.timeIntervalSince1970.isFinite,
+              currentTime.timeIntervalSince1970.isFinite
+        else { return false }
+        let age = currentTime.timeIntervalSince(controlCapturedAt)
+        return age.isFinite && age >= 0 && age <= Self.controlMaximumAge
     }
 
     private static func runningState(from daemonStatus: String?) -> Bool? {
@@ -213,12 +228,14 @@ struct ProviderLifecycleControls: View {
     @State private var dismissalCoordinator = LifecycleConfirmationDismissalCoordinator()
     let snapshot: TelemetrySnapshot
 
-    private var presentation: ProviderLifecyclePresentation {
+    private func presentation(currentTime: Date) -> ProviderLifecyclePresentation {
         .make(
             sourceInput: ProviderLifecycleSourceInput(
                 daemonState: snapshot.state,
                 status: snapshot.status,
-                controlDaemonState: store.snapshot?.sources.daemon
+                controlDaemonState: store.snapshot?.sources.daemon,
+                controlCapturedAt: store.snapshot?.capturedAt,
+                currentTime: currentTime
             ),
             operation: store.operation,
             enabledModels: store.draft?.original.enabled
@@ -228,7 +245,31 @@ struct ProviderLifecycleControls: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            controls(currentTime: context.date)
+        }
+        .alert(item: confirmation) { confirmation in
+            let alert = LifecycleConfirmationPresentation.make(confirmation)
+            return Alert(
+                title: Text(alert.title),
+                message: Text(alert.body),
+                primaryButton: .destructive(Text(alert.confirmLabel)) {
+                    dismissalCoordinator.beginConfirmation()
+                    Task {
+                        defer { dismissalCoordinator.endConfirmation() }
+                        await store.confirmPendingLifecycle()
+                    }
+                },
+                secondaryButton: .cancel {
+                    store.cancelPendingLifecycle()
+                }
+            )
+        }
+    }
+
+    private func controls(currentTime: Date) -> some View {
+        let presentation = presentation(currentTime: currentTime)
+        return HStack(spacing: 6) {
             if let unavailableReason = presentation.unavailableReason {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
@@ -257,23 +298,6 @@ struct ProviderLifecycleControls: View {
                 .accessibilityLabel(control.accessibilityLabel)
                 .accessibilityIdentifier(control.accessibilityIdentifier)
             }
-        }
-        .alert(item: confirmation) { confirmation in
-            let alert = LifecycleConfirmationPresentation.make(confirmation)
-            return Alert(
-                title: Text(alert.title),
-                message: Text(alert.body),
-                primaryButton: .destructive(Text(alert.confirmLabel)) {
-                    dismissalCoordinator.beginConfirmation()
-                    Task {
-                        defer { dismissalCoordinator.endConfirmation() }
-                        await store.confirmPendingLifecycle()
-                    }
-                },
-                secondaryButton: .cancel {
-                    store.cancelPendingLifecycle()
-                }
-            )
         }
     }
 
