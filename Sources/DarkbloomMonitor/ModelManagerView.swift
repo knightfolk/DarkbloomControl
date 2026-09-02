@@ -1,6 +1,36 @@
 import DarkbloomTelemetry
 import SwiftUI
 
+struct ModelActionPresentation: Equatable {
+    let accessibilityLabel: String
+    let accessibilityHint: String
+    let isEnabled: Bool
+}
+
+@MainActor
+enum ModelManagerPresentation {
+    static func diagnostic(
+        _ value: String,
+        sanitize: (String) -> String
+    ) -> String {
+        sanitize(value)
+    }
+
+    static func availableRow(
+        item: ModelInventoryItem,
+        store: ProviderControlStore
+    ) -> ModelRowPresentation {
+        ModelRowPresentation.make(
+            item: item,
+            draft: store.draft,
+            operation: store.operation,
+            canDownload: store.canDownload(item.catalogID),
+            downloadUnavailableReason: store.draftValidationMessage,
+            sanitize: store.sanitizedDiagnostic
+        )
+    }
+}
+
 struct ModelRowPresentation: Equatable {
     let showsDownload: Bool
     let showsEnableToggle: Bool
@@ -8,29 +38,93 @@ struct ModelRowPresentation: Equatable {
     let showsDelete: Bool
     let deleteBlockReason: String?
     let availableMetadataText: String?
+    let displayedIssue: String?
+    let enableAction: ModelActionPresentation?
+    let preloadAction: ModelActionPresentation?
+    let deleteAction: ModelActionPresentation?
+    let downloadAction: ModelActionPresentation?
 
+    @MainActor
     static func make(
         item: ModelInventoryItem,
         draft: ProviderConfigDraft?,
-        operation: ProviderOperation
+        operation: ProviderOperation,
+        canDownload: Bool,
+        downloadUnavailableReason: String?,
+        sanitize: (String) -> String
     ) -> Self {
         let isDownloaded = item.isDownloaded
+        let displayedIssue = item.issue.map(sanitize)
+        let controlsBlockReason = controlBlockReason(
+            displayedIssue: displayedIssue,
+            draft: draft,
+            operation: operation
+        )
+        let deleteBlockReason = isDownloaded
+            ? deleteBlockReason(
+                item: item,
+                displayedIssue: displayedIssue,
+                draft: draft,
+                operation: operation
+            )
+            : nil
+        let isEnabled = draft.map {
+            contains(item, in: $0.selection.enabled)
+        } ?? item.isEnabled
+        let isPreloaded = draft.map {
+            contains(item, in: $0.selection.preloaded)
+        } ?? item.isPreloaded
         return Self(
             showsDownload: !isDownloaded,
             showsEnableToggle: isDownloaded,
             showsPreloadToggle: isDownloaded,
             showsDelete: isDownloaded,
-            deleteBlockReason: isDownloaded
-                ? deleteBlockReason(item: item, draft: draft, operation: operation)
-                : nil,
+            deleteBlockReason: deleteBlockReason,
             availableMetadataText: isDownloaded
                 ? nil
-                : ModelFormatting.availableDetails(item)
+                : ModelFormatting.availableDetails(item),
+            displayedIssue: displayedIssue,
+            enableAction: isDownloaded
+                ? toggleAction(
+                    isSelected: isEnabled,
+                    selectedVerb: "Disable",
+                    unselectedVerb: "Enable",
+                    item: item,
+                    blockReason: controlsBlockReason
+                )
+                : nil,
+            preloadAction: isDownloaded
+                ? toggleAction(
+                    isSelected: isPreloaded,
+                    selectedVerb: "Remove preload",
+                    unselectedVerb: "Preload",
+                    item: item,
+                    blockReason: controlsBlockReason
+                )
+                : nil,
+            deleteAction: isDownloaded
+                ? ModelActionPresentation(
+                    accessibilityLabel: "Delete \(item.displayName)",
+                    accessibilityHint: deleteBlockReason
+                        ?? "Shows a confirmation before deleting \(item.displayName).",
+                    isEnabled: deleteBlockReason == nil
+                )
+                : nil,
+            downloadAction: isDownloaded
+                ? nil
+                : downloadAction(
+                    item: item,
+                    displayedIssue: displayedIssue,
+                    operation: operation,
+                    canDownload: canDownload,
+                    unavailableReason: downloadUnavailableReason.map(sanitize)
+                )
         )
     }
 
     private static func deleteBlockReason(
         item: ModelInventoryItem,
+        displayedIssue: String?,
         draft: ProviderConfigDraft?,
         operation: ProviderOperation
     ) -> String? {
@@ -43,7 +137,7 @@ struct ModelRowPresentation: Equatable {
         case .unloaded:
             break
         }
-        if let issue = item.issue { return issue }
+        if let displayedIssue { return displayedIssue }
         guard let draft else { return "Provider configuration is unavailable" }
         if contains(item, in: draft.original.preloaded) {
             return "Remove preload and save before deleting this model"
@@ -55,6 +149,66 @@ struct ModelRowPresentation: Equatable {
             return "Save or reload pending changes before deleting it"
         }
         return nil
+    }
+
+    private static func controlBlockReason(
+        displayedIssue: String?,
+        draft: ProviderConfigDraft?,
+        operation: ProviderOperation
+    ) -> String? {
+        guard operation == .idle else { return "Another model action is in progress" }
+        if let displayedIssue { return displayedIssue }
+        guard draft != nil else { return "Provider configuration is unavailable" }
+        return nil
+    }
+
+    private static func toggleAction(
+        isSelected: Bool,
+        selectedVerb: String,
+        unselectedVerb: String,
+        item: ModelInventoryItem,
+        blockReason: String?
+    ) -> ModelActionPresentation {
+        let verb = isSelected ? selectedVerb : unselectedVerb
+        return ModelActionPresentation(
+            accessibilityLabel: "\(verb) \(item.displayName)",
+            accessibilityHint: blockReason
+                ?? "Stages this change for \(item.displayName) until settings are saved.",
+            isEnabled: blockReason == nil
+        )
+    }
+
+    private static func downloadAction(
+        item: ModelInventoryItem,
+        displayedIssue: String?,
+        operation: ProviderOperation,
+        canDownload: Bool,
+        unavailableReason: String?
+    ) -> ModelActionPresentation {
+        if operation == .downloading(item.catalogID) {
+            return ModelActionPresentation(
+                accessibilityLabel: "Cancel download \(item.displayName)",
+                accessibilityHint: "Stops the download for \(item.displayName).",
+                isEnabled: true
+            )
+        }
+
+        let blockReason: String?
+        if let displayedIssue {
+            blockReason = displayedIssue
+        } else if operation != .idle {
+            blockReason = "Another model action is in progress"
+        } else if !canDownload {
+            blockReason = unavailableReason ?? "Reload model controls before downloading"
+        } else {
+            blockReason = nil
+        }
+        return ModelActionPresentation(
+            accessibilityLabel: "Download \(item.displayName)",
+            accessibilityHint: blockReason
+                ?? "Downloads \(item.displayName) to this Mac.",
+            isEnabled: blockReason == nil
+        )
     }
 
     fileprivate static func contains(_ item: ModelInventoryItem, in selectors: [String]) -> Bool {
@@ -97,6 +251,7 @@ struct ModelManagerView: View {
                             item: item,
                             draft: store.draft,
                             operation: store.operation,
+                            sanitize: store.sanitizedDiagnostic,
                             setEnabled: { enabled, modelID in
                                 store.setEnabled(enabled, modelID: modelID)
                             },
@@ -139,7 +294,13 @@ struct ModelManagerView: View {
             if let issues = store.snapshot?.inventory.issues, !issues.isEmpty {
                 Section("Inventory status") {
                     ForEach(issues, id: \.self) { issue in
-                        Label(issue, systemImage: "exclamationmark.triangle")
+                        Label(
+                            ModelManagerPresentation.diagnostic(
+                                issue,
+                                sanitize: store.sanitizedDiagnostic
+                            ),
+                            systemImage: "exclamationmark.triangle"
+                        )
                             .font(.callout)
                             .foregroundStyle(.orange)
                     }
@@ -154,16 +315,20 @@ private struct DownloadedModelRow: View {
     let item: ModelInventoryItem
     let draft: ProviderConfigDraft?
     let operation: ProviderOperation
+    let sanitize: (String) -> String
     let setEnabled: (Bool, String) -> Void
     let setPreloaded: (Bool, String) -> Void
     let requestDelete: (ModelInventoryItem) -> Void
 
     private var presentation: ModelRowPresentation {
-        .make(item: item, draft: draft, operation: operation)
-    }
-
-    private var controlsDisabled: Bool {
-        operation != .idle || item.issue != nil || draft == nil
+        .make(
+            item: item,
+            draft: draft,
+            operation: operation,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: sanitize
+        )
     }
 
     var body: some View {
@@ -184,13 +349,25 @@ private struct DownloadedModelRow: View {
                 if presentation.showsEnableToggle {
                     Toggle("Enable", isOn: enabledBinding)
                         .toggleStyle(.switch)
-                        .disabled(controlsDisabled)
+                        .disabled(presentation.enableAction?.isEnabled != true)
+                        .accessibilityLabel(
+                            presentation.enableAction?.accessibilityLabel ?? "Enable \(item.displayName)"
+                        )
+                        .accessibilityHint(
+                            presentation.enableAction?.accessibilityHint ?? ""
+                        )
                         .accessibilityIdentifier("model.\(item.catalogID).enable")
                 }
                 if presentation.showsPreloadToggle {
                     Toggle("Preload", isOn: preloadedBinding)
                         .toggleStyle(.switch)
-                        .disabled(controlsDisabled)
+                        .disabled(presentation.preloadAction?.isEnabled != true)
+                        .accessibilityLabel(
+                            presentation.preloadAction?.accessibilityLabel ?? "Preload \(item.displayName)"
+                        )
+                        .accessibilityHint(
+                            presentation.preloadAction?.accessibilityHint ?? ""
+                        )
                         .accessibilityIdentifier("model.\(item.catalogID).preload")
                 }
                 if presentation.showsDelete {
@@ -199,8 +376,14 @@ private struct DownloadedModelRow: View {
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }
-                    .disabled(presentation.deleteBlockReason != nil)
-                    .help(presentation.deleteBlockReason ?? "Delete \(item.displayName)")
+                    .disabled(presentation.deleteAction?.isEnabled != true)
+                    .help(presentation.deleteAction?.accessibilityHint ?? "Delete \(item.displayName)")
+                    .accessibilityLabel(
+                        presentation.deleteAction?.accessibilityLabel ?? "Delete \(item.displayName)"
+                    )
+                    .accessibilityHint(
+                        presentation.deleteAction?.accessibilityHint ?? ""
+                    )
                     .accessibilityIdentifier("model.\(item.catalogID).delete")
                 }
             }
@@ -259,7 +442,7 @@ private struct AvailableModelRow: View {
     }
 
     private var presentation: ModelRowPresentation {
-        .make(item: item, draft: store.draft, operation: store.operation)
+        ModelManagerPresentation.availableRow(item: item, store: store)
     }
 
     var body: some View {
@@ -284,13 +467,29 @@ private struct AvailableModelRow: View {
                     Button("Cancel") {
                         store.cancelCurrentOperation()
                     }
+                    .accessibilityLabel(
+                        presentation.downloadAction?.accessibilityLabel
+                            ?? "Cancel download \(item.displayName)"
+                    )
+                    .accessibilityHint(
+                        presentation.downloadAction?.accessibilityHint ?? ""
+                    )
+                    .accessibilityIdentifier("model.\(item.catalogID).download")
                 } else {
                     Button {
                         Task { await store.download(item.catalogID) }
                     } label: {
                         Label("Add", systemImage: "square.and.arrow.down")
                     }
-                    .disabled(store.operation != .idle || item.issue != nil)
+                    .disabled(presentation.downloadAction?.isEnabled != true)
+                    .help(presentation.downloadAction?.accessibilityHint ?? "")
+                    .accessibilityLabel(
+                        presentation.downloadAction?.accessibilityLabel
+                            ?? "Download \(item.displayName)"
+                    )
+                    .accessibilityHint(
+                        presentation.downloadAction?.accessibilityHint ?? ""
+                    )
                     .accessibilityIdentifier("model.\(item.catalogID).download")
                 }
             }
@@ -300,7 +499,7 @@ private struct AvailableModelRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-            } else if let issue = item.issue {
+            } else if let issue = presentation.displayedIssue {
                 Text(issue)
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -347,7 +546,13 @@ private struct ModelManagerFooter: View {
             }
 
             if let validation = store.draftValidationMessage {
-                Label(validation, systemImage: "exclamationmark.triangle")
+                Label(
+                    ModelManagerPresentation.diagnostic(
+                        validation,
+                        sanitize: store.sanitizedDiagnostic
+                    ),
+                    systemImage: "exclamationmark.triangle"
+                )
                     .foregroundStyle(.orange)
                     .font(.callout)
             }

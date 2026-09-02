@@ -1,15 +1,20 @@
 import DarkbloomTelemetry
+import Foundation
 import Testing
 @testable import DarkbloomMonitor
 
 @Suite("Model manager presentation")
+@MainActor
 struct ModelManagerPresentationTests {
     @Test("download enable preload and delete stay independent")
     func separatesActions() {
         let row = ModelRowPresentation.make(
             item: item(isDownloaded: true),
             draft: draft(),
-            operation: .idle
+            operation: .idle,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
         )
 
         #expect(row.showsDownload == false)
@@ -18,6 +23,9 @@ struct ModelManagerPresentationTests {
         #expect(row.showsDelete)
         #expect(row.deleteBlockReason == nil)
         #expect(row.availableMetadataText == nil)
+        #expect(row.enableAction?.accessibilityLabel == "Enable Model Name")
+        #expect(row.preloadAction?.accessibilityLabel == "Preload Model Name")
+        #expect(row.deleteAction?.accessibilityLabel == "Delete Model Name")
     }
 
     @Test("available models offer only download")
@@ -25,7 +33,10 @@ struct ModelManagerPresentationTests {
         let row = ModelRowPresentation.make(
             item: item(isDownloaded: false),
             draft: draft(),
-            operation: .idle
+            operation: .idle,
+            canDownload: true,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
         )
 
         #expect(row.showsDownload)
@@ -34,12 +45,17 @@ struct ModelManagerPresentationTests {
         #expect(row.showsDelete == false)
         #expect(row.deleteBlockReason == nil)
         #expect(row.availableMetadataText == "LLM · Text · 4.5 GB · 8 GB minimum RAM")
+        #expect(row.downloadAction?.isEnabled == true)
+        #expect(row.downloadAction?.accessibilityLabel == "Download Model Name")
     }
 
     @Test("delete explains active and loaded blockers")
     func blocksLiveModels() {
         #expect(presentation(liveState: .active).deleteBlockReason == "Model is currently active")
         #expect(presentation(liveState: .loadedIdle).deleteBlockReason == "Model is currently loaded")
+        #expect(presentation(liveState: .active).deleteAction?.accessibilityHint ==
+            "Model is currently active")
+        #expect(presentation(liveState: .active).deleteAction?.isEnabled == false)
     }
 
     @Test("delete checks saved enable and preload instead of staged state")
@@ -59,12 +75,18 @@ struct ModelManagerPresentationTests {
         #expect(ModelRowPresentation.make(
             item: item(isDownloaded: true, isEnabled: true),
             draft: enabledDraft,
-            operation: .idle
+            operation: .idle,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
         ).deleteBlockReason == "Disable and save this model before deleting it")
         #expect(ModelRowPresentation.make(
             item: item(isDownloaded: true, isEnabled: true, isPreloaded: true),
             draft: preloadedDraft,
-            operation: .idle
+            operation: .idle,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
         ).deleteBlockReason == "Remove preload and save before deleting this model")
     }
 
@@ -79,30 +101,127 @@ struct ModelManagerPresentationTests {
         #expect(ModelRowPresentation.make(
             item: item(isDownloaded: true),
             draft: changedDraft,
-            operation: .idle
+            operation: .idle,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
         ).deleteBlockReason == "Save or reload pending changes before deleting it")
-        #expect(ModelRowPresentation.make(
+        let ambiguousRow = ModelRowPresentation.make(
             item: item(isDownloaded: true, issue: ambiguity),
             draft: draft(),
-            operation: .idle
-        ).deleteBlockReason == ambiguity)
+            operation: .idle,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
+        )
+        #expect(ambiguousRow.deleteBlockReason == ambiguity)
+        #expect(ambiguousRow.enableAction?.accessibilityHint == ambiguity)
+        #expect(ambiguousRow.preloadAction?.accessibilityHint == ambiguity)
+        #expect(ambiguousRow.deleteAction?.accessibilityHint == ambiguity)
         #expect(ModelRowPresentation.make(
             item: item(isDownloaded: true),
             draft: nil,
-            operation: .idle
+            operation: .idle,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
         ).deleteBlockReason == "Provider configuration is unavailable")
         #expect(ModelRowPresentation.make(
             item: item(isDownloaded: true),
             draft: draft(),
-            operation: .refreshing
+            operation: .refreshing,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
         ).deleteBlockReason == "Another model action is in progress")
+    }
+
+    @Test("action accessibility labels follow the staged target state")
+    func targetSpecificActionLabels() {
+        let selected = draft(
+            original: ProviderModelSelection(enabled: [], preloaded: []),
+            selection: ProviderModelSelection(
+                enabled: ["model-id"],
+                preloaded: ["model-id"]
+            )
+        )
+        let row = ModelRowPresentation.make(
+            item: item(isDownloaded: true),
+            draft: selected,
+            operation: .idle,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
+        )
+
+        #expect(row.enableAction?.accessibilityLabel == "Disable Model Name")
+        #expect(row.preloadAction?.accessibilityLabel == "Remove preload Model Name")
+        #expect(row.deleteAction?.accessibilityLabel == "Delete Model Name")
+    }
+
+    @Test("freshness disables download with an accessible reason")
+    func freshnessGatesDownload() {
+        let row = ModelRowPresentation.make(
+            item: item(isDownloaded: false),
+            draft: draft(),
+            operation: .idle,
+            canDownload: false,
+            downloadUnavailableReason: "Refresh the model catalog before downloading",
+            sanitize: { "sanitized: \($0)" }
+        )
+
+        #expect(row.downloadAction?.isEnabled == false)
+        #expect(row.downloadAction?.accessibilityLabel == "Download Model Name")
+        #expect(row.downloadAction?.accessibilityHint ==
+            "sanitized: Refresh the model catalog before downloading")
+    }
+
+    @Test("cancel download names its target and explains its effect")
+    func cancelDownloadAccessibility() {
+        let row = ModelRowPresentation.make(
+            item: item(isDownloaded: false),
+            draft: draft(),
+            operation: .downloading("model-id"),
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
+        )
+
+        #expect(row.downloadAction?.isEnabled == true)
+        #expect(row.downloadAction?.accessibilityLabel == "Cancel download Model Name")
+        #expect(row.downloadAction?.accessibilityHint == "Stops the download for Model Name.")
+    }
+
+    @Test("credential-shaped unmatched selectors cross the store sanitizer")
+    func sanitizesUnmatchedSelector() {
+        let store = ProviderControlStore(
+            controller: DiagnosticOnlyProviderController(),
+            homeDirectory: URL(
+                fileURLWithPath: "/Volumes/Network Homes/kevin",
+                isDirectory: true
+            )
+        )
+        let issue = "Configured selector 'access_token=selector-secret /Volumes/Network Homes/kevin/models' does not match a catalog model"
+
+        let rendered = ModelManagerPresentation.diagnostic(
+            issue,
+            sanitize: store.sanitizedDiagnostic
+        )
+
+        #expect(rendered.contains("access_token=<redacted>"))
+        #expect(rendered.contains("~/models"))
+        #expect(!rendered.contains("selector-secret"))
+        #expect(!rendered.contains("/Volumes/Network Homes/kevin"))
     }
 
     private func presentation(liveState: InventoryLiveState) -> ModelRowPresentation {
         ModelRowPresentation.make(
             item: item(isDownloaded: true, liveState: liveState),
             draft: draft(),
-            operation: .idle
+            operation: .idle,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
         )
     }
 
@@ -189,3 +308,26 @@ struct ModelManagerPresentationTests {
         )
     }
 }
+
+private actor DiagnosticOnlyProviderController: ProviderControlling {
+    func refresh() async throws -> ProviderControlSnapshot { throw DiagnosticOnlyError() }
+    func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
+        throw DiagnosticOnlyError()
+    }
+    func download(
+        _ modelID: String,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+    ) async throws {
+        throw DiagnosticOnlyError()
+    }
+    func delete(_ localModelID: String) async throws { throw DiagnosticOnlyError() }
+    func activityRisk() async -> ProviderActivityRisk { .unknown("unused") }
+    func execute(
+        _ action: ProviderLifecycleAction,
+        enabledModels: [String]
+    ) async throws {
+        throw DiagnosticOnlyError()
+    }
+}
+
+private struct DiagnosticOnlyError: Error {}

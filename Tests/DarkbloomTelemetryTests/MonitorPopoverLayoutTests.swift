@@ -89,20 +89,46 @@ struct MonitorPopoverLayoutTests {
         #expect(controller.popoverContentSize == NSSize(width: 400, height: 600))
     }
 
-    @Test("model settings including available model type fit without horizontal growth")
+    @Test("fresh and stale model settings fit without horizontal growth")
     func modelSettingsFitMinimumSize() async {
-        let controlStore = ProviderControlStore(controller: InertSettingsController())
-        await controlStore.refresh()
-        let hostingController = NSHostingController(
-            rootView: MonitorSettingsView()
-                .environmentObject(controlStore)
-        )
-
+        let states: [(ProviderControlSourceStates, Bool)] = [
+            (.allFresh, true),
+            (ProviderControlSourceStates(
+                catalog: .stale("Catalog refresh required"),
+                localModels: .fresh,
+                daemon: .fresh,
+                loadedModels: .fresh
+            ), false),
+            (ProviderControlSourceStates(
+                catalog: .fresh,
+                localModels: .stale("Local model refresh required"),
+                daemon: .fresh,
+                loadedModels: .fresh
+            ), false),
+        ]
         let proposed = NSSize(width: 680, height: 560)
-        let fitted = hostingController.sizeThatFits(in: proposed)
 
-        #expect(fitted.width == proposed.width)
-        #expect(fitted.height == proposed.height)
+        for (sources, expectedCanDownload) in states {
+            let controlStore = ProviderControlStore(
+                controller: InertSettingsController(sources: sources)
+            )
+            await controlStore.refresh()
+            let hostingController = NSHostingController(
+                rootView: MonitorSettingsView()
+                    .environmentObject(controlStore)
+            )
+            let fitted = hostingController.sizeThatFits(in: proposed)
+            let availableItem = controlStore.snapshot?.inventory.available.first
+            let row = availableItem.map {
+                ModelManagerPresentation.availableRow(item: $0, store: controlStore)
+            }
+
+            #expect(controlStore.canDownload("available-model") == expectedCanDownload)
+            #expect(row?.downloadAction?.isEnabled == expectedCanDownload)
+            #expect(row?.downloadAction?.accessibilityLabel == "Download Available Model")
+            #expect(fitted.width == proposed.width)
+            #expect(fitted.height == proposed.height)
+        }
     }
 
     @Test("two-row lifecycle popover has a compact stable viewport")
@@ -184,7 +210,7 @@ private struct UnusedError: Error {}
 private actor InertSettingsController: ProviderControlling {
     private let value: ProviderControlSnapshot
 
-    init() {
+    init(sources: ProviderControlSourceStates = .allFresh) {
         let selection = ProviderModelSelection(enabled: [], preloaded: [])
         let draft = ProviderConfigDraft(
             sourceRevision: "layout-fixture",
@@ -228,7 +254,8 @@ private actor InertSettingsController: ProviderControlling {
         value = ProviderControlSnapshot(
             inventory: inventory,
             draft: draft,
-            capturedAt: Date(timeIntervalSince1970: 1_750_000_000)
+            capturedAt: Date(timeIntervalSince1970: 1_750_000_000),
+            sources: sources
         )
     }
 
@@ -254,4 +281,13 @@ private actor InertSettingsController: ProviderControlling {
     ) async throws {
         throw UnusedError()
     }
+}
+
+private extension ProviderControlSourceStates {
+    static let allFresh = ProviderControlSourceStates(
+        catalog: .fresh,
+        localModels: .fresh,
+        daemon: .fresh,
+        loadedModels: .fresh
+    )
 }
