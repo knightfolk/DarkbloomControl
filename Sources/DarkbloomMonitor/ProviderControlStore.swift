@@ -165,6 +165,8 @@ final class ProviderControlStore: ObservableObject {
                 }
             } catch is CancellationError {
                 // The service owns rollback and publication boundaries.
+            } catch let error as ProviderControlError {
+                errorMessage = controlErrorMessage(error, action: "save")
             } catch let error as ProviderConfigError {
                 errorMessage = configErrorMessage(error)
             } catch {
@@ -313,15 +315,27 @@ final class ProviderControlStore: ObservableObject {
         _ action: ProviderLifecycleAction,
         enabledModels: [String]
     ) async throws {
-        try await controller.execute(action, enabledModels: enabledModels)
-        try Task.checkCancellation()
+        do {
+            try await controller.execute(action, enabledModels: enabledModels)
+        } catch {
+            let commandError = error
+            do {
+                try await reconcileLifecycleState()
+            } catch {
+                // The lifecycle command's outcome is the primary user-facing
+                // failure. Reconciliation is best-effort after that attempt.
+            }
+            throw commandError
+        }
         if action == .start || action == .restart {
             restartRequired = false
         }
+        try await reconcileLifecycleState()
+    }
+
+    private func reconcileLifecycleState() async throws {
         await refreshTelemetry()
-        try Task.checkCancellation()
         let refreshed = try await controller.refresh()
-        try Task.checkCancellation()
         accept(refreshed, preserving: draft)
     }
 
@@ -446,7 +460,6 @@ final class ProviderControlStore: ObservableObject {
         "Saved model selection is not an unambiguous downloaded catalog model",
         "Model catalog is unavailable",
         "Local model list is unavailable",
-        "Loaded model state is stale",
     ]
 
     private static let safeDeleteDiagnostics: Set<String> = {
@@ -459,9 +472,11 @@ final class ProviderControlStore: ObservableObject {
             "A loaded model cannot be deleted",
         ]
         let residency = [
+            "Provider activity is unavailable",
             "Provider activity timestamp is invalid",
             "Provider activity is stale",
             "Provider activity timestamp is in the future",
+            "Loaded model state is unavailable",
             "Loaded model state timestamp is invalid",
             "Loaded model state is stale",
             "Loaded model state timestamp is in the future",

@@ -384,20 +384,71 @@ struct ProviderControlStoreTests {
         }
     }
 
-    @Test("delete and inventory blockers preserve only precise safe diagnostics")
-    func mapsControlBlockers() async throws {
+    @Test("save inventory preflight failures preserve only production safe diagnostics")
+    func mapsSaveInventoryFailures() async throws {
         let safeCases: [(ProviderControlError, String)] = [
-            (.deleteBlocked("A loaded model cannot be deleted"), "A loaded model cannot be deleted"),
-            (.inventoryUnavailable("Loaded model state is stale"), "Loaded model state is stale"),
+            (.inventoryUnavailable("Model catalog is unavailable"), "Model catalog is unavailable"),
+            (.inventoryUnavailable("Local model list is unavailable"), "Local model list is unavailable"),
+            (
+                .inventoryUnavailable(
+                    "Saved model selection is not an unambiguous downloaded catalog model"
+                ),
+                "Saved model selection is not an unambiguous downloaded catalog model"
+            ),
         ]
+
         for (failure, expected) in safeCases {
-            let controller = FakeProviderController.fixture(deleteFailure: failure)
+            let controller = FakeProviderController.fixture(saveControlFailure: failure)
+            let store = ProviderControlStore(controller: controller)
+            await store.refresh()
+            store.setEnabled(true, modelID: "second-model")
+
+            await store.save()
+
+            #expect(store.errorMessage == expected)
+        }
+
+        let unsafeController = FakeProviderController.fixture(
+            saveControlFailure: .inventoryUnavailable(
+                "Authorization: Bearer arbitrary-secret"
+            )
+        )
+        let unsafeStore = ProviderControlStore(controller: unsafeController)
+        await unsafeStore.refresh()
+        unsafeStore.setEnabled(true, modelID: "second-model")
+        await unsafeStore.save()
+        #expect(unsafeStore.errorMessage == "Model inventory is unavailable.")
+        #expect(!unsafeStore.errorMessage.orEmpty.contains("arbitrary-secret"))
+    }
+
+    @Test("delete blockers preserve every production safe diagnostic")
+    func mapsControlBlockers() async throws {
+        let safeMessages = [
+            "The local model identity is ambiguous",
+            "Disable the model and save before deleting it",
+            "Remove the model from preload and save before deleting it",
+            "The local model could not be matched safely",
+            "The active model cannot be deleted",
+            "A loaded model cannot be deleted",
+            "Provider activity is unavailable; deletion was not attempted",
+            "Provider activity timestamp is invalid; deletion was not attempted",
+            "Provider activity is stale; deletion was not attempted",
+            "Provider activity timestamp is in the future; deletion was not attempted",
+            "Loaded model state is unavailable; deletion was not attempted",
+            "Loaded model state timestamp is invalid; deletion was not attempted",
+            "Loaded model state is stale; deletion was not attempted",
+            "Loaded model state timestamp is in the future; deletion was not attempted",
+        ]
+        for message in safeMessages {
+            let controller = FakeProviderController.fixture(
+                deleteFailure: .deleteBlocked(message)
+            )
             let store = ProviderControlStore(controller: controller)
             await store.refresh()
 
             await store.delete("second-model")
 
-            #expect(store.errorMessage == expected)
+            #expect(store.errorMessage == message)
         }
 
         let unsafeController = FakeProviderController.fixture(
@@ -530,7 +581,8 @@ struct ProviderControlStoreTests {
         await store.refresh()
 
         let start = Task { await store.request(.start) }
-        await gate.waitUntilStarted()
+        let telemetryStarted = await gate.waitUntilStarted()
+        #expect(telemetryStarted)
 
         #expect(store.operation == .lifecycle(.start))
         #expect(await controller.executedActions.map(\.action) == [.start])
@@ -539,6 +591,70 @@ struct ProviderControlStoreTests {
 
         #expect(store.operation == .idle)
         #expect(await gate.callCount == 1)
+    }
+
+    @Test("failed and timed out lifecycle attempts reconcile changed control state")
+    func reconcilesFailedLifecycleAttempts() async throws {
+        let changedSources = ProviderControlSourceStates(
+            catalog: .fresh,
+            localModels: .fresh,
+            daemon: .unavailable("Provider activity is unavailable"),
+            loadedModels: .unavailable("Loaded model state is unavailable")
+        )
+
+        for failure in [
+            FakeProviderController.Failure.nonzero,
+            FakeProviderController.Failure.timedOut,
+        ] {
+            let gate = TelemetryRefreshGate()
+            await gate.release()
+            let controller = FakeProviderController.fixture(
+                executeFailure: failure,
+                lifecycleSnapshotAfterExecute: fixtureSnapshot(sources: changedSources)
+            )
+            let store = ProviderControlStore(
+                controller: controller,
+                refreshTelemetry: { await gate.refresh() }
+            )
+            await store.refresh()
+
+            await store.request(.start)
+
+            #expect(store.snapshot?.sources == changedSources)
+            #expect(store.errorMessage == "Could not start the provider.")
+            #expect(await gate.callCount == 1)
+            #expect(await controller.refreshCount == 2)
+        }
+    }
+
+    @Test("failed lifecycle preserves its error and stays active through failed reconciliation")
+    func preservesLifecycleErrorThroughFailedReconciliation() async throws {
+        let gate = TelemetryRefreshGate()
+        let controller = FakeProviderController.fixture(
+            executeControlFailure: .invalidOutput("original command detail"),
+            failRefreshAfterExecute: true
+        )
+        let store = ProviderControlStore(
+            controller: controller,
+            refreshTelemetry: { await gate.refresh() }
+        )
+        await store.refresh()
+
+        let start = Task { await store.request(.start) }
+        let telemetryStarted = await gate.waitUntilStarted()
+        #expect(telemetryStarted)
+
+        #expect(store.operation == .lifecycle(.start))
+        #expect(store.errorMessage == nil)
+        await gate.release()
+        await start.value
+
+        #expect(store.operation == .idle)
+        #expect(
+            store.errorMessage
+                == "Darkbloom returned an invalid response while trying to start."
+        )
+        #expect(await controller.refreshCount == 2)
     }
 
     @Test("status controller retains the one store injected into both surfaces")
@@ -598,6 +714,8 @@ struct ProviderControlStoreTests {
 private actor FakeProviderController: ProviderControlling {
     enum Failure: Error, Sendable {
         case secret(String)
+        case nonzero
+        case timedOut
     }
 
     struct Execution: Equatable, Sendable {
@@ -612,8 +730,13 @@ private actor FakeProviderController: ProviderControlling {
     private let downloadChunks: [ProcessOutputChunk]
     private let downloadFailure: Failure?
     private let saveFailure: ProviderConfigError?
+    private let saveControlFailure: ProviderControlError?
     private let failRefreshAfterSave: Bool
     private let deleteFailure: ProviderControlError?
+    private let executeFailure: Failure?
+    private let executeControlFailure: ProviderControlError?
+    private let lifecycleSnapshotAfterExecute: ProviderControlSnapshot?
+    private let failRefreshAfterExecute: Bool
     private var downloadStarted = false
     private(set) var downloadedModels: [String] = []
     private(set) var deletedModels: [String] = []
@@ -621,6 +744,7 @@ private actor FakeProviderController: ProviderControlling {
     private(set) var saveCount = 0
     private(set) var activityReadCount = 0
     private(set) var downloadCancellationCount = 0
+    private(set) var refreshCount = 0
 
     static func fixture(
         snapshot: ProviderControlSnapshot = fixtureSnapshot(),
@@ -629,8 +753,13 @@ private actor FakeProviderController: ProviderControlling {
         downloadChunks: [ProcessOutputChunk] = [],
         downloadFailure: Failure? = nil,
         saveFailure: ProviderConfigError? = nil,
+        saveControlFailure: ProviderControlError? = nil,
         failRefreshAfterSave: Bool = false,
-        deleteFailure: ProviderControlError? = nil
+        deleteFailure: ProviderControlError? = nil,
+        executeFailure: Failure? = nil,
+        executeControlFailure: ProviderControlError? = nil,
+        lifecycleSnapshotAfterExecute: ProviderControlSnapshot? = nil,
+        failRefreshAfterExecute: Bool = false
     ) -> FakeProviderController {
         FakeProviderController(
             snapshot: snapshot,
@@ -639,8 +768,13 @@ private actor FakeProviderController: ProviderControlling {
             downloadChunks: downloadChunks,
             downloadFailure: downloadFailure,
             saveFailure: saveFailure,
+            saveControlFailure: saveControlFailure,
             failRefreshAfterSave: failRefreshAfterSave,
-            deleteFailure: deleteFailure
+            deleteFailure: deleteFailure,
+            executeFailure: executeFailure,
+            executeControlFailure: executeControlFailure,
+            lifecycleSnapshotAfterExecute: lifecycleSnapshotAfterExecute,
+            failRefreshAfterExecute: failRefreshAfterExecute
         )
     }
 
@@ -651,8 +785,13 @@ private actor FakeProviderController: ProviderControlling {
         downloadChunks: [ProcessOutputChunk],
         downloadFailure: Failure?,
         saveFailure: ProviderConfigError?,
+        saveControlFailure: ProviderControlError?,
         failRefreshAfterSave: Bool,
-        deleteFailure: ProviderControlError?
+        deleteFailure: ProviderControlError?,
+        executeFailure: Failure?,
+        executeControlFailure: ProviderControlError?,
+        lifecycleSnapshotAfterExecute: ProviderControlSnapshot?,
+        failRefreshAfterExecute: Bool
     ) {
         currentSnapshot = snapshot
         self.activityRisks = activityRisks
@@ -660,11 +799,17 @@ private actor FakeProviderController: ProviderControlling {
         self.downloadChunks = downloadChunks
         self.downloadFailure = downloadFailure
         self.saveFailure = saveFailure
+        self.saveControlFailure = saveControlFailure
         self.failRefreshAfterSave = failRefreshAfterSave
         self.deleteFailure = deleteFailure
+        self.executeFailure = executeFailure
+        self.executeControlFailure = executeControlFailure
+        self.lifecycleSnapshotAfterExecute = lifecycleSnapshotAfterExecute
+        self.failRefreshAfterExecute = failRefreshAfterExecute
     }
 
     func refresh() async throws -> ProviderControlSnapshot {
+        refreshCount += 1
         if let refreshFailure { throw refreshFailure }
         return currentSnapshot
     }
@@ -675,6 +820,7 @@ private actor FakeProviderController: ProviderControlling {
 
     func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
         saveCount += 1
+        if let saveControlFailure { throw saveControlFailure }
         if let saveFailure { throw saveFailure }
         let savedDraft = ProviderConfigDraft(
             sourceRevision: "saved-revision-\(saveCount)",
@@ -732,6 +878,14 @@ private actor FakeProviderController: ProviderControlling {
         enabledModels: [String]
     ) async throws {
         executedActions.append(Execution(action: action, enabledModels: enabledModels))
+        if let lifecycleSnapshotAfterExecute {
+            currentSnapshot = lifecycleSnapshotAfterExecute
+        }
+        if failRefreshAfterExecute {
+            refreshFailure = .secret("post-execution refresh failed")
+        }
+        if let executeControlFailure { throw executeControlFailure }
+        if let executeFailure { throw executeFailure }
     }
 }
 
@@ -817,10 +971,14 @@ private actor TelemetryRefreshGate {
         }
     }
 
-    func waitUntilStarted() async {
+    func waitUntilStarted(timeout: Duration = .seconds(1)) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
         while !started {
+            guard clock.now < deadline else { return false }
             await Task.yield()
         }
+        return true
     }
 
     func release() {
