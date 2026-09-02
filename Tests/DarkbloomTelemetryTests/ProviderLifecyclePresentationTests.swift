@@ -144,4 +144,113 @@ struct ProviderLifecyclePresentationTests {
         #expect(value.confirmLabel == "Continue Anyway")
         #expect(!value.body.contains("private provider detail"))
     }
+
+    @Test("system dismissal cancels pending confirmation exactly once")
+    @MainActor
+    func systemDismissalCancelsOnce() async {
+        let coordinator = LifecycleConfirmationDismissalCoordinator()
+        let state = ConfirmationDismissalState()
+
+        state.scheduleCancellation(on: coordinator)
+        state.scheduleCancellation(on: coordinator)
+        await drainScheduledCancellation()
+
+        #expect(state.cancellationCount == 1)
+        #expect(!state.pending)
+
+        state.scheduleCancellation(on: coordinator)
+        await drainScheduledCancellation()
+        #expect(state.cancellationCount == 1)
+    }
+
+    @Test("explicit cancel is not duplicated by binding teardown")
+    @MainActor
+    func explicitCancelRunsOnce() async {
+        let coordinator = LifecycleConfirmationDismissalCoordinator()
+        let state = ConfirmationDismissalState()
+
+        state.scheduleCancellation(on: coordinator)
+        state.cancel()
+        await drainScheduledCancellation()
+
+        #expect(state.cancellationCount == 1)
+    }
+
+    @Test("scheduled system dismissal survives coordinator release")
+    @MainActor
+    func systemDismissalSurvivesRelease() async {
+        var coordinator: LifecycleConfirmationDismissalCoordinator? =
+            LifecycleConfirmationDismissalCoordinator()
+        let state = ConfirmationDismissalState()
+
+        state.scheduleCancellation(on: coordinator!)
+        coordinator = nil
+        await drainScheduledCancellation()
+
+        #expect(state.cancellationCount == 1)
+        #expect(!state.pending)
+    }
+
+    @Test("destructive action suppresses an earlier binding teardown")
+    @MainActor
+    func destructiveActionWinsAfterDismissal() async {
+        let coordinator = LifecycleConfirmationDismissalCoordinator()
+        let state = ConfirmationDismissalState()
+
+        state.scheduleCancellation(on: coordinator)
+        coordinator.beginConfirmation()
+        await drainScheduledCancellation()
+
+        #expect(state.cancellationCount == 0)
+        #expect(state.pending)
+
+        state.completeConfirmation()
+        coordinator.endConfirmation()
+    }
+
+    @Test("destructive action suppresses a later binding teardown")
+    @MainActor
+    func destructiveActionWinsBeforeDismissal() async {
+        let coordinator = LifecycleConfirmationDismissalCoordinator()
+        let state = ConfirmationDismissalState()
+
+        coordinator.beginConfirmation()
+        state.scheduleCancellation(on: coordinator)
+        await drainScheduledCancellation()
+
+        #expect(state.cancellationCount == 0)
+        #expect(state.pending)
+
+        state.completeConfirmation()
+        coordinator.endConfirmation()
+    }
+
+    @MainActor
+    private func drainScheduledCancellation() async {
+        for _ in 0..<4 {
+            await Task.yield()
+        }
+    }
+}
+
+@MainActor
+private final class ConfirmationDismissalState {
+    private(set) var pending = true
+    private(set) var cancellationCount = 0
+
+    func scheduleCancellation(on coordinator: LifecycleConfirmationDismissalCoordinator) {
+        coordinator.scheduleCancellation(
+            isPending: { self.pending },
+            cancel: { self.cancel() }
+        )
+    }
+
+    func cancel() {
+        cancellationCount += 1
+        pending = false
+    }
+
+    func completeConfirmation() {
+        pending = false
+    }
 }

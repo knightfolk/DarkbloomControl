@@ -86,6 +86,7 @@ struct MonitorPopoverLayoutTests {
         #expect(controller.settingsWindowIsReleasedWhenClosed == false)
         #expect(controller.settingsWindowIsResizable)
         #expect(controller.settingsWindowContentSize == NSSize(width: 720, height: 620))
+        #expect(controller.popoverContentSize == NSSize(width: 400, height: 600))
     }
 
     @Test("model settings including available model type fit without horizontal growth")

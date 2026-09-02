@@ -148,8 +148,40 @@ extension LifecycleConfirmation: Identifiable {
 }
 
 @MainActor
+final class LifecycleConfirmationDismissalCoordinator {
+    private var generation: UInt64 = 0
+    private var confirmationInProgress = false
+
+    func beginConfirmation() {
+        generation &+= 1
+        confirmationInProgress = true
+    }
+
+    func endConfirmation() {
+        confirmationInProgress = false
+    }
+
+    func scheduleCancellation(
+        isPending: @escaping @MainActor () -> Bool,
+        cancel: @escaping @MainActor () -> Void
+    ) {
+        generation &+= 1
+        let scheduledGeneration = generation
+        Task { @MainActor in
+            await Task.yield()
+            guard generation == scheduledGeneration,
+                  !confirmationInProgress,
+                  isPending()
+            else { return }
+            cancel()
+        }
+    }
+}
+
+@MainActor
 struct ProviderLifecycleControls: View {
     @ObservedObject var store: ProviderControlStore
+    @State private var dismissalCoordinator = LifecycleConfirmationDismissalCoordinator()
     let snapshot: TelemetrySnapshot
 
     private var presentation: ProviderLifecyclePresentation {
@@ -202,7 +234,11 @@ struct ProviderLifecycleControls: View {
                 title: Text(alert.title),
                 message: Text(alert.body),
                 primaryButton: .destructive(Text(alert.confirmLabel)) {
-                    Task { await store.confirmPendingLifecycle() }
+                    dismissalCoordinator.beginConfirmation()
+                    Task {
+                        defer { dismissalCoordinator.endConfirmation() }
+                        await store.confirmPendingLifecycle()
+                    }
                 },
                 secondaryButton: .cancel {
                     store.cancelPendingLifecycle()
@@ -214,7 +250,13 @@ struct ProviderLifecycleControls: View {
     private var confirmation: Binding<LifecycleConfirmation?> {
         Binding(
             get: { store.pendingConfirmation },
-            set: { _ in }
+            set: { confirmation in
+                guard confirmation == nil else { return }
+                dismissalCoordinator.scheduleCancellation(
+                    isPending: { store.pendingConfirmation != nil },
+                    cancel: { store.cancelPendingLifecycle() }
+                )
+            }
         )
     }
 }

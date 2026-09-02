@@ -22,6 +22,7 @@ final class StatusItemController: NSObject {
     var settingsWindowContentSize: NSSize? {
         settingsWindowController.window?.contentView?.frame.size
     }
+    var popoverContentSize: NSSize { popover.contentSize }
 
     init(store: MonitorStore, controlStore: ProviderControlStore? = nil) {
         statusItem = NSStatusBar.system.statusItem(withLength: Self.itemWidth)
@@ -54,7 +55,7 @@ final class StatusItemController: NSObject {
         ])
 
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 400, height: 560)
+        popover.contentSize = NSSize(width: 400, height: 600)
         popover.contentViewController = NSHostingController(
             rootView: PopoverRootView(
                 store: store,
