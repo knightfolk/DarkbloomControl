@@ -6,8 +6,8 @@ The Swift 6 package has two targets:
 
 - `DarkbloomTelemetry` is UI-independent. It owns fixed source policy,
   acquisition, parsing, normalization, freshness, derivation, authenticated
-  earnings reads, compact SQLite persistence, diagnostics, and the immutable
-  values consumed by the app.
+  earnings reads, compact SQLite persistence, diagnostics, the narrow provider
+  control service, and the immutable values consumed by the app.
 - `DarkbloomMonitor` owns the AppKit/SwiftUI lifecycle and presentation. It is
   an accessory application built around a window-style `MenuBarExtra`; it has no
   Dock icon or ordinary window.
@@ -18,7 +18,8 @@ read a file or launch a process directly.
 ## Implemented data flow
 
 1. `DarkbloomSourcePolicy` resolves only the approved home-directory files,
-   fixes all byte/time limits, and exposes typed commands for `darkbloom status`
+   including the fixed provider config path, fixes all byte/time limits, and
+   exposes typed shell-free commands for the allowlisted Darkbloom operations
    and the local `/usr/bin/log stream` predicate.
 2. `LocalTelemetrySource` reads schema-1 state and loaded models, retries a
    transient daemon-state decode once after 100 milliseconds, reads only the
@@ -50,6 +51,12 @@ read a file or launch a process directly.
    app session, publishes completed-job summaries from SQLite, coalesces account
    refresh work, and owns orderly shutdown. The views only format normalized
    data and invoke the controller-owned Settings window or orderly Quit path.
+9. `LocalProviderConfigStore` reads the fixed config, permits changes only to
+   top-level `enabled_models` and `preload_models`, validates a UUID-named
+   sibling candidate, and retains one fixed backup after publication.
+   `ProviderControlService` owns catalog/list/download/remove/start/stop/restart
+   commands; `ProviderControlStore` serializes their UI state. A config save
+   reports restart-required rather than restarting the provider itself.
 
 ```text
 approved files -----> LocalTelemetrySource --\
@@ -67,6 +74,14 @@ darkbloom status ---> CappedProcessRunner -----+--> TelemetryService actor
 authenticated earnings --> 10-minute fixed GET --> incremental hourly SQLite aggregates
                                                    --> today + covered 7-day job metrics
                                                    --> menu presentation
+
+fixed provider TOML --> LocalProviderConfigStore --> candidate validation --> fixed backup
+                                           |
+                                           v
+                              ProviderControlService --> shared ProviderControlStore
+                                           |
+                                           v
+                              Settings Models + popup lifecycle controls
 ```
 
 ## Ownership and cancellation
@@ -81,27 +96,39 @@ never targeted.
 
 ## Trust and privacy boundaries
 
-The monitor does not read `provider.toml`, model weights, caches, or local
-endpoint credentials. It reads `auth_token` only for the fixed authenticated
-account-earnings GET and never logs, displays, or persists it. Paths printed by `darkbloom status` are inert
-display strings and are never followed. The state `attestation_public_key` and
-unknown fields are ignored. Log messages are untrusted literal text without
-link activation or command execution; a unified-log `<private>` value becomes
-an explicit privacy-redaction placeholder.
+The provider surface is an exact allowlist: the fixed `provider.toml`,
+catalog/list/status, download/remove/start/stop/restart, a UUID-named sibling
+candidate, and one fixed backup. No other config field may change; credentials,
+account commands, launchd internals, and direct cache mutation remain forbidden.
+Production commands use executable and argument values directly, never a shell.
+Paths printed by `darkbloom status` are inert display strings and are never
+followed. The monitor reads `auth_token` only for the fixed authenticated
+account-earnings GET and never logs, displays, or persists it. The state
+`attestation_public_key` and unknown fields are ignored. Log messages are
+untrusted literal text without link activation or command execution; a
+unified-log `<private>` value becomes an explicit privacy-redaction placeholder.
 
 Networking is limited to two read-only HTTPS GET paths on `api.darkbloom.dev`:
 authenticated account earnings and the public 24-hour leaderboard. SQLite keeps
 separate hourly inference-work and online-reward aggregates plus balances with
-user-only permissions; it excludes account
-IDs, provider keys, and credential material. The source policy does not offer an
-arbitrary command interface, and the application exposes no provider-control
-action.
+user-only permissions; it excludes account IDs, provider keys, and credential
+material. The source policy does not offer an arbitrary command interface.
+
+Download/Delete, Enable/Disable, and Preload/Unpreload are independent. Start
+passes enabled models as repeated `--model` arguments to bypass the CLI picker.
+Stop and Restart check provider activity, but that read may be unknown and can
+change before the command runs. Active or unknown activity therefore requires a
+user's explicit destructive override; this is a customer-impact warning, not an
+atomic no-interruption guarantee.
 
 ## Popover presentation boundary
 
-The 400-by-560-point popover intentionally renders only current and session-
-average throughput, today and covered seven-day job metrics, model-state
-capsules, plus a labeled Settings control and an icon-only door control for Quit.
+The 400-by-560-point popover intentionally renders current and session-average
+throughput, today and covered seven-day job metrics, model-state capsules, a
+labeled Settings control, an icon-only door control for Quit, and compact
+Start/Stop/Restart controls. The Settings window has General and Models tabs;
+the latter separates My Catalog and Available models and makes download/delete
+independent from enable/preload settings.
 Model presentation is derived from the enabled-model filter plus loaded, warm,
 slot, and current-model state. Green
 means active, yellow means loaded but idle, and gray means available but

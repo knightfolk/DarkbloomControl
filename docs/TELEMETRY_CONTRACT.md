@@ -55,10 +55,25 @@ memory allowance, local boot checks, schedule, enabled model filter, local MLX
 model count, daemon running/PID/uptime, trust/status/reason, warm models, most
 recently used model, requests/tokens, state age, and per-slot KV/MTP posture.
 
-The monitor may execute only `darkbloom status`. It will not execute `verify`,
-`doctor`, `models catalog`, `update`, or other commands that can contact a
-coordinator or mutate state. It will never execute `darkbloom local` because
-that command prints an API key.
+The monitor's provider-control surface is limited to `status`, `models catalog`,
+`models list`, `models download`, `models remove`, `start`, `stop`, and
+`restart`. It uses the fixed `~/.config/darkbloom/provider.toml`, and config
+saves may alter only top-level `enabled_models` and `preload_models`. A save
+uses a UUID-named candidate beside that file and maintains one fixed backup;
+it reports restart-required rather than restarting automatically. Start repeats
+`--model` for every enabled model to bypass the CLI picker.
+
+All other config fields, credentials, account commands, launchd internals, and
+direct cache operations remain forbidden. The monitor does not execute
+`darkbloom local`, `verify`, `doctor`, or update commands. It never runs a
+shell to construct provider commands.
+
+Downloaded, enabled, preloaded, and loaded are independent states. Download or
+Delete does not implicitly enable, disable, preload, or unload a model. Stop
+and Restart can affect customer work: activity is checked, but an unavailable
+or stale observation is possible and is not treated as safe. Active or unknown
+activity requires an explicit user override before either lifecycle command is
+issued; that confirmation cannot make the operation atomic.
 
 ## Logs
 

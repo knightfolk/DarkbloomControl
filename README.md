@@ -1,9 +1,9 @@
 # Darkbloom Monitor
 
-A native, read-only macOS menu-bar monitor for a locally running Darkbloom
-provider. It presents live provider state in a compact 400-by-560-point SwiftUI
-popover, reads authenticated account earnings, and never exposes provider
-controls.
+A native macOS menu-bar monitor and narrowly scoped provider-control surface
+for a local Darkbloom provider. It presents live provider state in a compact
+400-by-560-point SwiftUI popover, reads authenticated account earnings, and
+keeps provider changes behind explicit, bounded actions.
 
 ## Requirements
 
@@ -37,10 +37,13 @@ The average remains an em dash until local history proves that it covers the
 full period.
 
 Model capsules are green while actively processing, yellow when loaded but
-idle, and gray when available but unloaded. Two compact controls remain:
-Settings opens the monitor-owned Settings window containing the existing
-menu-bar metric picker, and a door icon stops the monitor cleanly. Detailed
-telemetry remains collected and tested without being rendered as a diagnostic wall.
+idle, and gray when available but unloaded. The first control row retains
+Settings, which opens the monitor-owned Settings window, and a door icon that
+stops the monitor cleanly. The second row provides Start, Stop, and Restart
+provider controls. Settings contains General and Models tabs; Models separates
+My Catalog from Available models, and keeps download/delete separate from
+enable/disable and preload choices. Detailed telemetry remains collected and
+tested without being rendered as a diagnostic wall.
 
 The complete field inventory and known gaps are documented in
 [`docs/TELEMETRY_CONTRACT.md`](docs/TELEMETRY_CONTRACT.md).
@@ -95,26 +98,42 @@ confirmed. Inside the popover, the logo follows the leading model state and all
 model capsules expose their status in accessibility labels and help text, so
 color is not the only signal.
 
-## Privacy and safety boundary
+## Provider-control and safety boundary
 
-The monitor:
+The monitor has a deliberately narrow management allowlist:
 
 - reads only the fixed local and remote sources listed above;
-- runs Darkbloom with exactly the `status` argument and treats reported paths as
-  inert display text;
+- reads and may change only top-level `enabled_models` and `preload_models` in
+  the fixed `~/.config/darkbloom/provider.toml`; it preserves unrelated TOML
+  bytes and comments;
+- invokes only `darkbloom status`, `models catalog`, `models list`, `models
+  download`, `models remove`, `start`, `stop`, and `restart`, using an
+  executable plus separate arguments rather than a shell;
+- creates a UUID-named sibling candidate while saving configuration and keeps
+  one fixed `provider.toml.darkbloom-monitor-backup` backup;
 - opens `~/.darkbloom/auth_token` only to authenticate the fixed account-
   earnings GET request; the token is held in memory and is never displayed,
   logged, or persisted;
-- never opens `provider.toml`, model weights, caches, or recovery files;
 - ignores `attestation_public_key` and unknown state fields;
-- never executes `darkbloom local`, `verify`, `doctor`, update, account, device,
-  or provider-management commands;
-- has no provider start, stop, restart, model-selection, or configuration
-  controls;
 - sends read-only GET requests only to
   `api.darkbloom.dev/v1/provider/account-earnings` and
   `api.darkbloom.dev/v1/leaderboard`;
-- never writes under `~/.darkbloom` or `~/.config/darkbloom`.
+- never changes other configuration fields, credentials, account commands,
+  launchd internals, or model-cache files directly.
+
+Starting passes each enabled model through a repeated `--model` argument, so
+the CLI picker is bypassed. Saving a changed enable/preload selection stages and
+validates a candidate before publication, then reports that a provider restart
+is required; a save itself does not restart the provider. Download/Delete and
+Enable/Preload remain independent states, so one action does not silently
+perform another.
+
+Stop and Restart can interrupt customer work. The monitor checks activity, but
+that check can be unavailable or become stale between checking and execution.
+When activity is active or unknown, the UI requires an explicit destructive
+override before it issues either command. That warning is not a guarantee that
+no customer job will be interrupted. Delete has its own confirmation and removes
+downloaded model data; it does not disable or unload a model implicitly.
 
 Hourly inference-work aggregates, hourly online/base rewards, and changed
 account balance samples are stored at

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import DarkbloomTelemetry
 
-@Suite("Read-only source policy")
+@Suite("Source policy")
 struct SourcePolicyTests {
     @Test("only approved Darkbloom files are readable")
     func allowlistsFiles() {
@@ -17,12 +17,27 @@ struct SourcePolicyTests {
         #expect(!policy.allowedFiles.map(\.lastPathComponent).contains("provider.toml"))
     }
 
-    @Test("the only Darkbloom command is status")
-    func fixesStatusArguments() {
+    @Test("production commands remain shell-free and bounded to the allowlist")
+    func fixesProviderCommandSurface() {
         let executable = URL(fileURLWithPath: "/Users/example/.darkbloom/bin/darkbloom")
-        let command = DarkbloomCommand.status(executable: executable)
-        #expect(command.executable == executable)
-        #expect(command.arguments == ["status"])
+        let config = URL(fileURLWithPath: "/Users/example/.config/darkbloom/provider.toml")
+        let commands = [
+            DarkbloomCommand.status(executable: executable, config: config),
+            DarkbloomCommand.catalog(executable: executable, config: config),
+            DarkbloomCommand.localModels(executable: executable, config: config),
+            DarkbloomCommand.download(executable: executable, config: config, modelID: "safe-id"),
+            DarkbloomCommand.remove(executable: executable, modelID: "safe-id"),
+            DarkbloomCommand.start(executable: executable, config: config, models: ["first", "second"]),
+            DarkbloomCommand.stop(executable: executable),
+            DarkbloomCommand.restart(executable: executable, config: config),
+        ]
+
+        #expect(commands.allSatisfy { $0.executable != URL(fileURLWithPath: "/bin/sh") })
+        #expect(DarkbloomCommand.stop(executable: executable).arguments == ["stop"])
+        #expect(!DarkbloomCommand.stop(executable: executable).arguments.contains("--uninstall"))
+        #expect(DarkbloomCommand.start(executable: executable, config: config, models: ["first", "second"]).arguments == [
+            "start", "--config", config.path, "--model", "first", "--model", "second",
+        ])
     }
 
     @Test("polling and byte bounds match the approved design")
@@ -46,5 +61,50 @@ struct SourcePolicyTests {
             "~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom",
             "PATH entries ending in /darkbloom",
         ])
+    }
+
+    @Test("config-save errors do not expose fixture secret text")
+    func redactsConfigSaveErrors() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SourcePolicyTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let config = directory.appendingPathComponent("provider.toml")
+        try Data("""
+        enabled_models = []
+        private_value = "never-display-me"
+        preload_models = []
+        """.utf8).write(to: config)
+        let store = LocalProviderConfigStore(
+            configURL: config,
+            executable: directory.appendingPathComponent("darkbloom"),
+            runner: RejectingConfigValidationRunner()
+        )
+        let draft = try await store.load()
+
+        do {
+            _ = try await store.save(draft.withSelection(
+                ProviderModelSelection(enabled: ["safe-id"], preloaded: [])
+            ))
+            Issue.record("Expected candidate validation to fail")
+        } catch {
+            #expect(!String(describing: error).contains("never-display-me"))
+        }
+    }
+}
+
+private actor RejectingConfigValidationRunner: ProcessExecuting {
+    func run(
+        _ command: ProcessCommand,
+        timeout: Duration,
+        outputLimit: Int,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+    ) async throws -> CommandResult {
+        CommandResult(
+            exitCode: 2,
+            standardOutput: Data(),
+            standardError: Data("never-display-me".utf8)
+        )
     }
 }
