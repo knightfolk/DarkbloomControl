@@ -22,20 +22,38 @@ public enum ProcessRunnerError: Error, Equatable, Sendable {
 public struct CappedProcessRunner: ProcessExecuting, Sendable {
     private let testOnlyCleanupObserver: (@Sendable (ProcessCleanupState) -> Void)?
     private let testOnlyPostExitObserver: (@Sendable (ProcessCommand) async -> Void)?
+    private let testOnlyBeforeTerminationHandlerObserver: (@Sendable (ProcessCommand) -> Void)?
+    private let testOnlyCancellationObserver: (@Sendable () -> Void)?
 
     public init() {
         testOnlyCleanupObserver = nil
         testOnlyPostExitObserver = nil
+        testOnlyBeforeTerminationHandlerObserver = nil
+        testOnlyCancellationObserver = nil
     }
 
     init(testOnlyCleanupObserver: @escaping @Sendable (ProcessCleanupState) -> Void) {
         self.testOnlyCleanupObserver = testOnlyCleanupObserver
         testOnlyPostExitObserver = nil
+        testOnlyBeforeTerminationHandlerObserver = nil
+        testOnlyCancellationObserver = nil
     }
 
     init(testOnlyPostExitObserver: @escaping @Sendable (ProcessCommand) async -> Void) {
         testOnlyCleanupObserver = nil
         self.testOnlyPostExitObserver = testOnlyPostExitObserver
+        testOnlyBeforeTerminationHandlerObserver = nil
+        testOnlyCancellationObserver = nil
+    }
+
+    init(
+        testOnlyBeforeTerminationHandlerObserver: @escaping @Sendable (ProcessCommand) -> Void,
+        testOnlyCancellationObserver: @escaping @Sendable () -> Void
+    ) {
+        testOnlyCleanupObserver = nil
+        testOnlyPostExitObserver = nil
+        self.testOnlyBeforeTerminationHandlerObserver = testOnlyBeforeTerminationHandlerObserver
+        self.testOnlyCancellationObserver = testOnlyCancellationObserver
     }
 
     public func run(
@@ -58,6 +76,7 @@ public struct CappedProcessRunner: ProcessExecuting, Sendable {
         process.standardOutput = standardOutput
         process.standardError = standardError
         process.terminationHandler = { [weak session] _ in
+            testOnlyBeforeTerminationHandlerObserver?(command)
             session?.didTerminate()
         }
 
@@ -125,6 +144,7 @@ public struct CappedProcessRunner: ProcessExecuting, Sendable {
             return result
         } onCancel: {
             session.requestCancellation()
+            testOnlyCancellationObserver?()
         }
     }
 

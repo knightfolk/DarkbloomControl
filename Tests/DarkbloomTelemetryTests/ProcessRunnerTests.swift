@@ -73,6 +73,63 @@ struct ProcessRunnerTests {
         #expect(result.exitCode == 0)
     }
 
+    @Test("cancellation after actual exit but before termination bookkeeping is outcome ambiguous")
+    func cancellationCanWinBeforeTerminationHandler() async throws {
+        let sentinel = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-monitor-\(UUID().uuidString).sentinel")
+        defer { try? FileManager.default.removeItem(at: sentinel) }
+        let handlerEntered = CompletionFlag()
+        let cancellationRecorded = CompletionFlag()
+        let handlerGate = SynchronousReleaseGate()
+        let runner = CappedProcessRunner(
+            testOnlyBeforeTerminationHandlerObserver: { _ in
+                handlerEntered.set()
+                handlerGate.wait()
+            },
+            testOnlyCancellationObserver: cancellationRecorded.set
+        )
+        let runTask = Task {
+            try await runner.run(
+                .testOnly(
+                    executable: URL(fileURLWithPath: "/bin/sh"),
+                    arguments: [
+                        "-c",
+                        "printf mutation-complete > \"$1\"; exit 0",
+                        "sh",
+                        sentinel.path,
+                    ]
+                ),
+                timeout: .seconds(3),
+                outputLimit: 256
+            )
+        }
+
+        guard await waitForCompletion(handlerEntered, timeout: .seconds(1)) else {
+            runTask.cancel()
+            handlerGate.release()
+            _ = await runTask.result
+            Issue.record("The child did not exit into the held termination handler")
+            return
+        }
+        #expect(try String(contentsOf: sentinel) == "mutation-complete")
+
+        runTask.cancel()
+        guard await waitForCompletion(cancellationRecorded, timeout: .seconds(1)) else {
+            handlerGate.release()
+            _ = await runTask.result
+            Issue.record("The runner did not record cancellation before handler release")
+            return
+        }
+        handlerGate.release()
+
+        do {
+            _ = try await runTask.value
+            Issue.record("Expected the pre-handler cancellation race to remain ambiguous")
+        } catch is CancellationError {
+            // The service layer must reconcile this dispatched mutation.
+        }
+    }
+
     @Test("terminates output beyond the cap")
     func capsOutput() async {
         await #expect(throws: ProcessRunnerError.outputLimitExceeded(limit: 8)) {
@@ -438,6 +495,26 @@ private final class CompletionFlag: @unchecked Sendable {
 
     func read() -> Bool {
         lock.withLock { completed }
+    }
+}
+
+private final class SynchronousReleaseGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var released = false
+
+    func wait() {
+        condition.lock()
+        while !released {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
     }
 }
 

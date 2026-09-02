@@ -705,48 +705,81 @@ struct ProviderControlServiceTests {
         #expect(invocation.outputLimit == DarkbloomSourcePolicy.mutationOutputByteLimit)
     }
 
-    @Test("download cancellation reaches the executor skips refresh and releases serialization")
-    func propagatesCancellation() async throws {
+    @Test("download runner cancellation after dispatch reconciles authoritative model state")
+    func reconcilesDispatchedDownloadCancellation() async throws {
         let harness = try ServiceHarness.make()
         defer { harness.cleanup() }
+        let phases = ServicePhaseRecorder()
         await harness.runner.blockNextMutation()
         let download = Task {
-            try await harness.service.download("qwen3-8b", onOutput: nil)
+            try await harness.service.performDownload(
+                "qwen3-8b",
+                onOutput: nil,
+                onPhase: { phase in await phases.record(phase) }
+            )
         }
         await harness.runner.waitUntilBlocked()
+        await harness.runner.useLocalByDefault(localWithQwenJSON)
 
         download.cancel()
-        do {
-            try await download.value
-            Issue.record("Expected cancellation")
-        } catch is CancellationError {
-            // Expected: the service does not translate executor cancellation.
-        }
+        let completion = try await download.value
 
-        #expect(await harness.runner.sourceArguments.count == 2)
+        #expect(completion.snapshot?.inventory.myCatalog.contains {
+            $0.localID == "qwen3-8b"
+        } == true)
+        #expect(await phases.values == [.reconciling])
+        #expect(await harness.runner.sourceArguments.count == 4)
         try await harness.service.execute(.stop, enabledModels: [])
     }
 
-    @Test("lifecycle cancellation during the command remains a pre-mutation cancellation")
-    func lifecycleCommandCancellationStillPropagates() async throws {
+    @Test("delete runner cancellation after dispatch reconciles authoritative model state")
+    func reconcilesDispatchedDeleteCancellation() async throws {
         let harness = try ServiceHarness.make()
         defer { harness.cleanup() }
+        let phases = ServicePhaseRecorder()
+        await harness.runner.blockNextMutation()
+        let deletion = Task {
+            try await harness.service.performDelete(
+                "gpt-oss-20b",
+                onPhase: { phase in await phases.record(phase) }
+            )
+        }
+        await harness.runner.waitUntilBlocked()
+        await harness.runner.useLocalByDefault(localGemmaOnlyJSON)
+
+        deletion.cancel()
+        let completion = try await deletion.value
+
+        #expect(completion.snapshot?.inventory.myCatalog.contains {
+            $0.localID == "gpt-oss-20b"
+        } == false)
+        #expect(await phases.values == [.reconciling])
+        #expect(await harness.runner.sourceArguments.count == 4)
+        try await harness.service.execute(.stop, enabledModels: [])
+    }
+
+    @Test("lifecycle runner cancellation after dispatch reconciles authoritative state")
+    func reconcilesDispatchedLifecycleCancellation() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+        let phases = ServicePhaseRecorder()
         await harness.runner.blockNextMutation()
         let stop = Task {
-            try await harness.service.execute(.stop, enabledModels: [])
+            try await harness.service.performLifecycle(
+                .stop,
+                enabledModels: [],
+                onPhase: { phase in await phases.record(phase) }
+            )
         }
         await harness.runner.waitUntilBlocked()
 
         stop.cancel()
-        do {
-            try await stop.value
-            Issue.record("Expected lifecycle command cancellation")
-        } catch is CancellationError {
-            // The command itself did not complete, so cancellation remains authoritative.
-        }
+        let completion = try await stop.value
 
+        #expect(completion.snapshot != nil)
+        #expect(await phases.values == [.reconciling])
         #expect(await harness.runner.lifecycleInvocations.map(\.command.arguments) == [["stop"]])
-        #expect(await harness.runner.sourceArguments.isEmpty)
+        #expect(await harness.runner.sourceArguments.count == 2)
         try await harness.service.execute(.stop, enabledModels: [])
     }
 

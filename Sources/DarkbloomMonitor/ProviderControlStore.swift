@@ -168,7 +168,8 @@ final class ProviderControlStore: ObservableObject {
                 await reconcileCompletedMutation(
                     completion.controls,
                     preserving: nil,
-                    failureMessage: "Settings were saved, but model controls could not refresh."
+                    failureMessage: "Settings were saved, but model controls could not refresh.",
+                    uncertainFailureMessage: "Settings were saved, but model controls could not refresh."
                 )
             } catch is CancellationError {
                 // The service owns rollback and publication boundaries.
@@ -210,7 +211,9 @@ final class ProviderControlStore: ObservableObject {
                 await reconcileCompletedMutation(
                     completion,
                     preserving: draft,
-                    failureMessage: "Download completed, but model controls could not refresh."
+                    failureMessage: "Download completed, but model controls could not refresh.",
+                    uncertainFailureMessage:
+                        "Download outcome could not be confirmed; model controls could not refresh."
                 )
             } catch is CancellationError {
                 // Cancellation is surfaced by returning to idle.
@@ -240,7 +243,9 @@ final class ProviderControlStore: ObservableObject {
                 await reconcileCompletedMutation(
                     completion,
                     preserving: draft,
-                    failureMessage: "Delete completed, but model controls could not refresh."
+                    failureMessage: "Delete completed, but model controls could not refresh.",
+                    uncertainFailureMessage:
+                        "Delete outcome could not be confirmed; model controls could not refresh."
                 )
             } catch is CancellationError {
                 // Cancellation is surfaced by returning to idle.
@@ -376,7 +381,9 @@ final class ProviderControlStore: ObservableObject {
             restartRequired = false
         }
         guard await reconcileLifecycleState(after: completion) else {
-            errorMessage = "Provider \(action.rawValue) completed, but current state could not be confirmed."
+            errorMessage = completion.isOutcomeUncertain
+                ? "Provider \(action.rawValue) outcome could not be confirmed; current state could not refresh."
+                : "Provider \(action.rawValue) completed, but current state could not be confirmed."
             return
         }
     }
@@ -455,7 +462,8 @@ final class ProviderControlStore: ObservableObject {
     private func reconcileCompletedMutation(
         _ completion: ProviderMutationCompletion,
         preserving stagedDraft: ProviderConfigDraft?,
-        failureMessage: String
+        failureMessage: String,
+        uncertainFailureMessage: String
     ) async {
         do {
             let refreshed = try await refreshControlsAfterCompletedMutation()
@@ -465,7 +473,9 @@ final class ProviderControlStore: ObservableObject {
                 accept(refreshed, preserving: stagedDraft)
             } else {
                 invalidateActionableSnapshot()
-                errorMessage = failureMessage
+                errorMessage = completion.isOutcomeUncertain
+                    ? uncertainFailureMessage
+                    : failureMessage
             }
         }
     }

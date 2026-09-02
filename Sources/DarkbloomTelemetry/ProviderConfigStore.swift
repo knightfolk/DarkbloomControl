@@ -28,6 +28,16 @@ public struct ProviderConfigDraft: Equatable, Sendable {
         self.sourceFileState = sourceFileState
     }
 
+    fileprivate init(
+        publishedSelection: ProviderModelSelection,
+        sourceFileState: ProviderConfigFileState
+    ) {
+        self.sourceRevision = sourceFileState.revision
+        self.original = publishedSelection
+        self.selection = publishedSelection
+        self.sourceFileState = sourceFileState
+    }
+
     public func withSelection(_ selection: ProviderModelSelection) -> Self {
         var draft = self
         draft.selection = selection
@@ -158,6 +168,7 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         let mode = expectedState.permissions
         let candidateURL = uniqueSibling(named: "candidate")
         var candidateNeedsCleanup = false
+        let publishedState: ProviderConfigFileState
         do {
             try createFile(
                 at: candidateURL,
@@ -171,7 +182,7 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
                 expectedState: expectedState
             )
             try await validate(candidateURL)
-            try await publish(
+            publishedState = try await publish(
                 candidateURL,
                 expectedState: expectedState,
                 candidateNeedsCleanup: &candidateNeedsCleanup
@@ -184,20 +195,12 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         }
 
         return ProviderConfigSaveResult(
-            draft: try await loadAfterCompletedPublication(),
+            draft: ProviderConfigDraft(
+                publishedSelection: draft.selection,
+                sourceFileState: publishedState
+            ),
             restartRequired: true
         )
-    }
-
-    /// Publication is irreversible once `publish` returns. Keep the bounded
-    /// readback independent from caller cancellation so a published config is
-    /// never reported as an unperformed save.
-    private func loadAfterCompletedPublication() async throws -> ProviderConfigDraft {
-        let store = self
-        let readback = Task.detached(priority: Task.currentPriority) {
-            try await store.load()
-        }
-        return try await readback.value
     }
 
     private func readLockedSnapshot(lockFlag: Int32) async throws -> ProviderConfigFileSnapshot {
@@ -243,7 +246,7 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         _ candidateURL: URL,
         expectedState: ProviderConfigFileState,
         candidateNeedsCleanup: inout Bool
-    ) async throws {
+    ) async throws -> ProviderConfigFileState {
         // Publication uses the strongest local-filesystem primitive available on
         // the macOS 14 target. Before RENAME_SWAP, bounded O_EXLOCK descriptors
         // are acquired in one canonical order: current config inode, then private
@@ -288,6 +291,26 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
             throw Self.saveFailure
         }
 
+        let publishedState: ProviderConfigFileState
+        do {
+            publishedState = try snapshot(descriptor: descriptors.candidate).state
+        } catch {
+            try preserveOrRollback(
+                candidateURL,
+                candidateState: candidateState,
+                candidateNeedsCleanup: &candidateNeedsCleanup
+            )
+            throw Self.readFailure
+        }
+        guard publishedState.matchesAcrossRename(candidateState) else {
+            try preserveOrRollback(
+                candidateURL,
+                candidateState: candidateState,
+                candidateNeedsCleanup: &candidateNeedsCleanup
+            )
+            throw ProviderConfigError.changedExternally
+        }
+
         let displacedState: ProviderConfigFileState
         do {
             displacedState = try readSnapshot(at: candidateURL).state
@@ -321,6 +344,7 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
             )
             throw Self.saveFailure
         }
+        return publishedState
     }
 
     private func preserveOrRollback(

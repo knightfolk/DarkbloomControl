@@ -415,12 +415,59 @@ struct ProviderConfigStoreTests {
         let published = try ProviderConfigDocument(data: Data(contentsOf: harness.configURL))
         #expect(published.selection == selection)
     }
+
+    @Test("a post-publication path read failure still returns the exact clean published draft")
+    func returnsPublishedDraftWithoutFalliblePathReadback() async throws {
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o600,
+            movePublishedConfigAfterSwap: true
+        )
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+        let selection = ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+        let expectedData = try ProviderConfigDocument(data: harness.originalData).rendering(selection)
+
+        let saved = try await harness.store.save(draft.withSelection(selection))
+
+        #expect(saved.restartRequired)
+        #expect(!saved.draft.hasChanges)
+        #expect(saved.draft.original == selection)
+        #expect(saved.draft.selection == selection)
+        #expect(saved.draft.sourceRevision == (try ProviderConfigDocument(data: expectedData)).revision)
+        #expect(!FileManager.default.fileExists(atPath: harness.configURL.path))
+        #expect(try Data(contentsOf: harness.movedPublishedConfigURL) == expectedData)
+        #expect(try Data(contentsOf: harness.backupURL) == harness.originalData)
+    }
+
+    @Test("the returned published inode state remains valid for the next conflict-checked save")
+    func reusesPublishedStateForNextSave() async throws {
+        let harness = try ConfigStoreHarness.make(mode: 0o600)
+        defer { harness.cleanup() }
+        let initialDraft = try await harness.store.load()
+        let firstSelection = ProviderModelSelection(enabled: ["first-model"], preloaded: [])
+        let secondSelection = ProviderModelSelection(enabled: ["second-model"], preloaded: [])
+        let firstData = try ProviderConfigDocument(data: harness.originalData).rendering(firstSelection)
+
+        let firstSave = try await harness.store.save(
+            initialDraft.withSelection(firstSelection)
+        )
+        let secondSave = try await harness.store.save(
+            firstSave.draft.withSelection(secondSelection)
+        )
+
+        #expect(secondSave.draft.original == secondSelection)
+        #expect(!secondSave.draft.hasChanges)
+        #expect(try Data(contentsOf: harness.backupURL) == firstData)
+        let published = try ProviderConfigDocument(data: Data(contentsOf: harness.configURL))
+        #expect(published.selection == secondSelection)
+    }
 }
 
 private struct ConfigStoreHarness: Sendable {
     let directory: URL
     let configURL: URL
     let backupURL: URL
+    let movedPublishedConfigURL: URL
     let executableURL: URL
     let originalData: Data
     let executor: FakeConfigExecutor
@@ -438,6 +485,7 @@ private struct ConfigStoreHarness: Sendable {
         candidateCleanupFailure: String? = nil,
         metadataRecorder: MetadataRecorder? = nil,
         afterSwapAction: (@Sendable () -> Void)? = nil,
+        movePublishedConfigAfterSwap: Bool = false,
         lockPolicy: ProviderConfigLockPolicy = .live
     ) throws -> Self {
         let directory = FileManager.default.temporaryDirectory
@@ -445,6 +493,7 @@ private struct ConfigStoreHarness: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         let configURL = directory.appendingPathComponent("provider.toml")
         let backupURL = directory.appendingPathComponent("provider.toml.darkbloom-monitor-backup")
+        let movedPublishedConfigURL = directory.appendingPathComponent("published-provider.toml")
         let executableURL = directory.appendingPathComponent("darkbloom-fake")
         let originalData = Data("""
         # provider fixture
@@ -499,6 +548,12 @@ private struct ConfigStoreHarness: Sendable {
             afterSwap: {
                 try cooperatingWriterAfterSwap?.attempt(at: configURL)
                 afterSwapAction?()
+                if movePublishedConfigAfterSwap {
+                    try FileManager.default.moveItem(
+                        at: configURL,
+                        to: movedPublishedConfigURL
+                    )
+                }
             },
             removeCandidate: cleanupHook,
             preserveMetadata: metadataHook
@@ -507,6 +562,7 @@ private struct ConfigStoreHarness: Sendable {
             directory: directory,
             configURL: configURL,
             backupURL: backupURL,
+            movedPublishedConfigURL: movedPublishedConfigURL,
             executableURL: executableURL,
             originalData: originalData,
             executor: executor,

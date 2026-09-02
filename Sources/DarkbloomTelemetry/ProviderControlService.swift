@@ -99,10 +99,15 @@ public enum ProviderMutationPhase: Equatable, Sendable {
 public enum ProviderMutationCompletion: Equatable, Sendable {
     case refreshed(ProviderControlSnapshot)
     case refreshUncertain
+    case outcomeUncertain
 
     public var snapshot: ProviderControlSnapshot? {
         guard case .refreshed(let snapshot) = self else { return nil }
         return snapshot
+    }
+
+    public var isOutcomeUncertain: Bool {
+        self == .outcomeUncertain
     }
 }
 
@@ -268,7 +273,7 @@ public actor ProviderControlService: ProviderControlling {
         guard isFreshAvailableDownload(modelID, in: sources) else {
             throw ProviderControlError.inventoryUnavailable(Self.invalidDownloadMessage)
         }
-        _ = try await runner.run(
+        return try await runDispatchedMutation(
             DarkbloomCommand.download(
                 executable: executable,
                 config: policy.providerConfig,
@@ -276,10 +281,10 @@ public actor ProviderControlService: ProviderControlling {
             ),
             timeout: DarkbloomSourcePolicy.downloadTimeout,
             outputLimit: DarkbloomSourcePolicy.mutationOutputByteLimit,
-            onOutput: onOutput
+            onOutput: onOutput,
+            onPhase: onPhase,
+            executable: executable
         )
-        await onPhase?(.reconciling)
-        return await refreshAfterCompletedMutation(using: executable)
     }
 
     public func delete(_ localModelID: String) async throws {
@@ -328,14 +333,14 @@ public actor ProviderControlService: ProviderControlling {
         if item.isPreloaded {
             throw ProviderControlError.deleteBlocked("Remove the model from preload and save before deleting it")
         }
-        _ = try await runner.run(
+        return try await runDispatchedMutation(
             DarkbloomCommand.remove(executable: executable, modelID: localModelID),
             timeout: DarkbloomSourcePolicy.lifecycleTimeout,
             outputLimit: DarkbloomSourcePolicy.mutationOutputByteLimit,
-            onOutput: nil
+            onOutput: nil,
+            onPhase: onPhase,
+            executable: executable
         )
-        await onPhase?(.reconciling)
-        return await refreshAfterCompletedMutation(using: executable)
     }
 
     public func activityRisk() async -> ProviderActivityRisk {
@@ -398,14 +403,14 @@ public actor ProviderControlService: ProviderControlling {
                 config: policy.providerConfig
             )
         }
-        _ = try await runner.run(
+        return try await runDispatchedMutation(
             command,
             timeout: DarkbloomSourcePolicy.lifecycleTimeout,
             outputLimit: DarkbloomSourcePolicy.mutationOutputByteLimit,
-            onOutput: nil
+            onOutput: nil,
+            onPhase: onPhase,
+            executable: executable
         )
-        await onPhase?(.reconciling)
-        return await refreshAfterCompletedMutation(using: executable)
     }
 
     public func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
@@ -453,6 +458,35 @@ public actor ProviderControlService: ProviderControlling {
         } catch {
             return .refreshUncertain
         }
+    }
+
+    /// Cancellation is authoritative only before a mutation is handed to the
+    /// runner. Once dispatched, the child may have changed external state even
+    /// when the runner reports `CancellationError` (including an exit/handler
+    /// bookkeeping race), so reconcile before releasing command serialization.
+    private func runDispatchedMutation(
+        _ command: ProcessCommand,
+        timeout: Duration,
+        outputLimit: Int,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
+        onPhase: ProviderMutationPhaseObserver?,
+        executable: URL
+    ) async throws -> ProviderMutationCompletion {
+        try Task.checkCancellation()
+        do {
+            _ = try await runner.run(
+                command,
+                timeout: timeout,
+                outputLimit: outputLimit,
+                onOutput: onOutput
+            )
+        } catch is CancellationError {
+            await onPhase?(.reconciling)
+            let completion = await refreshAfterCompletedMutation(using: executable)
+            return completion == .refreshUncertain ? .outcomeUncertain : completion
+        }
+        await onPhase?(.reconciling)
+        return await refreshAfterCompletedMutation(using: executable)
     }
 
     private func refresh(

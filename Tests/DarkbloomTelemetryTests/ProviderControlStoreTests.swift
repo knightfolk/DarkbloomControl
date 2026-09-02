@@ -62,6 +62,11 @@ struct ProviderControlStoreTests {
         await store.save()
 
         #expect(store.snapshot?.sources == .unknown)
+        #expect(store.draft?.original.enabled == ["saved-model", "second-model"])
+        #expect(store.draft?.selection.enabled == ["saved-model", "second-model"])
+        #expect(store.draft?.hasChanges == false)
+        #expect(store.restartRequired)
+        #expect(!store.canSave)
         #expect(store.errorMessage == "Settings were saved, but model controls could not refresh.")
     }
 
@@ -308,14 +313,20 @@ struct ProviderControlStoreTests {
 
         guard await harness.gate.waitUntilStarted() else {
             mutationTask.cancel()
-            await harness.gate.release()
+            harness.gate.release()
             await mutationTask.value
             Issue.record("The provider command did not reach the post-exit return window")
             return
         }
         #expect(try String(contentsOf: harness.sentinelURL) == mutation.rawValue)
         mutationTask.cancel()
-        await harness.gate.release()
+        guard await harness.gate.waitUntilCancellation() else {
+            harness.gate.release()
+            await mutationTask.value
+            Issue.record("The runner did not record cancellation before handler release")
+            return
+        }
+        harness.gate.release()
         await mutationTask.value
 
         #expect(store.operation == .idle)
@@ -335,6 +346,68 @@ struct ProviderControlStoreTests {
             #expect(store.snapshot?.inventory.myCatalog.first {
                 $0.catalogID == "saved-model"
             }?.liveState == .unloaded)
+        }
+    }
+
+    @Test(
+        "post-exit cancellation invalidates actions when reconciliation cannot establish the outcome",
+        arguments: PostExitProviderMutation.allCases
+    )
+    func invalidatesUnreconciledPostExitRunnerCancellation(
+        _ mutation: PostExitProviderMutation
+    ) async throws {
+        let harness = try PostExitProviderHarness.make(mutation: mutation)
+        defer { harness.cleanup() }
+        let store = ProviderControlStore(controller: harness.service)
+        await store.refresh()
+
+        let mutationTask: Task<Void, Never>
+        switch mutation {
+        case .download:
+            mutationTask = Task { await store.download("available-model") }
+        case .delete:
+            mutationTask = Task { await store.delete("second-model") }
+        case .lifecycle:
+            mutationTask = Task { await store.request(.stop) }
+        }
+
+        guard await harness.gate.waitUntilStarted() else {
+            mutationTask.cancel()
+            harness.gate.release()
+            await mutationTask.value
+            Issue.record("The provider command did not reach the held termination handler")
+            return
+        }
+        try harness.failReconciliation()
+        mutationTask.cancel()
+        guard await harness.gate.waitUntilCancellation() else {
+            harness.gate.release()
+            await mutationTask.value
+            Issue.record("The runner did not record cancellation before handler release")
+            return
+        }
+        harness.gate.release()
+        await mutationTask.value
+
+        #expect(store.operation == .idle)
+        #expect(store.snapshot?.sources == .unknown)
+        #expect(!store.canDownload("available-model"))
+        switch mutation {
+        case .download:
+            #expect(
+                store.errorMessage
+                    == "Download outcome could not be confirmed; model controls could not refresh."
+            )
+        case .delete:
+            #expect(
+                store.errorMessage
+                    == "Delete outcome could not be confirmed; model controls could not refresh."
+            )
+        case .lifecycle:
+            #expect(
+                store.errorMessage
+                    == "Provider stop outcome could not be confirmed; current state could not refresh."
+            )
         }
     }
 
@@ -1026,6 +1099,7 @@ enum PostExitProviderMutation: String, CaseIterable, Sendable {
 private final class PostExitProviderHarness: @unchecked Sendable {
     let directory: URL
     let sentinelURL: URL
+    let reconciliationFailureURL: URL
     let gate: PostExitProviderGate
     let service: ProviderControlService
 
@@ -1053,12 +1127,17 @@ private final class PostExitProviderHarness: @unchecked Sendable {
 
             let stateURL = directory.appendingPathComponent("model-state")
             let sentinelURL = directory.appendingPathComponent("mutation.sentinel")
+            let reconciliationFailureURL = directory.appendingPathComponent("fail-refresh")
             let gate = PostExitProviderGate(mutation: mutation)
-            let runner = CappedProcessRunner(testOnlyPostExitObserver: { command in
-                await gate.pauseIfTarget(command)
-            })
+            let runner = CappedProcessRunner(
+                testOnlyBeforeTerminationHandlerObserver: gate.pauseIfTarget,
+                testOnlyCancellationObserver: gate.recordCancellation
+            )
             let selection = ProviderModelSelection(enabled: ["saved-model"], preloaded: [])
-            let configStore = PostExitConfigStore(selection: selection)
+            let configStore = PostExitConfigStore(
+                selection: selection,
+                reconciliationFailureURL: reconciliationFailureURL
+            )
             let telemetry = PostExitTelemetrySource(stateURL: stateURL)
             let policy = DarkbloomSourcePolicy(
                 homeDirectory: directory,
@@ -1074,6 +1153,7 @@ private final class PostExitProviderHarness: @unchecked Sendable {
             return PostExitProviderHarness(
                 directory: directory,
                 sentinelURL: sentinelURL,
+                reconciliationFailureURL: reconciliationFailureURL,
                 gate: gate,
                 service: service
             )
@@ -1086,11 +1166,13 @@ private final class PostExitProviderHarness: @unchecked Sendable {
     private init(
         directory: URL,
         sentinelURL: URL,
+        reconciliationFailureURL: URL,
         gate: PostExitProviderGate,
         service: ProviderControlService
     ) {
         self.directory = directory
         self.sentinelURL = sentinelURL
+        self.reconciliationFailureURL = reconciliationFailureURL
         self.gate = gate
         self.service = service
     }
@@ -1098,60 +1180,109 @@ private final class PostExitProviderHarness: @unchecked Sendable {
     func cleanup() {
         try? FileManager.default.removeItem(at: directory)
     }
+
+    func failReconciliation() throws {
+        try Data().write(to: reconciliationFailureURL)
+    }
 }
 
-private actor PostExitProviderGate {
+private final class PostExitProviderGate: @unchecked Sendable {
     private let mutation: PostExitProviderMutation
+    private let lock = NSLock()
     private var started = false
     private var released = false
-    private var continuation: CheckedContinuation<Void, Never>?
+    private var cancellationRecorded = false
+    private let releaseGate = SynchronousProviderReleaseGate()
 
     init(mutation: PostExitProviderMutation) {
         self.mutation = mutation
     }
 
-    func pauseIfTarget(_ command: ProcessCommand) async {
-        guard mutation.matches(command), !started else { return }
-        started = true
-        guard !released else { return }
-        await withCheckedContinuation { continuation in
-            self.continuation = continuation
+    func pauseIfTarget(_ command: ProcessCommand) {
+        guard mutation.matches(command) else { return }
+        let shouldWait = lock.withLock { () -> Bool in
+            guard !started else { return false }
+            started = true
+            return !released
         }
+        if shouldWait { releaseGate.wait() }
     }
 
     func waitUntilStarted(timeout: Duration = .seconds(1)) async -> Bool {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
-        while !started {
+        while !lock.withLock({ started }) {
             guard clock.now < deadline else { return false }
             await Task.yield()
         }
         return true
     }
 
+    func waitUntilCancellation(timeout: Duration = .seconds(1)) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !lock.withLock({ cancellationRecorded }) {
+            guard clock.now < deadline else { return false }
+            await Task.yield()
+        }
+        return true
+    }
+
+    func recordCancellation() {
+        lock.withLock { cancellationRecorded = true }
+    }
+
     func release() {
+        lock.withLock { released = true }
+        releaseGate.release()
+    }
+}
+
+private final class SynchronousProviderReleaseGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var released = false
+
+    func wait() {
+        condition.lock()
+        while !released { condition.wait() }
+        condition.unlock()
+    }
+
+    func release() {
+        condition.lock()
         released = true
-        continuation?.resume()
-        continuation = nil
+        condition.broadcast()
+        condition.unlock()
     }
 }
 
 private actor PostExitConfigStore: ProviderConfigManaging {
     private let draft: ProviderConfigDraft
+    private let reconciliationFailureURL: URL
 
-    init(selection: ProviderModelSelection) {
+    init(selection: ProviderModelSelection, reconciliationFailureURL: URL) {
         draft = ProviderConfigDraft(
             sourceRevision: "post-exit-fixture",
             original: selection,
             selection: selection
         )
+        self.reconciliationFailureURL = reconciliationFailureURL
     }
 
-    func load() async throws -> ProviderConfigDraft { draft }
+    func load() async throws -> ProviderConfigDraft {
+        if FileManager.default.fileExists(atPath: reconciliationFailureURL.path) {
+            throw PostExitProviderError.reconciliationFailed
+        }
+        return draft
+    }
 
     func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
         ProviderConfigSaveResult(draft: draft, restartRequired: true)
     }
+}
+
+private enum PostExitProviderError: Error {
+    case reconciliationFailed
 }
 
 private struct PostExitTelemetrySource: TelemetrySource, Sendable {
@@ -1205,6 +1336,7 @@ private let postExitProviderScript = #"""
 root=$(dirname "$0")
 case "$1:$2" in
     "models:catalog")
+        if [ -f "$root/fail-refresh" ]; then exit 65; fi
         /bin/cat "$root/catalog.json"
         ;;
     "models:list")
