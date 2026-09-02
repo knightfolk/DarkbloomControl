@@ -104,22 +104,42 @@ struct MonitorPopoverLayoutTests {
         #expect(fitted.height == proposed.height)
     }
 
-    @Test("infographic popover has a compact stable viewport")
-    func hasCompactViewport() {
+    @Test("two-row lifecycle popover has a compact stable viewport")
+    func hasCompactViewport() async {
         let service = TelemetryService(source: UnusedTelemetrySource())
         let store = MonitorStore(
             service: service,
             initial: .unavailable(now: Date(timeIntervalSince1970: 1_750_000_000))
         )
+        let controlStore = ProviderControlStore(controller: InertSettingsController())
+        await controlStore.refresh()
         let hostingController = NSHostingController(
             rootView: MonitorPopover(store: store)
+                .environmentObject(controlStore)
         )
         let proposedSize = hostingController.sizeThatFits(
             in: NSSize(width: 400, height: 0)
         )
 
         #expect(proposedSize.width == 400)
-        #expect(proposedSize.height == 560)
+        #expect(proposedSize.height == 600)
+    }
+
+    @Test("lifecycle controls bind to an inert shared store and remain compact")
+    func lifecycleControlsFit() async {
+        let controlStore = ProviderControlStore(controller: InertSettingsController())
+        await controlStore.refresh()
+        let hostingController = NSHostingController(
+            rootView: ProviderLifecycleControls(
+                store: controlStore,
+                snapshot: .unavailable(now: Date(timeIntervalSince1970: 1_750_000_000))
+            )
+        )
+
+        let fitted = hostingController.sizeThatFits(in: NSSize(width: 220, height: 40))
+
+        #expect(fitted.width <= 220)
+        #expect(fitted.height <= 40)
     }
 }
 

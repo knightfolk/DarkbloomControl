@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MonitorPopover: View {
     @ObservedObject var store: MonitorStore
+    @EnvironmentObject private var controlStore: ProviderControlStore
     let openSettings: () -> Void
 
     init(
@@ -14,14 +15,15 @@ struct MonitorPopover: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             header
+            providerHeader
             throughputSection
             jobsSection
             modelsSection
         }
         .padding(20)
-        .frame(width: 400, height: 560, alignment: .topLeading)
+        .frame(width: 400, height: 600, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -55,6 +57,16 @@ struct MonitorPopover: View {
             .help("Quit Darkbloom Monitor")
             .accessibilityLabel("Quit Darkbloom Monitor")
             .accessibilityIdentifier("dashboard.quit")
+        }
+    }
+
+    private var providerHeader: some View {
+        HStack {
+            Label("Provider", systemImage: "server.rack")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Spacer()
+            ProviderLifecycleControls(store: controlStore, snapshot: store.snapshot)
         }
     }
 
