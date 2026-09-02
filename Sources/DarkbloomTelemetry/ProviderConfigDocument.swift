@@ -147,14 +147,17 @@ private struct ProviderConfigScanner {
 
     mutating func scan() throws -> [String: ProviderConfigArray] {
         var arrays: [String: ProviderConfigArray] = [:]
+        var isModelSelectionScope = true
 
         while true {
             skipStatementTrivia()
             guard index < bytes.count else { break }
 
-            // A TOML table header changes the scope for every following key/value
-            // pair. Root keys cannot resume after it, so the narrow scan is done.
-            if bytes[index] == Self.openBracket { break }
+            if bytes[index] == Self.openBracket {
+                isModelSelectionScope = isBackendTableHeader(at: index)
+                index = skipStatement(from: index)
+                continue
+            }
 
             let statementStart = index
             guard let key = parseBareKey() else {
@@ -168,7 +171,9 @@ private struct ProviderConfigScanner {
             }
             index += 1
 
-            guard key == "enabled_models" || key == "preload_models" else {
+            guard isModelSelectionScope,
+                  key == "enabled_models" || key == "preload_models"
+            else {
                 index = skipStatement(from: index)
                 continue
             }
@@ -186,6 +191,24 @@ private struct ProviderConfigScanner {
         }
 
         return arrays
+    }
+
+    private func isBackendTableHeader(at start: Int) -> Bool {
+        guard start < bytes.count, bytes[start] == Self.openBracket else { return false }
+        var cursor = start + 1
+        while cursor < bytes.count, isHorizontalWhitespace(bytes[cursor]) { cursor += 1 }
+
+        let nameStart = cursor
+        while cursor < bytes.count, Self.isBareKeyByte(bytes[cursor]) { cursor += 1 }
+        guard String(decoding: bytes[nameStart..<cursor], as: UTF8.self) == "backend" else {
+            return false
+        }
+
+        while cursor < bytes.count, isHorizontalWhitespace(bytes[cursor]) { cursor += 1 }
+        guard cursor < bytes.count, bytes[cursor] == Self.closeBracket else { return false }
+        cursor += 1
+        while cursor < bytes.count, isHorizontalWhitespace(bytes[cursor]) { cursor += 1 }
+        return cursor == bytes.count || isNewline(at: cursor) || bytes[cursor] == Self.comment
     }
 
     private mutating func parseStringArray(key: String) throws -> ProviderConfigArray {

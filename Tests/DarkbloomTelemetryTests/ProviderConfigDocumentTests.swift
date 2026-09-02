@@ -4,6 +4,49 @@ import Testing
 
 @Suite("Provider config document")
 struct ProviderConfigDocumentTests {
+    @Test("reads and rewrites model selection from the backend table")
+    func readsBackendModelSelection() throws {
+        let source = """
+        title = "preserve me"
+
+        [backend]
+        enabled_models = ["legacy-model"]
+        preload_models = ["legacy-model"]
+
+        [unrelated]
+        enabled_models = ["unrelated-model"]
+        preload_models = ["unrelated-model"]
+
+        """
+        let document = try ProviderConfigDocument(data: Data(source.utf8))
+
+        #expect(document.selection == ProviderModelSelection(
+            enabled: ["legacy-model"],
+            preloaded: ["legacy-model"]
+        ))
+
+        let rendered = try document.rendering(ProviderModelSelection(
+            enabled: ["new-model"],
+            preloaded: []
+        ))
+        let expected = """
+        title = "preserve me"
+
+        [backend]
+        enabled_models = [
+            "new-model",
+        ]
+        preload_models = [
+        ]
+
+        [unrelated]
+        enabled_models = ["unrelated-model"]
+        preload_models = ["unrelated-model"]
+
+        """
+        #expect(rendered == Data(expected.utf8))
+    }
+
     @Test("renders only enabled and preload array value bytes")
     func preservesUnrelatedBytes() throws {
         let original = try fixture("provider-comments.toml")
