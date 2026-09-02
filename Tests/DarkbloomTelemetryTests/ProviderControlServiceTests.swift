@@ -2,6 +2,8 @@ import Foundation
 import Testing
 @testable import DarkbloomTelemetry
 
+private let serviceNow = Date(timeIntervalSince1970: 1_788_282_000)
+
 @Suite("Provider control service")
 struct ProviderControlServiceTests {
     @Test("refresh combines catalog local config and live telemetry")
@@ -23,12 +25,12 @@ struct ProviderControlServiceTests {
         let harness = try ServiceHarness.make()
         defer { harness.cleanup() }
 
-        try await harness.service.download("gpt-oss-20b", onOutput: nil)
+        try await harness.service.download("qwen3-8b", onOutput: nil)
         try await harness.service.delete("gpt-oss-20b")
 
         #expect(await harness.configStore.saveCount == 0)
         #expect(await harness.runner.mutationArguments == [
-            ["models", "download", "--config", harness.configURL.path, "gpt-oss-20b"],
+            ["models", "download", "--config", harness.configURL.path, "qwen3-8b"],
             ["models", "remove", "gpt-oss-20b", "--force"],
         ])
     }
@@ -61,6 +63,38 @@ struct ProviderControlServiceTests {
         #expect(staleLocal.inventory.myCatalog.count == 2)
     }
 
+    @Test("refresh exposes independent typed source freshness")
+    func exposesTypedSourceFreshness() async throws {
+        let catalogHarness = try ServiceHarness.make()
+        defer { catalogHarness.cleanup() }
+        _ = try await catalogHarness.service.refresh()
+        await catalogHarness.runner.failNextCatalog()
+
+        let staleCatalog = try await catalogHarness.service.refresh()
+
+        #expect(staleCatalog.sources.catalog == .stale(
+            "Model catalog is stale; showing the last successful result"
+        ))
+        #expect(staleCatalog.sources.localModels == .fresh)
+
+        let residencyHarness = try ServiceHarness.make(
+            loadedModelsUpdatedAt: serviceNow.timeIntervalSince1970 - 11
+        )
+        defer { residencyHarness.cleanup() }
+        await residencyHarness.telemetry.failNextDaemonRead()
+
+        let unknownResidency = try await residencyHarness.service.refresh()
+
+        #expect(unknownResidency.sources.daemon == .unavailable(
+            "Provider activity is unavailable"
+        ))
+        #expect(unknownResidency.sources.loadedModels == .stale(
+            "Loaded model state is stale"
+        ))
+        #expect(unknownResidency.inventory.issues.contains("Provider activity is unavailable"))
+        #expect(unknownResidency.inventory.issues.contains("Loaded model state is stale"))
+    }
+
     @Test("an older refresh cannot replace the cache from a completed mutation")
     func mutationRefreshWinsCacheRace() async throws {
         let harness = try ServiceHarness.make()
@@ -69,6 +103,7 @@ struct ProviderControlServiceTests {
         let olderRefresh = Task { try await harness.service.refresh() }
         await harness.runner.waitUntilLocalBlocked()
 
+        await harness.runner.useNextLocal(localJSON)
         await harness.runner.useLocalByDefault(localWithQwenJSON)
         try await harness.service.download("qwen3-8b", onOutput: nil)
 
@@ -184,6 +219,86 @@ struct ProviderControlServiceTests {
         #expect(await loadedUnavailable.runner.mutationArguments.isEmpty)
     }
 
+    @Test("delete rejects stale and future residency timestamps")
+    func deleteRequiresCurrentResidencyTimestamps() async throws {
+        let staleDaemon = try ServiceHarness.make(daemonState: daemon(
+            currentModel: "",
+            inferenceActive: false,
+            writtenAt: serviceNow.timeIntervalSince1970 - 10.001
+        ))
+        defer { staleDaemon.cleanup() }
+        await #expect(throws: ProviderControlError.deleteBlocked(
+            "Provider activity is stale; deletion was not attempted"
+        )) {
+            try await staleDaemon.service.delete("gpt-oss-20b")
+        }
+
+        let futureDaemon = try ServiceHarness.make(daemonState: daemon(
+            currentModel: "",
+            inferenceActive: false,
+            writtenAt: serviceNow.timeIntervalSince1970 + 0.001
+        ))
+        defer { futureDaemon.cleanup() }
+        await #expect(throws: ProviderControlError.deleteBlocked(
+            "Provider activity timestamp is in the future; deletion was not attempted"
+        )) {
+            try await futureDaemon.service.delete("gpt-oss-20b")
+        }
+
+        let staleLoaded = try ServiceHarness.make(
+            loadedModelsUpdatedAt: serviceNow.timeIntervalSince1970 - 10.001
+        )
+        defer { staleLoaded.cleanup() }
+        await #expect(throws: ProviderControlError.deleteBlocked(
+            "Loaded model state is stale; deletion was not attempted"
+        )) {
+            try await staleLoaded.service.delete("gpt-oss-20b")
+        }
+
+        let futureLoaded = try ServiceHarness.make(
+            loadedModelsUpdatedAt: serviceNow.timeIntervalSince1970 + 0.001
+        )
+        defer { futureLoaded.cleanup() }
+        await #expect(throws: ProviderControlError.deleteBlocked(
+            "Loaded model state timestamp is in the future; deletion was not attempted"
+        )) {
+            try await futureLoaded.service.delete("gpt-oss-20b")
+        }
+
+        #expect(await staleDaemon.runner.mutationArguments.isEmpty)
+        #expect(await futureDaemon.runner.mutationArguments.isEmpty)
+        #expect(await staleLoaded.runner.mutationArguments.isEmpty)
+        #expect(await futureLoaded.runner.mutationArguments.isEmpty)
+    }
+
+    @Test("delete residency cancellation propagates without removing and releases serialization")
+    func deleteResidencyCancellationReleasesLock() async throws {
+        let daemonCancellation = try ServiceHarness.make()
+        defer { daemonCancellation.cleanup() }
+        await daemonCancellation.telemetry.cancelNextDaemonRead()
+        do {
+            try await daemonCancellation.service.delete("gpt-oss-20b")
+            Issue.record("Expected daemon-read cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let loadedCancellation = try ServiceHarness.make()
+        defer { loadedCancellation.cleanup() }
+        await loadedCancellation.telemetry.cancelNextLoadedModelsRead()
+        do {
+            try await loadedCancellation.service.delete("gpt-oss-20b")
+            Issue.record("Expected loaded-model-read cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        #expect(await daemonCancellation.runner.mutationArguments.isEmpty)
+        #expect(await loadedCancellation.runner.mutationArguments.isEmpty)
+        try await daemonCancellation.service.execute(.stop, enabledModels: [])
+        try await loadedCancellation.service.execute(.stop, enabledModels: [])
+    }
+
     @Test("delete rejects unmatched and ambiguous local identities")
     func deleteRejectsUnsafeIdentity() async throws {
         let unmatched = try ServiceHarness.make()
@@ -276,6 +391,35 @@ struct ProviderControlServiceTests {
         #expect(await idle.service.activityRisk() == .unknown("Provider activity is unavailable"))
     }
 
+    @Test("activity treats stale and future daemon telemetry as unknown")
+    func activityRequiresCurrentTelemetry() async throws {
+        let boundary = try ServiceHarness.make(daemonState: daemon(
+            currentModel: "gpt-oss-20b",
+            inferenceActive: true,
+            writtenAt: serviceNow.timeIntervalSince1970 - 10
+        ))
+        defer { boundary.cleanup() }
+        #expect(await boundary.service.activityRisk() == .active)
+
+        let stale = try ServiceHarness.make(daemonState: daemon(
+            currentModel: "gpt-oss-20b",
+            inferenceActive: true,
+            writtenAt: serviceNow.timeIntervalSince1970 - 10.001
+        ))
+        defer { stale.cleanup() }
+        #expect(await stale.service.activityRisk() == .unknown("Provider activity is stale"))
+
+        let future = try ServiceHarness.make(daemonState: daemon(
+            currentModel: "",
+            inferenceActive: false,
+            writtenAt: serviceNow.timeIntervalSince1970 + 0.001
+        ))
+        defer { future.cleanup() }
+        #expect(await future.service.activityRisk() == .unknown(
+            "Provider activity timestamp is in the future"
+        ))
+    }
+
     @Test("an absent approved executable is a bounded service error")
     func rejectsMissingExecutable() async throws {
         let harness = try ServiceHarness.make()
@@ -295,7 +439,7 @@ struct ProviderControlServiceTests {
         defer { harness.cleanup() }
         await harness.runner.blockNextMutation()
         let download = Task {
-            try await harness.service.download("gpt-oss-20b", onOutput: nil)
+            try await harness.service.download("qwen3-8b", onOutput: nil)
         }
         await harness.runner.waitUntilBlocked()
 
@@ -325,7 +469,7 @@ struct ProviderControlServiceTests {
         await harness.configStore.waitUntilSaveBlocked()
 
         await #expect(throws: ProviderControlError.commandAlreadyRunning) {
-            try await harness.service.download("gpt-oss-20b", onOutput: nil)
+            try await harness.service.download("qwen3-8b", onOutput: nil)
         }
 
         await harness.configStore.releaseBlockedSave()
@@ -334,13 +478,182 @@ struct ProviderControlServiceTests {
         #expect(result.draft.selection.enabled == ["gpt-oss-20b"])
     }
 
+    @Test("save rejects selectors removed externally immediately before saving")
+    func saveRejectsExternalRemoval() async throws {
+        let harness = try ServiceHarness.make(selection: ProviderModelSelection(
+            enabled: ["gpt-oss-20b"],
+            preloaded: []
+        ))
+        defer { harness.cleanup() }
+        let draft = try await harness.configStore.load()
+        await harness.runner.useLocalByDefault(localGemmaOnlyJSON)
+
+        await #expect(throws: ProviderControlError.inventoryUnavailable(
+            "Saved model selection is not an unambiguous downloaded catalog model"
+        )) {
+            try await harness.service.save(draft)
+        }
+
+        #expect(await harness.configStore.saveCount == 0)
+        #expect(await harness.runner.mutationArguments.isEmpty)
+    }
+
+    @Test("save rejects direct callers with missing or ambiguous family selectors")
+    func saveRequiresUnambiguousDownloadedCatalogModels() async throws {
+        let missing = try ServiceHarness.make()
+        defer { missing.cleanup() }
+        let missingDraft = try await missing.configStore.load().withSelection(
+            ProviderModelSelection(enabled: ["not-in-catalog"], preloaded: [])
+        )
+
+        await #expect(throws: ProviderControlError.inventoryUnavailable(
+            "Saved model selection is not an unambiguous downloaded catalog model"
+        )) {
+            try await missing.service.save(missingDraft)
+        }
+
+        let ambiguous = try ServiceHarness.make(
+            catalog: ambiguousFamilyCatalogJSON,
+            local: ambiguousFamilyLocalJSON,
+            selection: ProviderModelSelection(enabled: [], preloaded: [])
+        )
+        defer { ambiguous.cleanup() }
+        let ambiguousDraft = try await ambiguous.configStore.load().withSelection(
+            ProviderModelSelection(enabled: ["gpt-oss"], preloaded: [])
+        )
+
+        await #expect(throws: ProviderControlError.inventoryUnavailable(
+            "Saved model selection is not an unambiguous downloaded catalog model"
+        )) {
+            try await ambiguous.service.save(ambiguousDraft)
+        }
+
+        #expect(await missing.configStore.saveCount == 0)
+        #expect(await ambiguous.configStore.saveCount == 0)
+    }
+
+    @Test("save does not use stale catalog or local fallback")
+    func saveRequiresFreshModelSources() async throws {
+        let catalogHarness = try ServiceHarness.make()
+        defer { catalogHarness.cleanup() }
+        _ = try await catalogHarness.service.refresh()
+        await catalogHarness.runner.failNextCatalog()
+        let catalogDraft = try await catalogHarness.configStore.load()
+
+        await #expect(throws: ProviderControlError.inventoryUnavailable("Model catalog is unavailable")) {
+            try await catalogHarness.service.save(catalogDraft)
+        }
+
+        let localHarness = try ServiceHarness.make()
+        defer { localHarness.cleanup() }
+        _ = try await localHarness.service.refresh()
+        await localHarness.runner.failNextLocal()
+        let localDraft = try await localHarness.configStore.load()
+
+        await #expect(throws: ProviderControlError.inventoryUnavailable("Local model list is unavailable")) {
+            try await localHarness.service.save(localDraft)
+        }
+
+        #expect(await catalogHarness.configStore.saveCount == 0)
+        #expect(await localHarness.configStore.saveCount == 0)
+    }
+
+    @Test("save preflight cancellation propagates and releases serialization")
+    func savePreflightCancellationReleasesLock() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+        let draft = try await harness.configStore.load()
+        await harness.runner.cancelNextCatalog()
+
+        do {
+            _ = try await harness.service.save(draft)
+            Issue.record("Expected save preflight cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        #expect(await harness.configStore.saveCount == 0)
+        try await harness.service.execute(.stop, enabledModels: [])
+    }
+
+    @Test("download requires an exact fresh available catalog entry")
+    func downloadValidatesFreshAvailability() async throws {
+        let missing = try ServiceHarness.make()
+        defer { missing.cleanup() }
+        await #expect(throws: ProviderControlError.inventoryUnavailable(
+            "The requested model is not a fresh available catalog entry"
+        )) {
+            try await missing.service.download("gpt-oss", onOutput: nil)
+        }
+
+        let downloaded = try ServiceHarness.make()
+        defer { downloaded.cleanup() }
+        await #expect(throws: ProviderControlError.inventoryUnavailable(
+            "The requested model is not a fresh available catalog entry"
+        )) {
+            try await downloaded.service.download("gpt-oss-20b", onOutput: nil)
+        }
+
+        let ambiguous = try ServiceHarness.make(catalog: duplicateCatalogIDJSON)
+        defer { ambiguous.cleanup() }
+        await #expect(throws: ProviderControlError.inventoryUnavailable(
+            "The requested model is not a fresh available catalog entry"
+        )) {
+            try await ambiguous.service.download("gpt-oss-20b", onOutput: nil)
+        }
+
+        #expect(await missing.runner.mutationArguments.isEmpty)
+        #expect(await downloaded.runner.mutationArguments.isEmpty)
+        #expect(await ambiguous.runner.mutationArguments.isEmpty)
+    }
+
+    @Test("download does not use stale source fallback or ignore an external download")
+    func downloadRequiresCurrentModelSources() async throws {
+        let staleCatalog = try ServiceHarness.make()
+        defer { staleCatalog.cleanup() }
+        _ = try await staleCatalog.service.refresh()
+        await staleCatalog.runner.failNextCatalog()
+        await #expect(throws: ProviderControlError.inventoryUnavailable("Model catalog is unavailable")) {
+            try await staleCatalog.service.download("qwen3-8b", onOutput: nil)
+        }
+
+        let externalDownload = try ServiceHarness.make()
+        defer { externalDownload.cleanup() }
+        await externalDownload.runner.useLocalByDefault(localWithQwenJSON)
+        await #expect(throws: ProviderControlError.inventoryUnavailable(
+            "The requested model is not a fresh available catalog entry"
+        )) {
+            try await externalDownload.service.download("qwen3-8b", onOutput: nil)
+        }
+
+        #expect(await staleCatalog.runner.mutationArguments.isEmpty)
+        #expect(await externalDownload.runner.mutationArguments.isEmpty)
+    }
+
+    @Test("download preflight cancellation issues no mutation and releases serialization")
+    func downloadPreflightCancellationReleasesLock() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+        await harness.runner.cancelNextCatalog()
+
+        do {
+            try await harness.service.download("qwen3-8b", onOutput: nil)
+            Issue.record("Expected download preflight cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        #expect(await harness.runner.mutationArguments.isEmpty)
+        try await harness.service.execute(.stop, enabledModels: [])
+    }
+
     @Test("download forwards bounded output chunks")
     func forwardsDownloadOutput() async throws {
         let harness = try ServiceHarness.make()
         defer { harness.cleanup() }
         let recorder = ServiceOutputRecorder()
 
-        try await harness.service.download("gpt-oss-20b", onOutput: recorder.record)
+        try await harness.service.download("qwen3-8b", onOutput: recorder.record)
 
         #expect(recorder.data == Data("download 25%".utf8))
         let invocation = try #require(await harness.runner.mutationInvocations.first)
@@ -354,7 +667,7 @@ struct ProviderControlServiceTests {
         defer { harness.cleanup() }
         await harness.runner.blockNextMutation()
         let download = Task {
-            try await harness.service.download("gpt-oss-20b", onOutput: nil)
+            try await harness.service.download("qwen3-8b", onOutput: nil)
         }
         await harness.runner.waitUntilBlocked()
 
@@ -366,7 +679,7 @@ struct ProviderControlServiceTests {
             // Expected: the service does not translate executor cancellation.
         }
 
-        #expect(await harness.runner.sourceArguments.isEmpty)
+        #expect(await harness.runner.sourceArguments.count == 2)
         try await harness.service.execute(.stop, enabledModels: [])
     }
 
@@ -423,7 +736,7 @@ struct ProviderControlServiceTests {
         let harness = try ServiceHarness.make()
         defer { harness.cleanup() }
         _ = try await harness.service.refresh()
-        await harness.runner.blockNextLocal(with: localJSON)
+        await harness.runner.blockLocal(afterSuccessfulReads: 1, with: localJSON)
         let download = Task {
             try await harness.service.download("qwen3-8b", onOutput: nil)
         }
@@ -452,7 +765,7 @@ private final class ServiceHarness: @unchecked Sendable {
     let telemetry: ServiceTelemetryFake
     let configStore: ServiceConfigStoreFake
     let service: ProviderControlService
-    let now = Date(timeIntervalSince1970: 1_788_282_000)
+    let now = serviceNow
 
     static func make(
         catalog: Data = catalogJSON,
@@ -462,7 +775,8 @@ private final class ServiceHarness: @unchecked Sendable {
             preloaded: []
         ),
         daemonState: DaemonState = daemon(currentModel: "", inferenceActive: false),
-        loadedModels: [String] = ["gemma-4-26b-qat-4bit"]
+        loadedModels: [String] = ["gemma-4-26b-qat-4bit"],
+        loadedModelsUpdatedAt: TimeInterval = serviceNow.timeIntervalSince1970
     ) throws -> ServiceHarness {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("darkbloom-provider-service-\(UUID().uuidString)", isDirectory: true)
@@ -474,7 +788,11 @@ private final class ServiceHarness: @unchecked Sendable {
         let runner = ServiceRunnerFake(catalog: catalog, local: local)
         let telemetry = ServiceTelemetryFake(
             daemon: daemonState,
-            loadedModels: LoadedModelsState(schema: 1, models: loadedModels, updatedAt: 1)
+            loadedModels: LoadedModelsState(
+                schema: 1,
+                models: loadedModels,
+                updatedAt: loadedModelsUpdatedAt
+            )
         )
         let configStore = ServiceConfigStoreFake(selection: selection)
         let policy = DarkbloomSourcePolicy(homeDirectory: directory, environmentPath: directory.path)
@@ -509,7 +827,7 @@ private final class ServiceHarness: @unchecked Sendable {
             telemetrySource: telemetry,
             configStore: configStore,
             runner: runner,
-            now: { Date(timeIntervalSince1970: 1_788_282_000) }
+            now: { serviceNow }
         )
     }
 
@@ -541,6 +859,7 @@ private actor ServiceRunnerFake: ProcessExecuting {
     private var blockedLocalGate: ServiceAsyncGate?
     private var blockedLocalData: Data?
     private var shouldBlockNextLocal = false
+    private var successfulLocalReadsBeforeBlock = 0
 
     init(catalog: Data, local: Data) {
         self.catalog = catalog
@@ -591,9 +910,14 @@ private actor ServiceRunnerFake: ProcessExecuting {
     }
 
     func blockNextLocal(with data: Data) {
+        blockLocal(afterSuccessfulReads: 0, with: data)
+    }
+
+    func blockLocal(afterSuccessfulReads: Int, with data: Data) {
         blockedLocalGate = ServiceAsyncGate()
         blockedLocalData = data
         shouldBlockNextLocal = true
+        successfulLocalReadsBeforeBlock = afterSuccessfulReads
     }
 
     func waitUntilLocalBlocked() async {
@@ -639,13 +963,16 @@ private actor ServiceRunnerFake: ProcessExecuting {
         case ["models", "catalog"]:
             output = try consume(&nextCatalog, fallback: catalog)
         case ["models", "list"]:
-            if shouldBlockNextLocal {
+            if shouldBlockNextLocal, successfulLocalReadsBeforeBlock == 0 {
                 shouldBlockNextLocal = false
                 if let blockedLocalGate {
                     try await blockedLocalGate.wait()
                 }
                 output = blockedLocalData ?? local
             } else {
+                if shouldBlockNextLocal {
+                    successfulLocalReadsBeforeBlock -= 1
+                }
                 output = try consume(&nextLocal, fallback: local)
             }
         default: output = Data()
@@ -796,7 +1123,11 @@ private actor ServiceTelemetryFake: TelemetrySource {
     func readLegacyEvents(limit: Int) async throws -> [LogEvent] { [] }
 }
 
-private func daemon(currentModel: String, inferenceActive: Bool) -> DaemonState {
+private func daemon(
+    currentModel: String,
+    inferenceActive: Bool,
+    writtenAt: TimeInterval = serviceNow.timeIntervalSince1970
+) -> DaemonState {
     DaemonState(
         schema: 1,
         version: "0.8.15",
@@ -808,7 +1139,7 @@ private func daemon(currentModel: String, inferenceActive: Bool) -> DaemonState 
         slots: [],
         inferenceActive: inferenceActive,
         startedAt: 0,
-        writtenAt: 0,
+        writtenAt: writtenAt,
         pid: 1,
         processIdentity: ProcessIdentity(pid: 1, startTimeMicros: 1)
     )
@@ -869,4 +1200,22 @@ private let duplicateCatalogIDJSON = Data(#"""
   {"id":"gpt-oss-20b","display_name":"GPT OSS Primary","family":"gpt-oss","model_type":"llm","capabilities":["text"],"size_gb":12.5,"min_ram_gb":16,"active":true},
   {"id":"gpt-oss-20b","display_name":"GPT OSS Duplicate","family":"gpt-oss-duplicate","model_type":"llm","capabilities":["text"],"size_gb":12.5,"min_ram_gb":16,"active":true}
 ]
+"""#.utf8)
+
+private let ambiguousFamilyCatalogJSON = Data(#"""
+[
+  {"id":"gpt-oss-20b","display_name":"GPT OSS 20B","family":"gpt-oss","model_type":"llm","capabilities":["text"],"size_gb":12.5,"min_ram_gb":16,"active":true},
+  {"id":"gpt-oss-120b","display_name":"GPT OSS 120B","family":"gpt-oss","model_type":"llm","capabilities":["text"],"size_gb":60.0,"min_ram_gb":64,"active":true}
+]
+"""#.utf8)
+
+private let ambiguousFamilyLocalJSON = Data(#"""
+{
+  "cache_directory":"/inert/cache",
+  "filtered_by_config":false,
+  "models":[
+    {"id":"gpt-oss-20b","model_type":"llm","size_bytes":13421772800,"estimated_memory_gb":15.0},
+    {"id":"gpt-oss-120b","model_type":"llm","size_bytes":64424509440,"estimated_memory_gb":70.0}
+  ]
+}
 """#.utf8)

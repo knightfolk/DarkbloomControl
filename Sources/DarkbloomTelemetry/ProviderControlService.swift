@@ -12,15 +12,54 @@ public enum ProviderActivityRisk: Equatable, Sendable {
     case unknown(String)
 }
 
+public enum ProviderControlSourceState: Equatable, Sendable {
+    case fresh
+    case stale(String)
+    case unavailable(String)
+}
+
+public struct ProviderControlSourceStates: Equatable, Sendable {
+    public let catalog: ProviderControlSourceState
+    public let localModels: ProviderControlSourceState
+    public let daemon: ProviderControlSourceState
+    public let loadedModels: ProviderControlSourceState
+
+    public init(
+        catalog: ProviderControlSourceState,
+        localModels: ProviderControlSourceState,
+        daemon: ProviderControlSourceState,
+        loadedModels: ProviderControlSourceState
+    ) {
+        self.catalog = catalog
+        self.localModels = localModels
+        self.daemon = daemon
+        self.loadedModels = loadedModels
+    }
+
+    public static let unknown = ProviderControlSourceStates(
+        catalog: .unavailable("Model catalog source state was not provided"),
+        localModels: .unavailable("Local model source state was not provided"),
+        daemon: .unavailable("Provider activity source state was not provided"),
+        loadedModels: .unavailable("Loaded model source state was not provided")
+    )
+}
+
 public struct ProviderControlSnapshot: Equatable, Sendable {
     public let inventory: ModelInventory
     public let draft: ProviderConfigDraft
     public let capturedAt: Date
+    public let sources: ProviderControlSourceStates
 
-    public init(inventory: ModelInventory, draft: ProviderConfigDraft, capturedAt: Date) {
+    public init(
+        inventory: ModelInventory,
+        draft: ProviderConfigDraft,
+        capturedAt: Date,
+        sources: ProviderControlSourceStates = .unknown
+    ) {
         self.inventory = inventory
         self.draft = draft
         self.capturedAt = capturedAt
+        self.sources = sources
     }
 }
 
@@ -46,6 +85,19 @@ public enum ProviderControlError: Error, Equatable, Sendable {
 }
 
 public actor ProviderControlService: ProviderControlling {
+    private struct ModelSources: Sendable {
+        let catalog: [CatalogModel]
+        let local: [LocalModel]
+        let catalogState: ProviderControlSourceState
+        let localState: ProviderControlSourceState
+    }
+
+    private static let liveStateMaximumAge: TimeInterval = 10
+    private static let invalidSelectionMessage =
+        "Saved model selection is not an unambiguous downloaded catalog model"
+    private static let invalidDownloadMessage =
+        "The requested model is not a fresh available catalog entry"
+
     private let policy: DarkbloomSourcePolicy
     private let telemetrySource: any TelemetrySource
     private let configStore: any ProviderConfigManaging
@@ -74,7 +126,11 @@ public actor ProviderControlService: ProviderControlling {
 
     public func refresh() async throws -> ProviderControlSnapshot {
         let executable = try resolveExecutable()
-        return try await refresh(using: executable, allowStaleSources: true)
+        return try await refresh(
+            using: executable,
+            allowStaleModelSources: true,
+            requireFreshResidency: false
+        )
     }
 
     public func download(
@@ -84,6 +140,13 @@ public actor ProviderControlService: ProviderControlling {
         try beginCommand()
         defer { endCommand() }
         let executable = try resolveExecutable()
+        let sources = try await readModelSources(
+            using: executable,
+            allowStaleSources: false
+        )
+        guard isFreshAvailableDownload(modelID, in: sources) else {
+            throw ProviderControlError.inventoryUnavailable(Self.invalidDownloadMessage)
+        }
         _ = try await runner.run(
             DarkbloomCommand.download(
                 executable: executable,
@@ -94,14 +157,22 @@ public actor ProviderControlService: ProviderControlling {
             outputLimit: DarkbloomSourcePolicy.mutationOutputByteLimit,
             onOutput: onOutput
         )
-        _ = try await refresh(using: executable, allowStaleSources: true)
+        _ = try await refresh(
+            using: executable,
+            allowStaleModelSources: true,
+            requireFreshResidency: false
+        )
     }
 
     public func delete(_ localModelID: String) async throws {
         try beginCommand()
         defer { endCommand() }
         let executable = try resolveExecutable()
-        let snapshot = try await refresh(using: executable, allowStaleSources: false)
+        let snapshot = try await refresh(
+            using: executable,
+            allowStaleModelSources: false,
+            requireFreshResidency: true
+        )
         let matches = snapshot.inventory.myCatalog.filter { $0.localID == localModelID }
         guard matches.count <= 1 else {
             throw ProviderControlError.deleteBlocked("The local model identity is ambiguous")
@@ -138,12 +209,28 @@ public actor ProviderControlService: ProviderControlling {
             outputLimit: DarkbloomSourcePolicy.mutationOutputByteLimit,
             onOutput: nil
         )
-        _ = try await refresh(using: executable, allowStaleSources: true)
+        _ = try await refresh(
+            using: executable,
+            allowStaleModelSources: true,
+            requireFreshResidency: false
+        )
     }
 
     public func activityRisk() async -> ProviderActivityRisk {
         do {
-            return try await telemetrySource.readDaemonState().inferenceActive ? .active : .idle
+            let daemon = try await telemetrySource.readDaemonState()
+            switch liveStateFreshness(
+                timestamp: daemon.writtenAt,
+                at: now(),
+                unavailable: "Provider activity timestamp is invalid",
+                stale: "Provider activity is stale",
+                future: "Provider activity timestamp is in the future"
+            ) {
+            case .fresh:
+                return daemon.inferenceActive ? .active : .idle
+            case .stale(let reason), .unavailable(let reason):
+                return .unknown(reason)
+            }
         } catch {
             return .unknown("Provider activity is unavailable")
         }
@@ -187,24 +274,123 @@ public actor ProviderControlService: ProviderControlling {
             outputLimit: DarkbloomSourcePolicy.mutationOutputByteLimit,
             onOutput: nil
         )
-        _ = try await refresh(using: executable, allowStaleSources: true)
+        _ = try await refresh(
+            using: executable,
+            allowStaleModelSources: true,
+            requireFreshResidency: false
+        )
     }
 
     public func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
         try beginCommand()
         defer { endCommand() }
+        let executable = try resolveExecutable()
+        let sources = try await readModelSources(
+            using: executable,
+            allowStaleSources: false
+        )
+        guard selectionIsValid(draft.selection, in: sources) else {
+            throw ProviderControlError.inventoryUnavailable(Self.invalidSelectionMessage)
+        }
         return try await configStore.save(draft)
     }
 
     private func refresh(
         using executable: URL,
-        allowStaleSources: Bool
+        allowStaleModelSources: Bool,
+        requireFreshResidency: Bool
     ) async throws -> ProviderControlSnapshot {
+        let modelSources = try await readModelSources(
+            using: executable,
+            allowStaleSources: allowStaleModelSources
+        )
+        let draft = try await configStore.load()
+        var sourceIssues: [String] = []
+        if case .stale(let issue) = modelSources.catalogState { sourceIssues.append(issue) }
+        if case .stale(let issue) = modelSources.localState { sourceIssues.append(issue) }
+
+        let daemonRead: DaemonState?
+        let daemonFailure: ProviderControlSourceState?
+        do {
+            daemonRead = try await telemetrySource.readDaemonState()
+            daemonFailure = nil
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            daemonRead = nil
+            daemonFailure = .unavailable("Provider activity is unavailable")
+        }
+
+        let loadedModelsRead: LoadedModelsState?
+        let loadedModelsFailure: ProviderControlSourceState?
+        do {
+            loadedModelsRead = try await telemetrySource.readLoadedModels()
+            loadedModelsFailure = nil
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            loadedModelsRead = nil
+            loadedModelsFailure = .unavailable("Loaded model state is unavailable")
+        }
+
+        let capturedAt = now()
+        let daemonState = daemonFailure ?? liveStateFreshness(
+            timestamp: daemonRead?.writtenAt ?? .nan,
+            at: capturedAt,
+            unavailable: "Provider activity timestamp is invalid",
+            stale: "Provider activity is stale",
+            future: "Provider activity timestamp is in the future"
+        )
+        let daemon = daemonState == .fresh ? daemonRead : nil
+        try requireFreshResidencyIfNeeded(daemonState, required: requireFreshResidency)
+        appendIssue(from: daemonState, to: &sourceIssues)
+
+        let loadedModelsState = loadedModelsFailure ?? liveStateFreshness(
+            timestamp: loadedModelsRead?.updatedAt ?? .nan,
+            at: capturedAt,
+            unavailable: "Loaded model state timestamp is invalid",
+            stale: "Loaded model state is stale",
+            future: "Loaded model state timestamp is in the future"
+        )
+        let loadedModels = loadedModelsState == .fresh ? loadedModelsRead?.models ?? [] : []
+        try requireFreshResidencyIfNeeded(loadedModelsState, required: requireFreshResidency)
+        appendIssue(from: loadedModelsState, to: &sourceIssues)
+
+        let builtInventory = ModelInventoryBuilder.build(
+            catalog: modelSources.catalog,
+            local: modelSources.local,
+            selection: draft.selection,
+            daemon: daemon,
+            loadedModels: loadedModels
+        )
+        let inventory = ModelInventory(
+            myCatalog: builtInventory.myCatalog,
+            available: builtInventory.available,
+            issues: builtInventory.issues + sourceIssues
+        )
+        return ProviderControlSnapshot(
+            inventory: inventory,
+            draft: draft,
+            capturedAt: capturedAt,
+            sources: ProviderControlSourceStates(
+                catalog: modelSources.catalogState,
+                localModels: modelSources.localState,
+                daemon: daemonState,
+                loadedModels: loadedModelsState
+            )
+        )
+    }
+
+    private func readModelSources(
+        using executable: URL,
+        allowStaleSources: Bool
+    ) async throws -> ModelSources {
         nextRefreshGeneration &+= 1
         let generation = nextRefreshGeneration
         var catalog: [CatalogModel]?
         var local: [LocalModel]?
-        var sourceIssues: [String] = []
+        var catalogState: ProviderControlSourceState = .fresh
+        var localState: ProviderControlSourceState = .fresh
 
         do {
             let result = try await runner.run(
@@ -224,7 +410,7 @@ public actor ProviderControlService: ProviderControlling {
         } catch {
             if allowStaleSources, let lastCatalog {
                 catalog = lastCatalog
-                sourceIssues.append("Model catalog is stale; showing the last successful result")
+                catalogState = .stale("Model catalog is stale; showing the last successful result")
             }
         }
 
@@ -246,7 +432,7 @@ public actor ProviderControlService: ProviderControlling {
         } catch {
             if allowStaleSources, let lastLocalModels {
                 local = lastLocalModels
-                sourceIssues.append("Local model list is stale; download state may be outdated")
+                localState = .stale("Local model list is stale; download state may be outdated")
             }
         }
 
@@ -256,46 +442,76 @@ public actor ProviderControlService: ProviderControlling {
         guard let local else {
             throw ProviderControlError.inventoryUnavailable("Local model list is unavailable")
         }
-        let draft = try await configStore.load()
-        let daemon: DaemonState?
-        do {
-            daemon = try await telemetrySource.readDaemonState()
-        } catch let error as CancellationError {
-            throw error
-        } catch {
-            guard allowStaleSources else {
-                throw ProviderControlError.deleteBlocked(
-                    "Provider activity is unavailable; deletion was not attempted"
-                )
-            }
-            daemon = nil
-        }
-        let loadedModels: [String]
-        do {
-            loadedModels = try await telemetrySource.readLoadedModels().models
-        } catch let error as CancellationError {
-            throw error
-        } catch {
-            guard allowStaleSources else {
-                throw ProviderControlError.deleteBlocked(
-                    "Loaded model state is unavailable; deletion was not attempted"
-                )
-            }
-            loadedModels = []
-        }
-        let builtInventory = ModelInventoryBuilder.build(
+        return ModelSources(
             catalog: catalog,
             local: local,
-            selection: draft.selection,
-            daemon: daemon,
-            loadedModels: loadedModels
+            catalogState: catalogState,
+            localState: localState
         )
-        let inventory = ModelInventory(
-            myCatalog: builtInventory.myCatalog,
-            available: builtInventory.available,
-            issues: builtInventory.issues + sourceIssues
-        )
-        return ProviderControlSnapshot(inventory: inventory, draft: draft, capturedAt: now())
+    }
+
+    private func liveStateFreshness(
+        timestamp: TimeInterval,
+        at capturedAt: Date,
+        unavailable: String,
+        stale: String,
+        future: String
+    ) -> ProviderControlSourceState {
+        guard timestamp.isFinite else { return .unavailable(unavailable) }
+        let age = capturedAt.timeIntervalSince1970 - timestamp
+        if age < 0 { return .stale(future) }
+        if age > Self.liveStateMaximumAge { return .stale(stale) }
+        return .fresh
+    }
+
+    private func requireFreshResidencyIfNeeded(
+        _ state: ProviderControlSourceState,
+        required: Bool
+    ) throws {
+        guard required, state != .fresh else { return }
+        let reason: String
+        switch state {
+        case .fresh:
+            return
+        case .stale(let value), .unavailable(let value):
+            reason = value
+        }
+        throw ProviderControlError.deleteBlocked("\(reason); deletion was not attempted")
+    }
+
+    private func appendIssue(
+        from state: ProviderControlSourceState,
+        to issues: inout [String]
+    ) {
+        switch state {
+        case .fresh:
+            break
+        case .stale(let reason), .unavailable(let reason):
+            issues.append(reason)
+        }
+    }
+
+    private func selectionIsValid(
+        _ selection: ProviderModelSelection,
+        in sources: ModelSources
+    ) -> Bool {
+        let localIDs = Set(sources.local.map(\.id))
+        return (selection.enabled + selection.preloaded).allSatisfy { selector in
+            let exactMatches = sources.catalog.filter { $0.id == selector }
+            let matches = exactMatches.isEmpty
+                ? sources.catalog.filter { $0.family == selector }
+                : exactMatches
+            return matches.count == 1 && localIDs.contains(matches[0].id)
+        }
+    }
+
+    private func isFreshAvailableDownload(
+        _ modelID: String,
+        in sources: ModelSources
+    ) -> Bool {
+        let exactMatches = sources.catalog.filter { $0.id == modelID }
+        guard exactMatches.count == 1 else { return false }
+        return sources.local.allSatisfy { $0.id != modelID }
     }
 
     private func resolveExecutable() throws -> URL {
