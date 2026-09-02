@@ -48,9 +48,24 @@ public struct LocalModelList: Decodable, Equatable, Sendable {
     public let models: [LocalModel]
 
     enum CodingKeys: String, CodingKey {
-        case models
+        case cacheDirectory, filteredByConfig, models
+    }
+
+    enum LegacyCodingKeys: String, CodingKey {
         case cacheDirectory = "cache_directory"
         case filteredByConfig = "filtered_by_config"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let current = try decoder.container(keyedBy: CodingKeys.self)
+        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        cacheDirectory = current.contains(.cacheDirectory)
+            ? try current.decode(String.self, forKey: .cacheDirectory)
+            : try legacy.decode(String.self, forKey: .cacheDirectory)
+        filteredByConfig = current.contains(.filteredByConfig)
+            ? try current.decode(Bool.self, forKey: .filteredByConfig)
+            : try legacy.decode(Bool.self, forKey: .filteredByConfig)
+        models = try current.decode([LocalModel].self, forKey: .models)
     }
 }
 

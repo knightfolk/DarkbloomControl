@@ -4,6 +4,30 @@ import Testing
 
 @Suite("Model inventory")
 struct ModelInventoryTests {
+    @Test("decodes the Darkbloom 0.8.15 local-model envelope")
+    func decodesCurrentLocalModelEnvelope() throws {
+        let data = Data(#"""
+        {
+          "cacheDirectory": "/tmp/darkbloom-test-cache",
+          "filteredByConfig": false,
+          "models": [
+            {
+              "id": "current-model",
+              "model_type": "llm",
+              "size_bytes": 1024,
+              "estimated_memory_gb": 2.5
+            }
+          ]
+        }
+        """#.utf8)
+
+        let decoded = try LocalModelListDecoder.decode(data)
+
+        #expect(decoded.cacheDirectory == "/tmp/darkbloom-test-cache")
+        #expect(decoded.filteredByConfig == false)
+        #expect(decoded.models.map(\.id) == ["current-model"])
+    }
+
     @Test("decodes catalog and local model JSON")
     func decodesSources() throws {
         let catalog = try ModelCatalogDecoder.decode(fixture("model-catalog.json"))
