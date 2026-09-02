@@ -91,24 +91,40 @@ struct MonitorPopoverLayoutTests {
 
     @Test("fresh and stale model settings fit without horizontal growth")
     func modelSettingsFitMinimumSize() async {
-        let states: [(ProviderControlSourceStates, Bool)] = [
-            (.allFresh, true),
+        let states: [(ProviderControlSourceStates, Bool, Bool, String)] = [
+            (.allFresh, true, true, "Shows a confirmation before deleting Downloaded Model."),
             (ProviderControlSourceStates(
                 catalog: .stale("Catalog refresh required"),
                 localModels: .fresh,
                 daemon: .fresh,
                 loadedModels: .fresh
-            ), false),
+            ), false, false,
+             "Catalog refresh required; Reload the model catalog before deleting this model."),
             (ProviderControlSourceStates(
                 catalog: .fresh,
                 localModels: .stale("Local model refresh required"),
                 daemon: .fresh,
                 loadedModels: .fresh
-            ), false),
+            ), false, false,
+             "Local model refresh required; Reload local models before deleting this model."),
+            (ProviderControlSourceStates(
+                catalog: .fresh,
+                localModels: .fresh,
+                daemon: .stale("Provider activity refresh required"),
+                loadedModels: .fresh
+            ), true, false,
+             "Provider activity refresh required; Refresh provider activity before deleting this model."),
+            (ProviderControlSourceStates(
+                catalog: .fresh,
+                localModels: .fresh,
+                daemon: .fresh,
+                loadedModels: .unavailable("Loaded model state unavailable")
+            ), true, false,
+             "Loaded model state unavailable; Refresh loaded model state before deleting this model."),
         ]
         let proposed = NSSize(width: 680, height: 560)
 
-        for (sources, expectedCanDownload) in states {
+        for (sources, expectedCanDownload, expectedCanDelete, expectedDeleteHelp) in states {
             let controlStore = ProviderControlStore(
                 controller: InertSettingsController(sources: sources)
             )
@@ -122,10 +138,24 @@ struct MonitorPopoverLayoutTests {
             let row = availableItem.map {
                 ModelManagerPresentation.availableRow(item: $0, store: controlStore)
             }
+            let downloadedItem = controlStore.snapshot?.inventory.myCatalog.first
+            let downloadedRow = downloadedItem.map {
+                ModelRowPresentation.make(
+                    item: $0,
+                    draft: controlStore.draft,
+                    operation: controlStore.operation,
+                    sources: sources,
+                    canDownload: false,
+                    downloadUnavailableReason: nil,
+                    sanitize: controlStore.sanitizedDiagnostic
+                )
+            }
 
             #expect(controlStore.canDownload("available-model") == expectedCanDownload)
             #expect(row?.downloadAction?.isEnabled == expectedCanDownload)
             #expect(row?.downloadAction?.accessibilityLabel == "Download Available Model")
+            #expect(downloadedRow?.deleteAction?.isEnabled == expectedCanDelete)
+            #expect(downloadedRow?.deleteAction?.accessibilityHint == expectedDeleteHelp)
             #expect(fitted.width == proposed.width)
             #expect(fitted.height == proposed.height)
         }

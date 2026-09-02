@@ -12,6 +12,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: true),
             draft: draft(),
             operation: .idle,
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -26,6 +27,11 @@ struct ModelManagerPresentationTests {
         #expect(row.enableAction?.accessibilityLabel == "Enable Model Name")
         #expect(row.preloadAction?.accessibilityLabel == "Preload Model Name")
         #expect(row.deleteAction?.accessibilityLabel == "Delete Model Name")
+        var confirmationRequests = 0
+        row.requestDeletion(of: item(isDownloaded: true)) { _ in
+            confirmationRequests += 1
+        }
+        #expect(confirmationRequests == 1)
     }
 
     @Test("available models offer only download")
@@ -34,6 +40,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: false),
             draft: draft(),
             operation: .idle,
+            sources: sources(),
             canDownload: true,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -76,6 +83,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: true, isEnabled: true),
             draft: enabledDraft,
             operation: .idle,
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -84,6 +92,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: true, isEnabled: true, isPreloaded: true),
             draft: preloadedDraft,
             operation: .idle,
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -102,6 +111,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: true),
             draft: changedDraft,
             operation: .idle,
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -110,6 +120,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: true, issue: ambiguity),
             draft: draft(),
             operation: .idle,
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -122,6 +133,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: true),
             draft: nil,
             operation: .idle,
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -130,10 +142,55 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: true),
             draft: draft(),
             operation: .refreshing,
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
         ).deleteBlockReason == "Another model action is in progress")
+    }
+
+    @Test("delete fails closed for every stale or unavailable inventory source")
+    func blocksDeletionWithoutFreshInventory() {
+        let store = ProviderControlStore(controller: DiagnosticOnlyProviderController())
+        let cases: [(ProviderControlSourceStates, String)] = [
+            (sources(catalog: .stale("Catalog credential token=catalog-secret")),
+             "Catalog credential token=<redacted>; Reload the model catalog before deleting this model."),
+            (sources(catalog: .unavailable("Catalog credential token=catalog-secret")),
+             "Catalog credential token=<redacted>; Reload the model catalog before deleting this model."),
+            (sources(localModels: .stale("Local credential token=local-secret")),
+             "Local credential token=<redacted>; Reload local models before deleting this model."),
+            (sources(localModels: .unavailable("Local credential token=local-secret")),
+             "Local credential token=<redacted>; Reload local models before deleting this model."),
+            (sources(daemon: .stale("Activity credential token=daemon-secret")),
+             "Activity credential token=<redacted>; Refresh provider activity before deleting this model."),
+            (sources(daemon: .unavailable("Activity credential token=daemon-secret")),
+             "Activity credential token=<redacted>; Refresh provider activity before deleting this model."),
+            (sources(loadedModels: .stale("Residency credential token=loaded-secret")),
+             "Residency credential token=<redacted>; Refresh loaded model state before deleting this model."),
+            (sources(loadedModels: .unavailable("Residency credential token=loaded-secret")),
+             "Residency credential token=<redacted>; Refresh loaded model state before deleting this model."),
+        ]
+
+        for (sourceStates, expectedReason) in cases {
+            let row = ModelRowPresentation.make(
+                item: item(isDownloaded: true),
+                draft: draft(),
+                operation: .idle,
+                sources: sourceStates,
+                canDownload: false,
+                downloadUnavailableReason: nil,
+                sanitize: store.sanitizedDiagnostic
+            )
+
+            #expect(row.deleteBlockReason == expectedReason)
+            #expect(row.deleteAction?.isEnabled == false)
+            #expect(row.deleteAction?.accessibilityHint == expectedReason)
+            var confirmationRequests = 0
+            row.requestDeletion(of: item(isDownloaded: true)) { _ in
+                confirmationRequests += 1
+            }
+            #expect(confirmationRequests == 0)
+        }
     }
 
     @Test("action accessibility labels follow the staged target state")
@@ -149,6 +206,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: true),
             draft: selected,
             operation: .idle,
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -165,6 +223,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: false),
             draft: draft(),
             operation: .idle,
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: "Refresh the model catalog before downloading",
             sanitize: { "sanitized: \($0)" }
@@ -182,6 +241,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: false),
             draft: draft(),
             operation: .downloading("model-id"),
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -219,6 +279,7 @@ struct ModelManagerPresentationTests {
             item: item(isDownloaded: true, liveState: liveState),
             draft: draft(),
             operation: .idle,
+            sources: sources(),
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -286,6 +347,20 @@ struct ModelManagerPresentationTests {
             sourceRevision: "fixture-revision",
             original: original,
             selection: selection
+        )
+    }
+
+    private func sources(
+        catalog: ProviderControlSourceState = .fresh,
+        localModels: ProviderControlSourceState = .fresh,
+        daemon: ProviderControlSourceState = .fresh,
+        loadedModels: ProviderControlSourceState = .fresh
+    ) -> ProviderControlSourceStates {
+        ProviderControlSourceStates(
+            catalog: catalog,
+            localModels: localModels,
+            daemon: daemon,
+            loadedModels: loadedModels
         )
     }
 

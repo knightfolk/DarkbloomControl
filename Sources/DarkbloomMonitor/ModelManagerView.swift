@@ -24,6 +24,7 @@ enum ModelManagerPresentation {
             item: item,
             draft: store.draft,
             operation: store.operation,
+            sources: store.snapshot?.sources ?? .unknown,
             canDownload: store.canDownload(item.catalogID),
             downloadUnavailableReason: store.draftValidationMessage,
             sanitize: store.sanitizedDiagnostic
@@ -49,6 +50,7 @@ struct ModelRowPresentation: Equatable {
         item: ModelInventoryItem,
         draft: ProviderConfigDraft?,
         operation: ProviderOperation,
+        sources: ProviderControlSourceStates,
         canDownload: Bool,
         downloadUnavailableReason: String?,
         sanitize: (String) -> String
@@ -65,7 +67,9 @@ struct ModelRowPresentation: Equatable {
                 item: item,
                 displayedIssue: displayedIssue,
                 draft: draft,
-                operation: operation
+                operation: operation,
+                sources: sources,
+                sanitize: sanitize
             )
             : nil
         let isEnabled = draft.map {
@@ -126,7 +130,9 @@ struct ModelRowPresentation: Equatable {
         item: ModelInventoryItem,
         displayedIssue: String?,
         draft: ProviderConfigDraft?,
-        operation: ProviderOperation
+        operation: ProviderOperation,
+        sources: ProviderControlSourceStates,
+        sanitize: (String) -> String
     ) -> String? {
         guard operation == .idle else { return "Another model action is in progress" }
         switch item.liveState {
@@ -136,6 +142,12 @@ struct ModelRowPresentation: Equatable {
             return "Model is currently loaded"
         case .unloaded:
             break
+        }
+        if let sourceReason = deletionFreshnessBlockReason(
+            sources: sources,
+            sanitize: sanitize
+        ) {
+            return sourceReason
         }
         if let displayedIssue { return displayedIssue }
         guard let draft else { return "Provider configuration is unavailable" }
@@ -147,6 +159,27 @@ struct ModelRowPresentation: Equatable {
         }
         guard !draft.hasChanges else {
             return "Save or reload pending changes before deleting it"
+        }
+        return nil
+    }
+
+    private static func deletionFreshnessBlockReason(
+        sources: ProviderControlSourceStates,
+        sanitize: (String) -> String
+    ) -> String? {
+        let checks: [(ProviderControlSourceState, String)] = [
+            (sources.catalog, "Reload the model catalog before deleting this model."),
+            (sources.localModels, "Reload local models before deleting this model."),
+            (sources.daemon, "Refresh provider activity before deleting this model."),
+            (sources.loadedModels, "Refresh loaded model state before deleting this model."),
+        ]
+        for (state, recovery) in checks {
+            switch state {
+            case .fresh:
+                continue
+            case .stale(let issue), .unavailable(let issue):
+                return sanitize("\(issue); \(recovery)")
+            }
         }
         return nil
     }
@@ -215,6 +248,14 @@ struct ModelRowPresentation: Equatable {
         selectors.contains(item.catalogID)
             || item.configuredSelector.map(selectors.contains) == true
     }
+
+    func requestDeletion(
+        of item: ModelInventoryItem,
+        using request: (ModelInventoryItem) -> Void
+    ) {
+        guard deleteAction?.isEnabled == true else { return }
+        request(item)
+    }
 }
 
 @MainActor
@@ -245,12 +286,13 @@ struct ModelManagerView: View {
     private var modelList: some View {
         List {
             Section {
-                if let items = store.snapshot?.inventory.myCatalog, !items.isEmpty {
-                    ForEach(items) { item in
+                if let snapshot = store.snapshot, !snapshot.inventory.myCatalog.isEmpty {
+                    ForEach(snapshot.inventory.myCatalog) { item in
                         DownloadedModelRow(
                             item: item,
                             draft: store.draft,
                             operation: store.operation,
+                            sources: snapshot.sources,
                             sanitize: store.sanitizedDiagnostic,
                             setEnabled: { enabled, modelID in
                                 store.setEnabled(enabled, modelID: modelID)
@@ -315,6 +357,7 @@ private struct DownloadedModelRow: View {
     let item: ModelInventoryItem
     let draft: ProviderConfigDraft?
     let operation: ProviderOperation
+    let sources: ProviderControlSourceStates
     let sanitize: (String) -> String
     let setEnabled: (Bool, String) -> Void
     let setPreloaded: (Bool, String) -> Void
@@ -325,6 +368,7 @@ private struct DownloadedModelRow: View {
             item: item,
             draft: draft,
             operation: operation,
+            sources: sources,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: sanitize
@@ -372,7 +416,7 @@ private struct DownloadedModelRow: View {
                 }
                 if presentation.showsDelete {
                     Button(role: .destructive) {
-                        requestDelete(item)
+                        presentation.requestDeletion(of: item, using: requestDelete)
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }
