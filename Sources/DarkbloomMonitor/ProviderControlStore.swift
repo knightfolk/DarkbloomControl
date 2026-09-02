@@ -34,6 +34,7 @@ final class ProviderControlStore: ObservableObject {
     @Published private(set) var snapshot: ProviderControlSnapshot?
     @Published private(set) var draft: ProviderConfigDraft?
     @Published private(set) var operation: ProviderOperation = .idle
+    @Published private(set) var operationPhase: ProviderMutationPhase?
     @Published private(set) var pendingConfirmation: LifecycleConfirmation?
     @Published private(set) var restartRequired = false
     @Published private(set) var errorMessage: String?
@@ -69,6 +70,11 @@ final class ProviderControlStore: ObservableObject {
 
     func sanitizedDiagnostic(_ value: String) -> String {
         diagnosticSanitizer.sanitize(value)
+    }
+
+    var canCancelCurrentOperation: Bool {
+        guard case .downloading = operation else { return false }
+        return operationPhase == .mutating
     }
 
     var draftValidationMessage: String? {
@@ -142,8 +148,13 @@ final class ProviderControlStore: ObservableObject {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let result = try await controller.save(draftToSave)
-                try Task.checkCancellation()
+                let completion = try await controller.performSave(
+                    draftToSave,
+                    onPhase: { [weak self] phase in
+                        await self?.advanceMutationPhase(phase, generation: generation)
+                    }
+                )
+                let result = completion.result
                 draft = result.draft
                 restartRequired = restartRequired || result.restartRequired
                 if let snapshot {
@@ -154,15 +165,11 @@ final class ProviderControlStore: ObservableObject {
                         sources: snapshot.sources
                     )
                 }
-                do {
-                    let refreshed = try await controller.refresh()
-                    try Task.checkCancellation()
-                    accept(refreshed)
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    errorMessage = "Settings were saved, but model controls could not refresh."
-                }
+                await reconcileCompletedMutation(
+                    completion.controls,
+                    preserving: nil,
+                    failureMessage: "Settings were saved, but model controls could not refresh."
+                )
             } catch is CancellationError {
                 // The service owns rollback and publication boundaries.
             } catch let error as ProviderControlError {
@@ -186,18 +193,25 @@ final class ProviderControlStore: ObservableObject {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await controller.download(modelID) { [weak self] chunk in
-                    guard let line = progress.accept(chunk) else { return }
-                    Task { @MainActor [weak self] in
-                        guard self?.operation == .downloading(modelID) else { return }
-                        self?.latestDownloadProgressLine = line
+                let completion = try await controller.performDownload(
+                    modelID,
+                    onOutput: { [weak self] chunk in
+                        guard let line = progress.accept(chunk) else { return }
+                        Task { @MainActor [weak self] in
+                            guard self?.operation == .downloading(modelID) else { return }
+                            self?.latestDownloadProgressLine = line
+                        }
+                    },
+                    onPhase: { [weak self] phase in
+                        await self?.advanceMutationPhase(phase, generation: generation)
                     }
-                }
-                try Task.checkCancellation()
+                )
                 latestDownloadProgressLine = progress.latestLine
-                let refreshed = try await controller.refresh()
-                try Task.checkCancellation()
-                accept(refreshed, preserving: draft)
+                await reconcileCompletedMutation(
+                    completion,
+                    preserving: draft,
+                    failureMessage: "Download completed, but model controls could not refresh."
+                )
             } catch is CancellationError {
                 // Cancellation is surfaced by returning to idle.
             } catch let error as ProviderControlError {
@@ -217,11 +231,17 @@ final class ProviderControlStore: ObservableObject {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await controller.delete(modelID)
-                try Task.checkCancellation()
-                let refreshed = try await controller.refresh()
-                try Task.checkCancellation()
-                accept(refreshed, preserving: draft)
+                let completion = try await controller.performDelete(
+                    modelID,
+                    onPhase: { [weak self] phase in
+                        await self?.advanceMutationPhase(phase, generation: generation)
+                    }
+                )
+                await reconcileCompletedMutation(
+                    completion,
+                    preserving: draft,
+                    failureMessage: "Delete completed, but model controls could not refresh."
+                )
             } catch is CancellationError {
                 // Cancellation is surfaced by returning to idle.
             } catch let error as ProviderControlError {
@@ -244,7 +264,11 @@ final class ProviderControlStore: ObservableObject {
             guard let self else { return }
             do {
                 if action == .start {
-                    try await executeLifecycle(action, enabledModels: savedEnabledModels)
+                    try await executeLifecycle(
+                        action,
+                        enabledModels: savedEnabledModels,
+                        generation: generation
+                    )
                 } else {
                     let firstRisk = await controller.activityRisk()
                     try Task.checkCancellation()
@@ -252,7 +276,11 @@ final class ProviderControlStore: ObservableObject {
                         let finalRisk = await controller.activityRisk()
                         try Task.checkCancellation()
                         if finalRisk == .idle {
-                            try await executeLifecycle(action, enabledModels: savedEnabledModels)
+                            try await executeLifecycle(
+                                action,
+                                enabledModels: savedEnabledModels,
+                                generation: generation
+                            )
                         } else {
                             pendingConfirmation = Self.confirmation(action: action, risk: finalRisk)
                         }
@@ -287,7 +315,11 @@ final class ProviderControlStore: ObservableObject {
                 try Task.checkCancellation()
                 pendingConfirmation = Self.confirmation(action: action, risk: finalRisk)
                 pendingConfirmation = nil
-                try await executeLifecycle(action, enabledModels: savedEnabledModels)
+                try await executeLifecycle(
+                    action,
+                    enabledModels: savedEnabledModels,
+                    generation: generation
+                )
             } catch is CancellationError {
                 // Cancellation leaves authoritative state unchanged.
             } catch let error as ProviderControlError {
@@ -313,31 +345,61 @@ final class ProviderControlStore: ObservableObject {
 
     private func executeLifecycle(
         _ action: ProviderLifecycleAction,
-        enabledModels: [String]
+        enabledModels: [String],
+        generation: UInt64
     ) async throws {
+        let completion: ProviderMutationCompletion
         do {
-            try await controller.execute(action, enabledModels: enabledModels)
+            completion = try await controller.performLifecycle(
+                action,
+                enabledModels: enabledModels,
+                onPhase: { [weak self] phase in
+                    await self?.advanceMutationPhase(phase, generation: generation)
+                }
+            )
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             let commandError = error
+            advanceMutationPhase(.reconciling, generation: generation)
             do {
-                try await reconcileLifecycleState()
+                try await reconcileFailedLifecycleState()
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                // The lifecycle command's outcome is the primary user-facing
-                // failure. Reconciliation is best-effort after that attempt.
+                // Preserve the command failure when its best-effort
+                // reconciliation also fails.
             }
             throw commandError
         }
         if action == .start || action == .restart {
             restartRequired = false
         }
-        try await reconcileLifecycleState()
+        guard await reconcileLifecycleState(after: completion) else {
+            errorMessage = "Provider \(action.rawValue) completed, but current state could not be confirmed."
+            return
+        }
     }
 
-    private func reconcileLifecycleState() async throws {
+    private func reconcileLifecycleState(
+        after completion: ProviderMutationCompletion
+    ) async -> Bool {
+        await refreshTelemetryAfterCompletedMutation()
+        do {
+            let refreshed = try await refreshControlsAfterCompletedMutation()
+            accept(refreshed, preserving: draft)
+            return true
+        } catch {
+            guard let refreshed = completion.snapshot else {
+                invalidateActionableSnapshot()
+                return false
+            }
+            accept(refreshed, preserving: draft)
+            return true
+        }
+    }
+
+    private func reconcileFailedLifecycleState() async throws {
         await refreshTelemetry()
         try Task.checkCancellation()
         let refreshed = try await controller.refresh()
@@ -349,14 +411,29 @@ final class ProviderControlStore: ObservableObject {
         guard operation == .idle else { return nil }
         operationGeneration &+= 1
         operation = newOperation
+        switch newOperation {
+        case .saving, .downloading, .deleting, .lifecycle:
+            operationPhase = .mutating
+        case .idle, .refreshing:
+            operationPhase = nil
+        }
         errorMessage = nil
         return operationGeneration
+    }
+
+    private func advanceMutationPhase(
+        _ phase: ProviderMutationPhase,
+        generation: UInt64
+    ) {
+        guard operationGeneration == generation, operation != .idle else { return }
+        operationPhase = phase
     }
 
     private func finish(_ generation: UInt64) {
         guard operationGeneration == generation else { return }
         currentTask = nil
         operation = .idle
+        operationPhase = nil
     }
 
     private func awaitTask(_ task: Task<Void, Never>) async {
@@ -373,6 +450,50 @@ final class ProviderControlStore: ObservableObject {
     ) {
         snapshot = refreshed
         draft = stagedDraft ?? refreshed.draft
+    }
+
+    private func reconcileCompletedMutation(
+        _ completion: ProviderMutationCompletion,
+        preserving stagedDraft: ProviderConfigDraft?,
+        failureMessage: String
+    ) async {
+        do {
+            let refreshed = try await refreshControlsAfterCompletedMutation()
+            accept(refreshed, preserving: stagedDraft)
+        } catch {
+            if let refreshed = completion.snapshot {
+                accept(refreshed, preserving: stagedDraft)
+            } else {
+                invalidateActionableSnapshot()
+                errorMessage = failureMessage
+            }
+        }
+    }
+
+    private func refreshControlsAfterCompletedMutation() async throws -> ProviderControlSnapshot {
+        let controller = self.controller
+        let refresh = Task.detached(priority: Task.currentPriority) {
+            try await controller.refresh()
+        }
+        return try await refresh.value
+    }
+
+    private func refreshTelemetryAfterCompletedMutation() async {
+        let refreshTelemetry = self.refreshTelemetry
+        let refresh = Task.detached(priority: Task.currentPriority) {
+            await refreshTelemetry()
+        }
+        await refresh.value
+    }
+
+    private func invalidateActionableSnapshot() {
+        guard let snapshot else { return }
+        self.snapshot = ProviderControlSnapshot(
+            inventory: snapshot.inventory,
+            draft: snapshot.draft,
+            capturedAt: snapshot.capturedAt,
+            sources: .unknown
+        )
     }
 
     private static func setMembership(

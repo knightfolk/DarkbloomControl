@@ -183,7 +183,21 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
             throw error
         }
 
-        return ProviderConfigSaveResult(draft: try await load(), restartRequired: true)
+        return ProviderConfigSaveResult(
+            draft: try await loadAfterCompletedPublication(),
+            restartRequired: true
+        )
+    }
+
+    /// Publication is irreversible once `publish` returns. Keep the bounded
+    /// readback independent from caller cancellation so a published config is
+    /// never reported as an unperformed save.
+    private func loadAfterCompletedPublication() async throws -> ProviderConfigDraft {
+        let store = self
+        let readback = Task.detached(priority: Task.currentPriority) {
+            try await store.load()
+        }
+        return try await readback.value
     }
 
     private func readLockedSnapshot(lockFlag: Int32) async throws -> ProviderConfigFileSnapshot {

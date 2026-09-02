@@ -52,9 +52,8 @@ struct ProviderControlStoreTests {
         #expect(await controller.saveCount == 1)
     }
 
-    @Test("save preserves typed source freshness before its follow-up refresh")
-    func savePreservesSourceFreshness() async throws {
-        let expectedSources = freshProviderSources()
+    @Test("save invalidates old source freshness when its follow-up refresh fails")
+    func saveInvalidatesSourceFreshness() async throws {
         let controller = FakeProviderController.fixture(failRefreshAfterSave: true)
         let store = ProviderControlStore(controller: controller)
         await store.refresh()
@@ -62,7 +61,7 @@ struct ProviderControlStoreTests {
 
         await store.save()
 
-        #expect(store.snapshot?.sources == expectedSources)
+        #expect(store.snapshot?.sources == .unknown)
         #expect(store.errorMessage == "Settings were saved, but model controls could not refresh.")
     }
 
@@ -180,6 +179,97 @@ struct ProviderControlStoreTests {
 
         #expect(await controller.downloadCancellationCount == 1)
         #expect(store.operation == .idle)
+    }
+
+    @Test("completed download reconciles after caller cancellation and removes Cancel")
+    func completedDownloadIgnoresLateCancellation() async throws {
+        let completionGate = TelemetryRefreshGate()
+        let changedSnapshot = fixtureSnapshot(downloadedAvailable: true)
+        let controller = FakeProviderController.fixture(
+            snapshotAfterDownload: changedSnapshot,
+            downloadCompletionGate: completionGate
+        )
+        let store = ProviderControlStore(controller: controller)
+        await store.refresh()
+        let available = try #require(store.snapshot?.inventory.available.first {
+            $0.catalogID == "available-model"
+        })
+
+        let download = Task { await store.download("available-model") }
+        #expect(await completionGate.waitUntilStarted())
+        #expect(store.operation == .downloading("available-model"))
+        #expect(store.operationPhase == .reconciling)
+        #expect(!store.canCancelCurrentOperation)
+        #expect(ModelManagerPresentation.availableRow(
+            item: available,
+            store: store
+        ).downloadAction == nil)
+
+        download.cancel()
+        await completionGate.release()
+        await download.value
+
+        #expect(store.operation == .idle)
+        #expect(store.snapshot == changedSnapshot)
+        #expect(!store.canDownload("available-model"))
+        #expect(store.errorMessage == nil)
+    }
+
+    @Test("completed save and delete reconcile after caller cancellation")
+    func completedSaveAndDeleteIgnoreLateCancellation() async throws {
+        let saveGate = TelemetryRefreshGate()
+        let saveController = FakeProviderController.fixture(saveCompletionGate: saveGate)
+        let saveStore = ProviderControlStore(controller: saveController)
+        await saveStore.refresh()
+        saveStore.setEnabled(true, modelID: "second-model")
+
+        let save = Task { await saveStore.save() }
+        #expect(await saveGate.waitUntilStarted())
+        save.cancel()
+        await saveGate.release()
+        await save.value
+
+        #expect(saveStore.draft?.original.enabled == ["saved-model", "second-model"])
+        #expect(saveStore.restartRequired)
+        #expect(saveStore.errorMessage == nil)
+
+        let deleteGate = TelemetryRefreshGate()
+        let changedSnapshot = fixtureSnapshot(sources: unavailableLifecycleSources())
+        let deleteController = FakeProviderController.fixture(
+            snapshotAfterDelete: changedSnapshot,
+            deleteCompletionGate: deleteGate
+        )
+        let deleteStore = ProviderControlStore(controller: deleteController)
+        await deleteStore.refresh()
+
+        let deletion = Task { await deleteStore.delete("second-model") }
+        #expect(await deleteGate.waitUntilStarted())
+        deletion.cancel()
+        await deleteGate.release()
+        await deletion.value
+
+        #expect(deleteStore.snapshot == changedSnapshot)
+        #expect(deleteStore.errorMessage == nil)
+    }
+
+    @Test("completed mutations invalidate old actions when no refresh succeeds")
+    func invalidatesActionsAfterUncertainCompletion() async throws {
+        let completionGate = TelemetryRefreshGate()
+        let controller = FakeProviderController.fixture(
+            downloadCompletionGate: completionGate
+        )
+        let store = ProviderControlStore(controller: controller)
+        await store.refresh()
+
+        let download = Task { await store.download("available-model") }
+        #expect(await completionGate.waitUntilStarted())
+        await controller.failRefresh(with: .secret("post-download refresh failed"))
+        await completionGate.release()
+        await download.value
+
+        #expect(store.snapshot?.sources == .unknown)
+        #expect(!store.canDownload("available-model"))
+        #expect(store.errorMessage == "Download completed, but model controls could not refresh.")
     }
 
     @Test("download progress publishes only a sanitized bounded latest line")
@@ -659,6 +749,28 @@ struct ProviderControlStoreTests {
         #expect(await controller.refreshCount == 2)
     }
 
+    @Test("completed lifecycle invalidates old state when authoritative refresh remains uncertain")
+    func invalidatesStateAfterUncertainLifecycleCompletion() async throws {
+        let telemetry = TelemetryRefreshGate()
+        await telemetry.release()
+        let controller = FakeProviderController.fixture(failRefreshAfterExecute: true)
+        let store = ProviderControlStore(
+            controller: controller,
+            refreshTelemetry: { await telemetry.refresh() }
+        )
+        await store.refresh()
+
+        await store.request(.start)
+
+        #expect(store.snapshot?.sources == .unknown)
+        #expect(
+            store.errorMessage
+                == "Provider start completed, but current state could not be confirmed."
+        )
+        #expect(await telemetry.callCount == 1)
+        #expect(await controller.refreshCount == 2)
+    }
+
     @Test("controller lifecycle cancellation skips reconciliation and publication")
     func skipsReconciliationAfterControllerCancellation() async throws {
         let telemetry = TelemetryRefreshGate()
@@ -685,8 +797,35 @@ struct ProviderControlStoreTests {
         #expect(await controller.refreshCount == 1)
     }
 
-    @Test("cancellation during telemetry reconciliation prevents control refresh and publication")
-    func cancelsDuringTelemetryReconciliation() async throws {
+    @Test("caller cancellation still stops reconciliation after a failed lifecycle command")
+    func preservesFailedLifecycleCancellationRule() async throws {
+        let telemetry = TelemetryRefreshGate()
+        let changedSources = unavailableLifecycleSources()
+        let controller = FakeProviderController.fixture(
+            executeFailure: .nonzero,
+            lifecycleSnapshotAfterExecute: fixtureSnapshot(sources: changedSources)
+        )
+        let store = ProviderControlStore(
+            controller: controller,
+            refreshTelemetry: { await telemetry.refresh() }
+        )
+        await store.refresh()
+        let initialSnapshot = try #require(store.snapshot)
+
+        let start = Task { await store.request(.start) }
+        #expect(await telemetry.waitUntilStarted())
+        start.cancel()
+        await telemetry.release()
+        await start.value
+
+        #expect(store.operation == .idle)
+        #expect(store.errorMessage == nil)
+        #expect(store.snapshot == initialSnapshot)
+        #expect(await controller.refreshCount == 1)
+    }
+
+    @Test("cancellation after lifecycle completion cannot stop telemetry reconciliation")
+    func shieldsTelemetryReconciliationAfterLifecycleCompletion() async throws {
         let telemetry = TelemetryRefreshGate()
         let changedSources = unavailableLifecycleSources()
         let controller = FakeProviderController.fixture(
@@ -697,7 +836,7 @@ struct ProviderControlStoreTests {
             refreshTelemetry: { await telemetry.refresh() }
         )
         await store.refresh()
-        let initialSnapshot = try #require(store.snapshot)
+        _ = try #require(store.snapshot)
 
         let start = Task { await store.request(.start) }
         let telemetryStarted = await telemetry.waitUntilStarted()
@@ -710,13 +849,12 @@ struct ProviderControlStoreTests {
 
         #expect(store.operation == .idle)
         #expect(store.errorMessage == nil)
-        #expect(store.snapshot == initialSnapshot)
-        #expect(store.snapshot?.sources != changedSources)
-        #expect(await controller.refreshCount == 1)
+        #expect(store.snapshot?.sources == changedSources)
+        #expect(await controller.refreshCount == 2)
     }
 
-    @Test("cancellation during controller reconciliation prevents snapshot publication")
-    func cancelsDuringControllerReconciliation() async throws {
+    @Test("cancellation after lifecycle completion cannot stop control reconciliation")
+    func shieldsControlReconciliationAfterLifecycleCompletion() async throws {
         let telemetry = TelemetryRefreshGate()
         await telemetry.release()
         let controllerRefresh = TelemetryRefreshGate()
@@ -730,7 +868,7 @@ struct ProviderControlStoreTests {
             refreshTelemetry: { await telemetry.refresh() }
         )
         await store.refresh()
-        let initialSnapshot = try #require(store.snapshot)
+        _ = try #require(store.snapshot)
 
         let start = Task { await store.request(.start) }
         let refreshStarted = await controllerRefresh.waitUntilStarted()
@@ -743,8 +881,7 @@ struct ProviderControlStoreTests {
 
         #expect(store.operation == .idle)
         #expect(store.errorMessage == nil)
-        #expect(store.snapshot == initialSnapshot)
-        #expect(store.snapshot?.sources != changedSources)
+        #expect(store.snapshot?.sources == changedSources)
         #expect(await telemetry.callCount == 1)
         #expect(await controller.refreshCount == 2)
     }
@@ -821,10 +958,15 @@ private actor FakeProviderController: ProviderControlling {
     private let blockDownload: Bool
     private let downloadChunks: [ProcessOutputChunk]
     private let downloadFailure: Failure?
+    private let snapshotAfterDownload: ProviderControlSnapshot?
+    private let downloadCompletionGate: TelemetryRefreshGate?
     private let saveFailure: ProviderConfigError?
     private let saveControlFailure: ProviderControlError?
     private let failRefreshAfterSave: Bool
+    private let saveCompletionGate: TelemetryRefreshGate?
     private let deleteFailure: ProviderControlError?
+    private let snapshotAfterDelete: ProviderControlSnapshot?
+    private let deleteCompletionGate: TelemetryRefreshGate?
     private let executeFailure: Failure?
     private let executeControlFailure: ProviderControlError?
     private let executeCancellation: Bool
@@ -847,10 +989,15 @@ private actor FakeProviderController: ProviderControlling {
         blockDownload: Bool = false,
         downloadChunks: [ProcessOutputChunk] = [],
         downloadFailure: Failure? = nil,
+        snapshotAfterDownload: ProviderControlSnapshot? = nil,
+        downloadCompletionGate: TelemetryRefreshGate? = nil,
         saveFailure: ProviderConfigError? = nil,
         saveControlFailure: ProviderControlError? = nil,
         failRefreshAfterSave: Bool = false,
+        saveCompletionGate: TelemetryRefreshGate? = nil,
         deleteFailure: ProviderControlError? = nil,
+        snapshotAfterDelete: ProviderControlSnapshot? = nil,
+        deleteCompletionGate: TelemetryRefreshGate? = nil,
         executeFailure: Failure? = nil,
         executeControlFailure: ProviderControlError? = nil,
         executeCancellation: Bool = false,
@@ -864,10 +1011,15 @@ private actor FakeProviderController: ProviderControlling {
             blockDownload: blockDownload,
             downloadChunks: downloadChunks,
             downloadFailure: downloadFailure,
+            snapshotAfterDownload: snapshotAfterDownload,
+            downloadCompletionGate: downloadCompletionGate,
             saveFailure: saveFailure,
             saveControlFailure: saveControlFailure,
             failRefreshAfterSave: failRefreshAfterSave,
+            saveCompletionGate: saveCompletionGate,
             deleteFailure: deleteFailure,
+            snapshotAfterDelete: snapshotAfterDelete,
+            deleteCompletionGate: deleteCompletionGate,
             executeFailure: executeFailure,
             executeControlFailure: executeControlFailure,
             executeCancellation: executeCancellation,
@@ -883,10 +1035,15 @@ private actor FakeProviderController: ProviderControlling {
         blockDownload: Bool,
         downloadChunks: [ProcessOutputChunk],
         downloadFailure: Failure?,
+        snapshotAfterDownload: ProviderControlSnapshot?,
+        downloadCompletionGate: TelemetryRefreshGate?,
         saveFailure: ProviderConfigError?,
         saveControlFailure: ProviderControlError?,
         failRefreshAfterSave: Bool,
+        saveCompletionGate: TelemetryRefreshGate?,
         deleteFailure: ProviderControlError?,
+        snapshotAfterDelete: ProviderControlSnapshot?,
+        deleteCompletionGate: TelemetryRefreshGate?,
         executeFailure: Failure?,
         executeControlFailure: ProviderControlError?,
         executeCancellation: Bool,
@@ -899,10 +1056,15 @@ private actor FakeProviderController: ProviderControlling {
         self.blockDownload = blockDownload
         self.downloadChunks = downloadChunks
         self.downloadFailure = downloadFailure
+        self.snapshotAfterDownload = snapshotAfterDownload
+        self.downloadCompletionGate = downloadCompletionGate
         self.saveFailure = saveFailure
         self.saveControlFailure = saveControlFailure
         self.failRefreshAfterSave = failRefreshAfterSave
+        self.saveCompletionGate = saveCompletionGate
         self.deleteFailure = deleteFailure
+        self.snapshotAfterDelete = snapshotAfterDelete
+        self.deleteCompletionGate = deleteCompletionGate
         self.executeFailure = executeFailure
         self.executeControlFailure = executeControlFailure
         self.executeCancellation = executeCancellation
@@ -942,6 +1104,7 @@ private actor FakeProviderController: ProviderControlling {
         if failRefreshAfterSave {
             refreshFailure = .secret("post-save refresh failed")
         }
+        await saveCompletionGate?.refresh()
         return ProviderConfigSaveResult(draft: savedDraft, restartRequired: true)
     }
 
@@ -949,17 +1112,30 @@ private actor FakeProviderController: ProviderControlling {
         _ modelID: String,
         onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
     ) async throws {
+        _ = try await performDownload(modelID, onOutput: onOutput, onPhase: nil)
+    }
+
+    func performDownload(
+        _ modelID: String,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion {
         downloadedModels.append(modelID)
         downloadChunks.forEach { onOutput?($0) }
         downloadStarted = true
         if let downloadFailure { throw downloadFailure }
-        guard blockDownload else { return }
-        do {
-            try await Task.sleep(for: .seconds(60))
-        } catch is CancellationError {
-            downloadCancellationCount += 1
-            throw CancellationError()
+        if blockDownload {
+            do {
+                try await Task.sleep(for: .seconds(60))
+            } catch is CancellationError {
+                downloadCancellationCount += 1
+                throw CancellationError()
+            }
         }
+        if let snapshotAfterDownload { currentSnapshot = snapshotAfterDownload }
+        await onPhase?(.reconciling)
+        await downloadCompletionGate?.refresh()
+        return .refreshUncertain
     }
 
     func waitUntilDownloadStarts() async {
@@ -969,8 +1145,19 @@ private actor FakeProviderController: ProviderControlling {
     }
 
     func delete(_ localModelID: String) async throws {
+        _ = try await performDelete(localModelID, onPhase: nil)
+    }
+
+    func performDelete(
+        _ localModelID: String,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion {
         if let deleteFailure { throw deleteFailure }
         deletedModels.append(localModelID)
+        if let snapshotAfterDelete { currentSnapshot = snapshotAfterDelete }
+        await onPhase?(.reconciling)
+        await deleteCompletionGate?.refresh()
+        return .refreshUncertain
     }
 
     func activityRisk() async -> ProviderActivityRisk {
@@ -998,7 +1185,8 @@ private actor FakeProviderController: ProviderControlling {
 }
 
 private func fixtureSnapshot(
-    sources: ProviderControlSourceStates = freshProviderSources()
+    sources: ProviderControlSourceStates = freshProviderSources(),
+    downloadedAvailable: Bool = false
 ) -> ProviderControlSnapshot {
     let draft = ProviderConfigDraft(
         sourceRevision: "fixture-revision",
@@ -1037,10 +1225,18 @@ private func fixtureSnapshot(
             active: true
         ),
     ]
-    let local = [
+    var local = [
         LocalModel(id: "saved-model", modelType: "text", sizeBytes: 1, estimatedMemoryGB: nil),
         LocalModel(id: "second-model", modelType: "text", sizeBytes: 2, estimatedMemoryGB: nil),
     ]
+    if downloadedAvailable {
+        local.append(LocalModel(
+            id: "available-model",
+            modelType: "text",
+            sizeBytes: 3,
+            estimatedMemoryGB: nil
+        ))
+    }
     return ProviderControlSnapshot(
         inventory: ModelInventoryBuilder.build(
             catalog: catalog,

@@ -25,6 +25,7 @@ enum ModelManagerPresentation {
             item: item,
             draft: store.draft,
             operation: store.operation,
+            mutationPhase: store.operationPhase,
             sources: store.snapshot?.sources ?? .unknown,
             currentTime: Date(),
             canDownload: store.canDownload(item.catalogID),
@@ -52,6 +53,7 @@ struct ModelRowPresentation: Equatable {
         item: ModelInventoryItem,
         draft: ProviderConfigDraft?,
         operation: ProviderOperation,
+        mutationPhase: ProviderMutationPhase? = nil,
         sources: ProviderControlSourceStates,
         currentTime: Date,
         canDownload: Bool,
@@ -124,6 +126,7 @@ struct ModelRowPresentation: Equatable {
                     item: item,
                     displayedIssue: displayedIssue,
                     operation: operation,
+                    mutationPhase: mutationPhase,
                     canDownload: canDownload,
                     unavailableReason: downloadUnavailableReason.map(sanitize)
                 )
@@ -251,10 +254,12 @@ struct ModelRowPresentation: Equatable {
         item: ModelInventoryItem,
         displayedIssue: String?,
         operation: ProviderOperation,
+        mutationPhase: ProviderMutationPhase?,
         canDownload: Bool,
         unavailableReason: String?
-    ) -> ModelActionPresentation {
+    ) -> ModelActionPresentation? {
         if operation == .downloading(item.catalogID) {
+            guard mutationPhase != .reconciling else { return nil }
             return ModelActionPresentation(
                 accessibilityLabel: "Cancel download \(item.displayName)",
                 accessibilityHint: "Stops the download for \(item.displayName).",
@@ -549,17 +554,15 @@ private struct AvailableModelRow: View {
                     ProgressView()
                         .controlSize(.small)
                         .accessibilityLabel("Downloading \(item.displayName)")
-                    Button("Cancel") {
-                        store.cancelCurrentOperation()
+                    if let action = presentation.downloadAction,
+                       store.canCancelCurrentOperation {
+                        Button("Cancel") {
+                            store.cancelCurrentOperation()
+                        }
+                        .accessibilityLabel(action.accessibilityLabel)
+                        .accessibilityHint(action.accessibilityHint)
+                        .accessibilityIdentifier("model.\(item.catalogID).download")
                     }
-                    .accessibilityLabel(
-                        presentation.downloadAction?.accessibilityLabel
-                            ?? "Cancel download \(item.displayName)"
-                    )
-                    .accessibilityHint(
-                        presentation.downloadAction?.accessibilityHint ?? ""
-                    )
-                    .accessibilityIdentifier("model.\(item.catalogID).download")
                 } else {
                     Button {
                         Task { await store.download(item.catalogID) }
@@ -580,7 +583,11 @@ private struct AvailableModelRow: View {
             }
 
             if isDownloading {
-                Text(store.latestDownloadProgressLine ?? "Downloading…")
+                Text(
+                    store.operationPhase == .reconciling
+                        ? "Refreshing model catalog…"
+                        : store.latestDownloadProgressLine ?? "Downloading…"
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

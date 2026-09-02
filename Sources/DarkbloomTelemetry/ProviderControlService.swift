@@ -89,6 +89,36 @@ public struct ProviderControlSnapshot: Equatable, Sendable {
     }
 }
 
+public enum ProviderMutationPhase: Equatable, Sendable {
+    /// Preconditions and the external command/publication remain cancellable.
+    case mutating
+    /// The external mutation completed; only authoritative reconciliation remains.
+    case reconciling
+}
+
+public enum ProviderMutationCompletion: Equatable, Sendable {
+    case refreshed(ProviderControlSnapshot)
+    case refreshUncertain
+
+    public var snapshot: ProviderControlSnapshot? {
+        guard case .refreshed(let snapshot) = self else { return nil }
+        return snapshot
+    }
+}
+
+public struct ProviderSaveMutationCompletion: Equatable, Sendable {
+    public let result: ProviderConfigSaveResult
+    public let controls: ProviderMutationCompletion
+
+    public init(result: ProviderConfigSaveResult, controls: ProviderMutationCompletion) {
+        self.result = result
+        self.controls = controls
+    }
+}
+
+public typealias ProviderMutationPhaseObserver =
+    @Sendable (ProviderMutationPhase) async -> Void
+
 public protocol ProviderControlling: Sendable {
     func refresh() async throws -> ProviderControlSnapshot
     func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult
@@ -99,6 +129,64 @@ public protocol ProviderControlling: Sendable {
     func delete(_ localModelID: String) async throws
     func activityRisk() async -> ProviderActivityRisk
     func execute(_ action: ProviderLifecycleAction, enabledModels: [String]) async throws
+    func performSave(
+        _ draft: ProviderConfigDraft,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderSaveMutationCompletion
+    func performDownload(
+        _ modelID: String,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion
+    func performDelete(
+        _ localModelID: String,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion
+    func performLifecycle(
+        _ action: ProviderLifecycleAction,
+        enabledModels: [String],
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion
+}
+
+public extension ProviderControlling {
+    func performSave(
+        _ draft: ProviderConfigDraft,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderSaveMutationCompletion {
+        let result = try await save(draft)
+        await onPhase?(.reconciling)
+        return ProviderSaveMutationCompletion(result: result, controls: .refreshUncertain)
+    }
+
+    func performDownload(
+        _ modelID: String,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion {
+        try await download(modelID, onOutput: onOutput)
+        await onPhase?(.reconciling)
+        return .refreshUncertain
+    }
+
+    func performDelete(
+        _ localModelID: String,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion {
+        try await delete(localModelID)
+        await onPhase?(.reconciling)
+        return .refreshUncertain
+    }
+
+    func performLifecycle(
+        _ action: ProviderLifecycleAction,
+        enabledModels: [String],
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion {
+        try await execute(action, enabledModels: enabledModels)
+        await onPhase?(.reconciling)
+        return .refreshUncertain
+    }
 }
 
 public enum ProviderControlError: Error, Equatable, Sendable {
@@ -162,6 +250,14 @@ public actor ProviderControlService: ProviderControlling {
         _ modelID: String,
         onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
     ) async throws {
+        _ = try await performDownload(modelID, onOutput: onOutput, onPhase: nil)
+    }
+
+    public func performDownload(
+        _ modelID: String,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion {
         try beginCommand()
         defer { endCommand() }
         let executable = try resolveExecutable()
@@ -182,14 +278,18 @@ public actor ProviderControlService: ProviderControlling {
             outputLimit: DarkbloomSourcePolicy.mutationOutputByteLimit,
             onOutput: onOutput
         )
-        _ = try await refresh(
-            using: executable,
-            allowStaleModelSources: true,
-            requireFreshResidency: false
-        )
+        await onPhase?(.reconciling)
+        return await refreshAfterCompletedMutation(using: executable)
     }
 
     public func delete(_ localModelID: String) async throws {
+        _ = try await performDelete(localModelID, onPhase: nil)
+    }
+
+    public func performDelete(
+        _ localModelID: String,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion {
         try beginCommand()
         defer { endCommand() }
         let executable = try resolveExecutable()
@@ -234,11 +334,8 @@ public actor ProviderControlService: ProviderControlling {
             outputLimit: DarkbloomSourcePolicy.mutationOutputByteLimit,
             onOutput: nil
         )
-        _ = try await refresh(
-            using: executable,
-            allowStaleModelSources: true,
-            requireFreshResidency: false
-        )
+        await onPhase?(.reconciling)
+        return await refreshAfterCompletedMutation(using: executable)
     }
 
     public func activityRisk() async -> ProviderActivityRisk {
@@ -265,6 +362,14 @@ public actor ProviderControlService: ProviderControlling {
         _ action: ProviderLifecycleAction,
         enabledModels _: [String]
     ) async throws {
+        _ = try await performLifecycle(action, enabledModels: [], onPhase: nil)
+    }
+
+    public func performLifecycle(
+        _ action: ProviderLifecycleAction,
+        enabledModels _: [String],
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion {
         try beginCommand()
         defer { endCommand() }
         let savedEnabledModels: [String]
@@ -299,14 +404,18 @@ public actor ProviderControlService: ProviderControlling {
             outputLimit: DarkbloomSourcePolicy.mutationOutputByteLimit,
             onOutput: nil
         )
-        _ = try await refresh(
-            using: executable,
-            allowStaleModelSources: true,
-            requireFreshResidency: false
-        )
+        await onPhase?(.reconciling)
+        return await refreshAfterCompletedMutation(using: executable)
     }
 
     public func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
+        try await performSave(draft, onPhase: nil).result
+    }
+
+    public func performSave(
+        _ draft: ProviderConfigDraft,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderSaveMutationCompletion {
         try beginCommand()
         defer { endCommand() }
         let executable = try resolveExecutable()
@@ -317,7 +426,33 @@ public actor ProviderControlService: ProviderControlling {
         guard selectionIsValid(draft.selection, in: sources) else {
             throw ProviderControlError.inventoryUnavailable(Self.invalidSelectionMessage)
         }
-        return try await configStore.save(draft)
+        let result = try await configStore.save(draft)
+        await onPhase?(.reconciling)
+        return ProviderSaveMutationCompletion(
+            result: result,
+            controls: await refreshAfterCompletedMutation(using: executable)
+        )
+    }
+
+    /// The external mutation has already completed when this begins. Run its
+    /// mandatory refresh in an independent task so cancellation of the caller
+    /// cannot turn a completed mutation into a pre-mutation `CancellationError`.
+    private func refreshAfterCompletedMutation(
+        using executable: URL
+    ) async -> ProviderMutationCompletion {
+        let service = self
+        let refresh = Task.detached(priority: Task.currentPriority) {
+            try await service.refresh(
+                using: executable,
+                allowStaleModelSources: true,
+                requireFreshResidency: false
+            )
+        }
+        do {
+            return .refreshed(try await refresh.value)
+        } catch {
+            return .refreshUncertain
+        }
     }
 
     private func refresh(

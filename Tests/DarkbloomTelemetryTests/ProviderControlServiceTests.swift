@@ -727,6 +727,29 @@ struct ProviderControlServiceTests {
         try await harness.service.execute(.stop, enabledModels: [])
     }
 
+    @Test("lifecycle cancellation during the command remains a pre-mutation cancellation")
+    func lifecycleCommandCancellationStillPropagates() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+        await harness.runner.blockNextMutation()
+        let stop = Task {
+            try await harness.service.execute(.stop, enabledModels: [])
+        }
+        await harness.runner.waitUntilBlocked()
+
+        stop.cancel()
+        do {
+            try await stop.value
+            Issue.record("Expected lifecycle command cancellation")
+        } catch is CancellationError {
+            // The command itself did not complete, so cancellation remains authoritative.
+        }
+
+        #expect(await harness.runner.lifecycleInvocations.map(\.command.arguments) == [["stop"]])
+        #expect(await harness.runner.sourceArguments.isEmpty)
+        try await harness.service.execute(.stop, enabledModels: [])
+    }
+
     @Test("refresh propagates cancellation from model and telemetry sources")
     func refreshPropagatesCancellation() async throws {
         let catalogSource = try ServiceHarness.make()
@@ -775,8 +798,8 @@ struct ProviderControlServiceTests {
         }
     }
 
-    @Test("post-command refresh cancellation propagates and releases the command lock")
-    func postCommandRefreshPropagatesCancellation() async throws {
+    @Test("download completion shields its mandatory refresh from caller cancellation")
+    func downloadCompletionShieldsRefreshCancellation() async throws {
         let harness = try ServiceHarness.make()
         defer { harness.cleanup() }
         _ = try await harness.service.refresh()
@@ -787,17 +810,78 @@ struct ProviderControlServiceTests {
         await harness.runner.waitUntilLocalBlocked()
 
         download.cancel()
-        do {
-            try await download.value
-            Issue.record("Expected post-command refresh cancellation")
-        } catch is CancellationError {
-            // Expected.
-        }
+        try await Task.sleep(for: .milliseconds(10))
+        await harness.runner.releaseBlockedLocal()
+        try await download.value
 
         #expect(await harness.runner.mutationArguments == [[
             "models", "download", "--config", harness.configURL.path, "qwen3-8b",
         ]])
         try await harness.service.execute(.stop, enabledModels: [])
+    }
+
+    @Test("a completed download reports refresh uncertainty instead of cancellation")
+    func completedDownloadReportsRefreshUncertainty() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+        let phases = ServicePhaseRecorder()
+        await harness.runner.blockNextMutation()
+        let download = Task {
+            try await harness.service.performDownload(
+                "qwen3-8b",
+                onOutput: nil,
+                onPhase: { phase in await phases.record(phase) }
+            )
+        }
+        await harness.runner.waitUntilBlocked()
+        await harness.runner.cancelNextCatalog()
+        await harness.runner.releaseBlockedCommand()
+
+        let completion = try await download.value
+
+        #expect(completion == .refreshUncertain)
+        #expect(await phases.values == [.reconciling])
+        #expect(await harness.runner.mutationArguments == [[
+            "models", "download", "--config", harness.configURL.path, "qwen3-8b",
+        ]])
+    }
+
+    @Test("delete completion shields its mandatory refresh from caller cancellation")
+    func deleteCompletionShieldsRefreshCancellation() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+        await harness.runner.blockLocal(afterSuccessfulReads: 1, with: localJSON)
+        let deletion = Task {
+            try await harness.service.delete("gpt-oss-20b")
+        }
+        await harness.runner.waitUntilLocalBlocked()
+
+        deletion.cancel()
+        try await Task.sleep(for: .milliseconds(10))
+        await harness.runner.releaseBlockedLocal()
+        try await deletion.value
+
+        #expect(await harness.runner.mutationArguments == [[
+            "models", "remove", "gpt-oss-20b", "--force",
+        ]])
+    }
+
+    @Test("lifecycle completion shields its mandatory refresh from caller cancellation")
+    func lifecycleCompletionShieldsRefreshCancellation() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+        await harness.runner.blockNextLocal(with: localJSON)
+        let stop = Task {
+            try await harness.service.execute(.stop, enabledModels: [])
+        }
+        await harness.runner.waitUntilLocalBlocked()
+
+        stop.cancel()
+        try await Task.sleep(for: .milliseconds(10))
+        await harness.runner.releaseBlockedLocal()
+        try await stop.value
+
+        #expect(await harness.runner.lifecycleInvocations.map(\.command.arguments) == [["stop"]])
     }
 }
 
@@ -987,10 +1071,13 @@ private actor ServiceRunnerFake: ProcessExecuting {
         onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
     ) async throws -> CommandResult {
         invocations.append(Invocation(command: command, timeout: timeout, outputLimit: outputLimit))
-        if command.arguments.count > 1,
-           command.arguments[0] == "models",
-           command.arguments[1] == "download" || command.arguments[1] == "remove",
-           shouldBlockNextMutation {
+        let isModelMutation = command.arguments.count > 1
+            && command.arguments[0] == "models"
+            && (command.arguments[1] == "download" || command.arguments[1] == "remove")
+        let isLifecycleMutation = ["start", "stop", "restart"].contains(
+            command.arguments.first ?? ""
+        )
+        if (isModelMutation || isLifecycleMutation), shouldBlockNextMutation {
             shouldBlockNextMutation = false
             if let blockedGate {
                 try await blockedGate.wait()
@@ -1091,6 +1178,14 @@ private final class ServiceOutputRecorder: @unchecked Sendable {
 
     func record(_ chunk: ProcessOutputChunk) {
         lock.withLock { recorded.append(chunk.data) }
+    }
+}
+
+private actor ServicePhaseRecorder {
+    private(set) var values: [ProviderMutationPhase] = []
+
+    func record(_ phase: ProviderMutationPhase) {
+        values.append(phase)
     }
 }
 

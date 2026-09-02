@@ -391,6 +391,30 @@ struct ProviderConfigStoreTests {
         }
         #expect(await harness.executor.invocations.isEmpty)
     }
+
+    @Test("cancellation after atomic publication cannot report the save as cancelled")
+    func shieldsPostPublicationReadbackFromCancellation() async throws {
+        let cancellation = TaskCancellationRelay()
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o600,
+            afterSwapAction: cancellation.cancelWhenRegistered
+        )
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+        let selection = ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+
+        let save = Task {
+            try await harness.store.save(draft.withSelection(selection))
+        }
+        cancellation.register { save.cancel() }
+        let saved = try await save.value
+
+        #expect(saved.draft.original == selection)
+        #expect(saved.draft.selection == selection)
+        #expect(saved.restartRequired)
+        let published = try ProviderConfigDocument(data: Data(contentsOf: harness.configURL))
+        #expect(published.selection == selection)
+    }
 }
 
 private struct ConfigStoreHarness: Sendable {
@@ -413,6 +437,7 @@ private struct ConfigStoreHarness: Sendable {
         cooperatingWriterAfterSwap: CooperatingConfigWriter? = nil,
         candidateCleanupFailure: String? = nil,
         metadataRecorder: MetadataRecorder? = nil,
+        afterSwapAction: (@Sendable () -> Void)? = nil,
         lockPolicy: ProviderConfigLockPolicy = .live
     ) throws -> Self {
         let directory = FileManager.default.temporaryDirectory
@@ -471,7 +496,10 @@ private struct ConfigStoreHarness: Sendable {
                 }
                 try cooperatingWriterBeforeSwap?.attempt(at: configURL)
             },
-            afterSwap: { try cooperatingWriterAfterSwap?.attempt(at: configURL) },
+            afterSwap: {
+                try cooperatingWriterAfterSwap?.attempt(at: configURL)
+                afterSwapAction?()
+            },
             removeCandidate: cleanupHook,
             preserveMetadata: metadataHook
         )
@@ -495,6 +523,28 @@ private struct ConfigStoreHarness: Sendable {
 
     func cleanup() {
         try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+private final class TaskCancellationRelay: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var cancellation: (@Sendable () -> Void)?
+
+    func register(_ cancellation: @escaping @Sendable () -> Void) {
+        condition.lock()
+        self.cancellation = cancellation
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func cancelWhenRegistered() {
+        condition.lock()
+        while cancellation == nil {
+            condition.wait()
+        }
+        let cancellation = self.cancellation
+        condition.unlock()
+        cancellation?()
     }
 }
 

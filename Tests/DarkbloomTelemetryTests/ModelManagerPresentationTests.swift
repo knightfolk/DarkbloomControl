@@ -357,6 +357,23 @@ struct ModelManagerPresentationTests {
         #expect(row.downloadAction?.accessibilityHint == "Stops the download for Model Name.")
     }
 
+    @Test("post-download reconciliation no longer exposes a Cancel action")
+    func reconciliationHidesDownloadCancellation() {
+        let row = ModelRowPresentation.make(
+            item: item(isDownloaded: false),
+            draft: draft(),
+            operation: .downloading("model-id"),
+            mutationPhase: .reconciling,
+            sources: sources(),
+            currentTime: presentationNow,
+            canDownload: false,
+            downloadUnavailableReason: nil,
+            sanitize: { $0 }
+        )
+
+        #expect(row.downloadAction == nil)
+    }
+
     @Test("credential-shaped unmatched selectors cross the store sanitizer")
     func sanitizesUnmatchedSelector() {
         let store = ProviderControlStore(
