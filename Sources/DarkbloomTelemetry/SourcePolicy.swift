@@ -58,7 +58,30 @@ public struct ProcessOutputChunk: Equatable, Sendable {
 }
 
 public protocol ProcessExecuting: Sendable {
-    func run(_ command: ProcessCommand, timeout: Duration, outputLimit: Int, onOutput: (@Sendable (ProcessOutputChunk) -> Void)?) async throws -> CommandResult
+    func run(
+        _ command: ProcessCommand,
+        timeout: Duration,
+        outputLimit: Int,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
+        onLaunch: (@Sendable () -> Void)?
+    ) async throws -> CommandResult
+}
+
+public extension ProcessExecuting {
+    func run(
+        _ command: ProcessCommand,
+        timeout: Duration,
+        outputLimit: Int,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)? = nil
+    ) async throws -> CommandResult {
+        try await run(
+            command,
+            timeout: timeout,
+            outputLimit: outputLimit,
+            onOutput: onOutput,
+            onLaunch: nil
+        )
+    }
 }
 
 public enum DarkbloomCommand {

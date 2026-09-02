@@ -400,6 +400,8 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
                 onOutput: nil
             )
             guard result.exitCode == 0 else { throw Self.validationFailure }
+        } catch let error as CancellationError {
+            throw error
         } catch {
             throw Self.validationFailure
         }

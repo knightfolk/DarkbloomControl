@@ -70,6 +70,27 @@ struct ProviderControlStoreTests {
         #expect(store.errorMessage == "Settings were saved, but model controls could not refresh.")
     }
 
+    @Test("save cancellation does not promote the staged draft or require restart")
+    func preservesSaveCancellationAsNoOp() async throws {
+        let controller = FakeProviderController.fixture(saveCancellation: true)
+        let store = ProviderControlStore(controller: controller)
+        await store.refresh()
+        let initialSnapshot = try #require(store.snapshot)
+        store.setEnabled(true, modelID: "second-model")
+        let stagedDraft = try #require(store.draft)
+
+        await store.save()
+
+        #expect(store.operation == .idle)
+        #expect(store.snapshot == initialSnapshot)
+        #expect(store.draft == stagedDraft)
+        #expect(store.draft?.hasChanges == true)
+        #expect(store.canSave)
+        #expect(!store.restartRequired)
+        #expect(store.errorMessage == nil)
+        #expect(await controller.saveCount == 1)
+    }
+
     @Test("save and download gates require typed fresh catalog and local state")
     func gatesMutationsOnTypedFreshSources() async throws {
         let freshController = FakeProviderController.fixture()
@@ -408,6 +429,72 @@ struct ProviderControlStoreTests {
                 store.errorMessage
                     == "Provider stop outcome could not be confirmed; current state could not refresh."
             )
+        }
+    }
+
+    @Test(
+        "pre-launch cancellation runs no real mutation and preserves actionable state",
+        arguments: PostExitProviderMutation.allCases
+    )
+    func preservesRealRunnerPreLaunchCancellation(
+        _ mutation: PostExitProviderMutation
+    ) async throws {
+        let harness = try PostExitProviderHarness.makeBeforeLaunch(mutation: mutation)
+        defer { harness.cleanup() }
+        let store = ProviderControlStore(controller: harness.service)
+        await store.refresh()
+        let initialSnapshot = try #require(store.snapshot)
+
+        let mutationTask: Task<Void, Never>
+        switch mutation {
+        case .download:
+            #expect(store.canDownload("available-model"))
+            mutationTask = Task { await store.download("available-model") }
+        case .delete:
+            #expect(initialSnapshot.inventory.myCatalog.contains {
+                $0.localID == "second-model"
+            })
+            mutationTask = Task { await store.delete("second-model") }
+        case .lifecycle:
+            #expect(initialSnapshot.inventory.myCatalog.first {
+                $0.catalogID == "saved-model"
+            }?.liveState == .loadedIdle)
+            mutationTask = Task { await store.request(.stop) }
+        }
+
+        guard await harness.gate.waitUntilStarted() else {
+            mutationTask.cancel()
+            harness.gate.release()
+            await mutationTask.value
+            Issue.record("The provider command did not reach the pre-launch window")
+            return
+        }
+        try harness.failReconciliation()
+        mutationTask.cancel()
+        guard await harness.gate.waitUntilCancellation() else {
+            harness.gate.release()
+            await mutationTask.value
+            Issue.record("The runner did not record cancellation before launch")
+            return
+        }
+        harness.gate.release()
+        await mutationTask.value
+
+        #expect(!FileManager.default.fileExists(atPath: harness.sentinelURL.path))
+        #expect(store.operation == .idle)
+        #expect(store.snapshot == initialSnapshot)
+        #expect(store.errorMessage == nil)
+        switch mutation {
+        case .download:
+            #expect(store.canDownload("available-model"))
+        case .delete:
+            #expect(store.snapshot?.inventory.myCatalog.contains {
+                $0.localID == "second-model"
+            } == true)
+        case .lifecycle:
+            #expect(store.snapshot?.inventory.myCatalog.first {
+                $0.catalogID == "saved-model"
+            }?.liveState == .loadedIdle)
         }
     }
 
@@ -1097,6 +1184,11 @@ enum PostExitProviderMutation: String, CaseIterable, Sendable {
 }
 
 private final class PostExitProviderHarness: @unchecked Sendable {
+    private enum HoldPoint {
+        case beforeLaunch
+        case beforeTerminationHandler
+    }
+
     let directory: URL
     let sentinelURL: URL
     let reconciliationFailureURL: URL
@@ -1104,6 +1196,19 @@ private final class PostExitProviderHarness: @unchecked Sendable {
     let service: ProviderControlService
 
     static func make(mutation: PostExitProviderMutation) throws -> PostExitProviderHarness {
+        try make(mutation: mutation, holdPoint: .beforeTerminationHandler)
+    }
+
+    static func makeBeforeLaunch(
+        mutation: PostExitProviderMutation
+    ) throws -> PostExitProviderHarness {
+        try make(mutation: mutation, holdPoint: .beforeLaunch)
+    }
+
+    private static func make(
+        mutation: PostExitProviderMutation,
+        holdPoint: HoldPoint
+    ) throws -> PostExitProviderHarness {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("darkbloom-post-exit-\(UUID().uuidString)", isDirectory: true)
         do {
@@ -1129,10 +1234,21 @@ private final class PostExitProviderHarness: @unchecked Sendable {
             let sentinelURL = directory.appendingPathComponent("mutation.sentinel")
             let reconciliationFailureURL = directory.appendingPathComponent("fail-refresh")
             let gate = PostExitProviderGate(mutation: mutation)
-            let runner = CappedProcessRunner(
-                testOnlyBeforeTerminationHandlerObserver: gate.pauseIfTarget,
-                testOnlyCancellationObserver: gate.recordCancellation
-            )
+            let runner: CappedProcessRunner
+            switch holdPoint {
+            case .beforeLaunch:
+                runner = CappedProcessRunner(
+                    testOnlyBeforeLaunchObserver: { command in
+                        gate.pauseIfTarget(command)
+                    },
+                    testOnlyCancellationObserver: gate.recordCancellation
+                )
+            case .beforeTerminationHandler:
+                runner = CappedProcessRunner(
+                    testOnlyBeforeTerminationHandlerObserver: gate.pauseIfTarget,
+                    testOnlyCancellationObserver: gate.recordCancellation
+                )
+            }
             let selection = ProviderModelSelection(enabled: ["saved-model"], preloaded: [])
             let configStore = PostExitConfigStore(
                 selection: selection,
@@ -1419,6 +1535,7 @@ private actor FakeProviderController: ProviderControlling {
     private let snapshotAfterDownload: ProviderControlSnapshot?
     private let downloadCompletionGate: TelemetryRefreshGate?
     private let saveFailure: ProviderConfigError?
+    private let saveCancellation: Bool
     private let saveControlFailure: ProviderControlError?
     private let failRefreshAfterSave: Bool
     private let saveCompletionGate: TelemetryRefreshGate?
@@ -1450,6 +1567,7 @@ private actor FakeProviderController: ProviderControlling {
         snapshotAfterDownload: ProviderControlSnapshot? = nil,
         downloadCompletionGate: TelemetryRefreshGate? = nil,
         saveFailure: ProviderConfigError? = nil,
+        saveCancellation: Bool = false,
         saveControlFailure: ProviderControlError? = nil,
         failRefreshAfterSave: Bool = false,
         saveCompletionGate: TelemetryRefreshGate? = nil,
@@ -1472,6 +1590,7 @@ private actor FakeProviderController: ProviderControlling {
             snapshotAfterDownload: snapshotAfterDownload,
             downloadCompletionGate: downloadCompletionGate,
             saveFailure: saveFailure,
+            saveCancellation: saveCancellation,
             saveControlFailure: saveControlFailure,
             failRefreshAfterSave: failRefreshAfterSave,
             saveCompletionGate: saveCompletionGate,
@@ -1496,6 +1615,7 @@ private actor FakeProviderController: ProviderControlling {
         snapshotAfterDownload: ProviderControlSnapshot?,
         downloadCompletionGate: TelemetryRefreshGate?,
         saveFailure: ProviderConfigError?,
+        saveCancellation: Bool,
         saveControlFailure: ProviderControlError?,
         failRefreshAfterSave: Bool,
         saveCompletionGate: TelemetryRefreshGate?,
@@ -1517,6 +1637,7 @@ private actor FakeProviderController: ProviderControlling {
         self.snapshotAfterDownload = snapshotAfterDownload
         self.downloadCompletionGate = downloadCompletionGate
         self.saveFailure = saveFailure
+        self.saveCancellation = saveCancellation
         self.saveControlFailure = saveControlFailure
         self.failRefreshAfterSave = failRefreshAfterSave
         self.saveCompletionGate = saveCompletionGate
@@ -1546,6 +1667,7 @@ private actor FakeProviderController: ProviderControlling {
 
     func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
         saveCount += 1
+        if saveCancellation { throw CancellationError() }
         if let saveControlFailure { throw saveControlFailure }
         if let saveFailure { throw saveFailure }
         let savedDraft = ProviderConfigDraft(

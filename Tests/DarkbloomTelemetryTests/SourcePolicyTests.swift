@@ -110,9 +110,11 @@ private actor RejectingConfigValidationRunner: ProcessExecuting {
         _ command: ProcessCommand,
         timeout: Duration,
         outputLimit: Int,
-        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
+        onLaunch: (@Sendable () -> Void)?
     ) async throws -> CommandResult {
         invocations += 1
+        onLaunch?()
         return CommandResult(
             exitCode: 2,
             standardOutput: Data(),

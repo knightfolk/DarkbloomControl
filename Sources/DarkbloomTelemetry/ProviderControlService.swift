@@ -1,5 +1,16 @@
 import Foundation
 
+private final class ProcessLaunchAcknowledgement: @unchecked Sendable {
+    private let lock = NSLock()
+    private var launched = false
+
+    var wasRecorded: Bool { lock.withLock { launched } }
+
+    func record() {
+        lock.withLock { launched = true }
+    }
+}
+
 public enum ProviderLifecycleAction: String, Equatable, Sendable {
     case start
     case stop
@@ -460,10 +471,11 @@ public actor ProviderControlService: ProviderControlling {
         }
     }
 
-    /// Cancellation is authoritative only before a mutation is handed to the
-    /// runner. Once dispatched, the child may have changed external state even
-    /// when the runner reports `CancellationError` (including an exit/handler
-    /// bookkeeping race), so reconcile before releasing command serialization.
+    /// Cancellation is authoritative until the runner positively acknowledges
+    /// a successful child launch. Once launched, the child may have changed
+    /// external state even when the runner reports `CancellationError`
+    /// (including an exit/handler bookkeeping race), so reconcile before
+    /// releasing command serialization.
     private func runDispatchedMutation(
         _ command: ProcessCommand,
         timeout: Duration,
@@ -473,14 +485,17 @@ public actor ProviderControlService: ProviderControlling {
         executable: URL
     ) async throws -> ProviderMutationCompletion {
         try Task.checkCancellation()
+        let launch = ProcessLaunchAcknowledgement()
         do {
             _ = try await runner.run(
                 command,
                 timeout: timeout,
                 outputLimit: outputLimit,
-                onOutput: onOutput
+                onOutput: onOutput,
+                onLaunch: launch.record
             )
-        } catch is CancellationError {
+        } catch let error as CancellationError {
+            guard launch.wasRecorded else { throw error }
             await onPhase?(.reconciling)
             let completion = await refreshAfterCompletedMutation(using: executable)
             return completion == .refreshUncertain ? .outcomeUncertain : completion

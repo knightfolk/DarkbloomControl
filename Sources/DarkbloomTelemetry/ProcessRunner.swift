@@ -22,12 +22,14 @@ public enum ProcessRunnerError: Error, Equatable, Sendable {
 public struct CappedProcessRunner: ProcessExecuting, Sendable {
     private let testOnlyCleanupObserver: (@Sendable (ProcessCleanupState) -> Void)?
     private let testOnlyPostExitObserver: (@Sendable (ProcessCommand) async -> Void)?
+    private let testOnlyBeforeLaunchObserver: (@Sendable (ProcessCommand) async -> Void)?
     private let testOnlyBeforeTerminationHandlerObserver: (@Sendable (ProcessCommand) -> Void)?
     private let testOnlyCancellationObserver: (@Sendable () -> Void)?
 
     public init() {
         testOnlyCleanupObserver = nil
         testOnlyPostExitObserver = nil
+        testOnlyBeforeLaunchObserver = nil
         testOnlyBeforeTerminationHandlerObserver = nil
         testOnlyCancellationObserver = nil
     }
@@ -35,6 +37,7 @@ public struct CappedProcessRunner: ProcessExecuting, Sendable {
     init(testOnlyCleanupObserver: @escaping @Sendable (ProcessCleanupState) -> Void) {
         self.testOnlyCleanupObserver = testOnlyCleanupObserver
         testOnlyPostExitObserver = nil
+        testOnlyBeforeLaunchObserver = nil
         testOnlyBeforeTerminationHandlerObserver = nil
         testOnlyCancellationObserver = nil
     }
@@ -42,8 +45,20 @@ public struct CappedProcessRunner: ProcessExecuting, Sendable {
     init(testOnlyPostExitObserver: @escaping @Sendable (ProcessCommand) async -> Void) {
         testOnlyCleanupObserver = nil
         self.testOnlyPostExitObserver = testOnlyPostExitObserver
+        testOnlyBeforeLaunchObserver = nil
         testOnlyBeforeTerminationHandlerObserver = nil
         testOnlyCancellationObserver = nil
+    }
+
+    init(
+        testOnlyBeforeLaunchObserver: @escaping @Sendable (ProcessCommand) async -> Void,
+        testOnlyCancellationObserver: @escaping @Sendable () -> Void
+    ) {
+        testOnlyCleanupObserver = nil
+        testOnlyPostExitObserver = nil
+        self.testOnlyBeforeLaunchObserver = testOnlyBeforeLaunchObserver
+        testOnlyBeforeTerminationHandlerObserver = nil
+        self.testOnlyCancellationObserver = testOnlyCancellationObserver
     }
 
     init(
@@ -52,6 +67,7 @@ public struct CappedProcessRunner: ProcessExecuting, Sendable {
     ) {
         testOnlyCleanupObserver = nil
         testOnlyPostExitObserver = nil
+        testOnlyBeforeLaunchObserver = nil
         self.testOnlyBeforeTerminationHandlerObserver = testOnlyBeforeTerminationHandlerObserver
         self.testOnlyCancellationObserver = testOnlyCancellationObserver
     }
@@ -60,7 +76,8 @@ public struct CappedProcessRunner: ProcessExecuting, Sendable {
         _ command: ProcessCommand,
         timeout: Duration,
         outputLimit: Int,
-        onOutput: (@Sendable (ProcessOutputChunk) -> Void)? = nil
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
+        onLaunch: (@Sendable () -> Void)?
     ) async throws -> CommandResult {
         guard outputLimit > 0 else {
             throw ProcessRunnerError.outputLimitExceeded(limit: outputLimit)
@@ -94,11 +111,13 @@ public struct CappedProcessRunner: ProcessExecuting, Sendable {
         }
 
         return try await withTaskCancellationHandler {
+            await testOnlyBeforeLaunchObserver?(command)
             try Task.checkCancellation()
 
             do {
                 try process.run()
                 processWasLaunched = true
+                onLaunch?()
                 // The parent never writes to either pipe. Closing its write ends immediately
                 // makes EOF a reliable completion signal once the owned child exits.
                 _ = close(standardOutput.fileHandleForWriting)

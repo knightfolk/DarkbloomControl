@@ -264,6 +264,29 @@ struct ProviderConfigStoreTests {
         #expect(!FileManager.default.fileExists(atPath: candidateURL.path))
     }
 
+    @Test("validation cancellation preserves files and removes the candidate")
+    func preservesValidationCancellation() async throws {
+        let harness = try ConfigStoreHarness.make(mode: 0o600, behavior: .cancellation)
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+
+        do {
+            _ = try await harness.store.save(draft.withSelection(
+                ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+            ))
+            Issue.record("Expected candidate validation cancellation")
+        } catch is CancellationError {
+            // Validation cancellation is a pre-publication no-op.
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+
+        #expect(try Data(contentsOf: harness.configURL) == harness.originalData)
+        #expect(!FileManager.default.fileExists(atPath: harness.backupURL.path))
+        let candidateURL = try #require(await harness.executor.validatedCandidateURL)
+        #expect(!FileManager.default.fileExists(atPath: candidateURL.path))
+    }
+
     @Test("executor errors are collapsed without disclosing paths or credentials")
     func redactsExecutorErrors() async throws {
         let sensitive = "/Users/private/.config/darkbloom/provider.toml api_token=secret-value"
@@ -609,6 +632,7 @@ private actor FakeConfigExecutor: ProcessExecuting {
         case succeed
         case nonzero(stderr: String)
         case throwing(message: String)
+        case cancellation
     }
 
     struct Invocation: Sendable {
@@ -639,7 +663,8 @@ private actor FakeConfigExecutor: ProcessExecuting {
         _ command: ProcessCommand,
         timeout: Duration,
         outputLimit: Int,
-        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
+        onLaunch: (@Sendable () -> Void)?
     ) async throws -> CommandResult {
         let candidateURL = command.arguments.count >= 3
             ? URL(fileURLWithPath: command.arguments[2])
@@ -652,6 +677,7 @@ private actor FakeConfigExecutor: ProcessExecuting {
             candidateMode: candidateURL.flatMap { try? fileMode($0) }
         ))
         try hook?(command)
+        onLaunch?()
 
         switch behavior {
         case .succeed:
@@ -660,6 +686,8 @@ private actor FakeConfigExecutor: ProcessExecuting {
             return CommandResult(exitCode: 2, standardOutput: Data(), standardError: Data(stderr.utf8))
         case .throwing(let message):
             throw FakeExecutorError(message: message)
+        case .cancellation:
+            throw CancellationError()
         }
     }
 }

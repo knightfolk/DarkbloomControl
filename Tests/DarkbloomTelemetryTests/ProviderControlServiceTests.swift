@@ -783,6 +783,56 @@ struct ProviderControlServiceTests {
         try await harness.service.execute(.stop, enabledModels: [])
     }
 
+    @Test(
+        "cancellation before launch remains a no-op for every mutation",
+        arguments: PreLaunchProviderMutation.allCases
+    )
+    func preservesPreLaunchCancellationBoundary(
+        _ mutation: PreLaunchProviderMutation
+    ) async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+        let phases = ServicePhaseRecorder()
+        await harness.runner.blockNextMutationBeforeLaunch()
+        let operation = Task { () throws -> ProviderMutationCompletion in
+            switch mutation {
+            case .download:
+                return try await harness.service.performDownload(
+                    "qwen3-8b",
+                    onOutput: nil,
+                    onPhase: { phase in await phases.record(phase) }
+                )
+            case .delete:
+                return try await harness.service.performDelete(
+                    "gpt-oss-20b",
+                    onPhase: { phase in await phases.record(phase) }
+                )
+            case .lifecycle:
+                return try await harness.service.performLifecycle(
+                    .stop,
+                    enabledModels: [],
+                    onPhase: { phase in await phases.record(phase) }
+                )
+            }
+        }
+        await harness.runner.waitUntilBlocked()
+
+        operation.cancel()
+        do {
+            _ = try await operation.value
+            Issue.record("Expected cancellation before process launch")
+        } catch is CancellationError {
+            // A command that never launched has no external outcome to reconcile.
+        }
+
+        #expect(await phases.values.isEmpty)
+        #expect(await harness.runner.launchedMutationInvocations.isEmpty)
+        #expect(await harness.runner.sourceArguments.count == mutation.preflightSourceReadCount)
+
+        // Cancellation must also release command serialization.
+        try await harness.service.execute(.stop, enabledModels: [])
+    }
+
     @Test("refresh propagates cancellation from model and telemetry sources")
     func refreshPropagatesCancellation() async throws {
         let catalogSource = try ServiceHarness.make()
@@ -918,6 +968,19 @@ struct ProviderControlServiceTests {
     }
 }
 
+enum PreLaunchProviderMutation: CaseIterable, Sendable {
+    case download
+    case delete
+    case lifecycle
+
+    var preflightSourceReadCount: Int {
+        switch self {
+        case .download, .delete: 2
+        case .lifecycle: 0
+        }
+    }
+}
+
 private final class ServiceHarness: @unchecked Sendable {
     let directory: URL
     let configURL: URL
@@ -1017,6 +1080,8 @@ private actor ServiceRunnerFake: ProcessExecuting {
     private(set) var invocations: [Invocation] = []
     private var blockedGate: ServiceAsyncGate?
     private var shouldBlockNextMutation = false
+    private var shouldBlockNextMutationBeforeLaunch = false
+    private var launchedMutations: [Invocation] = []
     private var blockedLocalGate: ServiceAsyncGate?
     private var blockedLocalData: Data?
     private var shouldBlockNextLocal = false
@@ -1057,9 +1122,16 @@ private actor ServiceRunnerFake: ProcessExecuting {
         }
     }
 
+    var launchedMutationInvocations: [Invocation] { launchedMutations }
+
     func blockNextMutation() {
         blockedGate = ServiceAsyncGate()
         shouldBlockNextMutation = true
+    }
+
+    func blockNextMutationBeforeLaunch() {
+        blockedGate = ServiceAsyncGate()
+        shouldBlockNextMutationBeforeLaunch = true
     }
 
     func waitUntilBlocked() async {
@@ -1101,7 +1173,8 @@ private actor ServiceRunnerFake: ProcessExecuting {
         _ command: ProcessCommand,
         timeout: Duration,
         outputLimit: Int,
-        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
+        onLaunch: (@Sendable () -> Void)?
     ) async throws -> CommandResult {
         invocations.append(Invocation(command: command, timeout: timeout, outputLimit: outputLimit))
         let isModelMutation = command.arguments.count > 1
@@ -1110,6 +1183,18 @@ private actor ServiceRunnerFake: ProcessExecuting {
         let isLifecycleMutation = ["start", "stop", "restart"].contains(
             command.arguments.first ?? ""
         )
+        if (isModelMutation || isLifecycleMutation), shouldBlockNextMutationBeforeLaunch {
+            shouldBlockNextMutationBeforeLaunch = false
+            if let blockedGate {
+                try await blockedGate.wait()
+            }
+        }
+        onLaunch?()
+        if isModelMutation || isLifecycleMutation {
+            launchedMutations.append(
+                Invocation(command: command, timeout: timeout, outputLimit: outputLimit)
+            )
+        }
         if (isModelMutation || isLifecycleMutation), shouldBlockNextMutation {
             shouldBlockNextMutation = false
             if let blockedGate {

@@ -130,6 +130,66 @@ struct ProcessRunnerTests {
         }
     }
 
+    @Test("cancellation before process launch is acknowledged as unlaunched")
+    func cancellationBeforeLaunchDoesNotRunChild() async throws {
+        let sentinel = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-monitor-\(UUID().uuidString).sentinel")
+        defer { try? FileManager.default.removeItem(at: sentinel) }
+        let enteredPreLaunchWindow = CompletionFlag()
+        let cancellationRecorded = CompletionFlag()
+        let launchRecorded = CompletionFlag()
+        let releasePreLaunchWindow = AsyncReleaseGate()
+        let runner = CappedProcessRunner(
+            testOnlyBeforeLaunchObserver: { _ in
+                enteredPreLaunchWindow.set()
+                await releasePreLaunchWindow.wait()
+            },
+            testOnlyCancellationObserver: cancellationRecorded.set
+        )
+        let runTask = Task {
+            try await runner.run(
+                .testOnly(
+                    executable: URL(fileURLWithPath: "/bin/sh"),
+                    arguments: [
+                        "-c",
+                        "printf mutation-ran > \"$1\"",
+                        "sh",
+                        sentinel.path,
+                    ]
+                ),
+                timeout: .seconds(3),
+                outputLimit: 256,
+                onOutput: nil,
+                onLaunch: launchRecorded.set
+            )
+        }
+
+        guard await waitForCompletion(enteredPreLaunchWindow, timeout: .seconds(1)) else {
+            runTask.cancel()
+            await releasePreLaunchWindow.release()
+            _ = await runTask.result
+            Issue.record("The runner did not enter its pre-launch window")
+            return
+        }
+        runTask.cancel()
+        guard await waitForCompletion(cancellationRecorded, timeout: .seconds(1)) else {
+            await releasePreLaunchWindow.release()
+            _ = await runTask.result
+            Issue.record("The runner did not record cancellation before launch")
+            return
+        }
+        await releasePreLaunchWindow.release()
+
+        do {
+            _ = try await runTask.value
+            Issue.record("Expected pre-launch CancellationError")
+        } catch is CancellationError {
+            // The launch callback is the authoritative dispatch boundary.
+        }
+        #expect(!launchRecorded.read())
+        #expect(!FileManager.default.fileExists(atPath: sentinel.path))
+    }
+
     @Test("terminates output beyond the cap")
     func capsOutput() async {
         await #expect(throws: ProcessRunnerError.outputLimitExceeded(limit: 8)) {
