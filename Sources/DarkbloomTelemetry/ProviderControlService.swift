@@ -13,9 +13,35 @@ public enum ProviderActivityRisk: Equatable, Sendable {
 }
 
 public enum ProviderControlSourceState: Equatable, Sendable {
-    case fresh
+    /// The source was fresh when evaluated. `evidenceAt` is the source's
+    /// embedded timestamp when one exists, otherwise the successful acquisition time.
+    case fresh(evidenceAt: Date)
     case stale(String)
     case unavailable(String)
+
+    public static let maximumEvidenceAge: TimeInterval = 10
+
+    public var isMarkedFresh: Bool {
+        if case .fresh = self { return true }
+        return false
+    }
+
+    public func evaluated(
+        at currentTime: Date,
+        invalidReason: String,
+        staleReason: String,
+        futureReason: String
+    ) -> Self {
+        guard case .fresh(let evidenceAt) = self else { return self }
+        guard evidenceAt.timeIntervalSince1970.isFinite,
+              currentTime.timeIntervalSince1970.isFinite
+        else { return .unavailable(invalidReason) }
+        let age = currentTime.timeIntervalSince(evidenceAt)
+        guard age.isFinite else { return .unavailable(invalidReason) }
+        if age < 0 { return .stale(futureReason) }
+        if age > Self.maximumEvidenceAge { return .stale(staleReason) }
+        return self
+    }
 }
 
 public struct ProviderControlSourceStates: Equatable, Sendable {
@@ -92,7 +118,6 @@ public actor ProviderControlService: ProviderControlling {
         let localState: ProviderControlSourceState
     }
 
-    private static let liveStateMaximumAge: TimeInterval = 10
     private static let invalidSelectionMessage =
         "Saved model selection is not an unambiguous downloaded catalog model"
     private static let invalidDownloadMessage =
@@ -341,7 +366,7 @@ public actor ProviderControlService: ProviderControlling {
             stale: "Provider activity is stale",
             future: "Provider activity timestamp is in the future"
         )
-        let daemon = daemonState == .fresh ? daemonRead : nil
+        let daemon = daemonState.isMarkedFresh ? daemonRead : nil
         try requireFreshResidencyIfNeeded(daemonState, required: requireFreshResidency)
         appendIssue(from: daemonState, to: &sourceIssues)
 
@@ -352,7 +377,7 @@ public actor ProviderControlService: ProviderControlling {
             stale: "Loaded model state is stale",
             future: "Loaded model state timestamp is in the future"
         )
-        let loadedModels = loadedModelsState == .fresh ? loadedModelsRead?.models ?? [] : []
+        let loadedModels = loadedModelsState.isMarkedFresh ? loadedModelsRead?.models ?? [] : []
         try requireFreshResidencyIfNeeded(loadedModelsState, required: requireFreshResidency)
         appendIssue(from: loadedModelsState, to: &sourceIssues)
 
@@ -389,8 +414,8 @@ public actor ProviderControlService: ProviderControlling {
         let generation = nextRefreshGeneration
         var catalog: [CatalogModel]?
         var local: [LocalModel]?
-        var catalogState: ProviderControlSourceState = .fresh
-        var localState: ProviderControlSourceState = .fresh
+        var catalogState: ProviderControlSourceState = .unavailable("Model catalog is unavailable")
+        var localState: ProviderControlSourceState = .unavailable("Local model list is unavailable")
 
         do {
             let result = try await runner.run(
@@ -405,6 +430,7 @@ public actor ProviderControlService: ProviderControlling {
                 lastCatalogGeneration = generation
             }
             catalog = decoded
+            catalogState = .fresh(evidenceAt: now())
         } catch let error as CancellationError {
             throw error
         } catch {
@@ -427,6 +453,7 @@ public actor ProviderControlService: ProviderControlling {
                 lastLocalModelsGeneration = generation
             }
             local = decoded
+            localState = .fresh(evidenceAt: now())
         } catch let error as CancellationError {
             throw error
         } catch {
@@ -458,17 +485,21 @@ public actor ProviderControlService: ProviderControlling {
         future: String
     ) -> ProviderControlSourceState {
         guard timestamp.isFinite else { return .unavailable(unavailable) }
-        let age = capturedAt.timeIntervalSince1970 - timestamp
-        if age < 0 { return .stale(future) }
-        if age > Self.liveStateMaximumAge { return .stale(stale) }
-        return .fresh
+        return ProviderControlSourceState
+            .fresh(evidenceAt: Date(timeIntervalSince1970: timestamp))
+            .evaluated(
+                at: capturedAt,
+                invalidReason: unavailable,
+                staleReason: stale,
+                futureReason: future
+            )
     }
 
     private func requireFreshResidencyIfNeeded(
         _ state: ProviderControlSourceState,
         required: Bool
     ) throws {
-        guard required, state != .fresh else { return }
+        guard required, !state.isMarkedFresh else { return }
         let reason: String
         switch state {
         case .fresh:

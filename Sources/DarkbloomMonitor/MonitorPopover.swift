@@ -11,8 +11,8 @@ enum PopupModelPresentation: Equatable {
     ) -> Self {
         guard case .available(let state, _) = input.daemonState,
               case .available(let loadedModels, _) = input.loadedModels,
-              controlSources?.daemon == .fresh,
-              controlSources?.loadedModels == .fresh
+              controlSources?.daemon.isMarkedFresh == true,
+              controlSources?.loadedModels.isMarkedFresh == true
         else { return .unavailable }
 
         let enabledFilter: String?

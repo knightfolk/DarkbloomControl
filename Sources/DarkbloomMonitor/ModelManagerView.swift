@@ -1,4 +1,5 @@
 import DarkbloomTelemetry
+import Foundation
 import SwiftUI
 
 struct ModelActionPresentation: Equatable {
@@ -25,6 +26,7 @@ enum ModelManagerPresentation {
             draft: store.draft,
             operation: store.operation,
             sources: store.snapshot?.sources ?? .unknown,
+            currentTime: Date(),
             canDownload: store.canDownload(item.catalogID),
             downloadUnavailableReason: store.draftValidationMessage,
             sanitize: store.sanitizedDiagnostic
@@ -51,6 +53,7 @@ struct ModelRowPresentation: Equatable {
         draft: ProviderConfigDraft?,
         operation: ProviderOperation,
         sources: ProviderControlSourceStates,
+        currentTime: Date,
         canDownload: Bool,
         downloadUnavailableReason: String?,
         sanitize: (String) -> String
@@ -69,6 +72,7 @@ struct ModelRowPresentation: Equatable {
                 draft: draft,
                 operation: operation,
                 sources: sources,
+                currentTime: currentTime,
                 sanitize: sanitize
             )
             : nil
@@ -132,6 +136,7 @@ struct ModelRowPresentation: Equatable {
         draft: ProviderConfigDraft?,
         operation: ProviderOperation,
         sources: ProviderControlSourceStates,
+        currentTime: Date,
         sanitize: (String) -> String
     ) -> String? {
         guard operation == .idle else { return "Another model action is in progress" }
@@ -145,6 +150,7 @@ struct ModelRowPresentation: Equatable {
         }
         if let sourceReason = deletionFreshnessBlockReason(
             sources: sources,
+            currentTime: currentTime,
             sanitize: sanitize
         ) {
             return sourceReason
@@ -165,16 +171,46 @@ struct ModelRowPresentation: Equatable {
 
     private static func deletionFreshnessBlockReason(
         sources: ProviderControlSourceStates,
+        currentTime: Date,
         sanitize: (String) -> String
     ) -> String? {
-        let checks: [(ProviderControlSourceState, String)] = [
-            (sources.catalog, "Reload the model catalog before deleting this model."),
-            (sources.localModels, "Reload local models before deleting this model."),
-            (sources.daemon, "Refresh provider activity before deleting this model."),
-            (sources.loadedModels, "Refresh loaded model state before deleting this model."),
+        let checks: [(ProviderControlSourceState, String, String, String, String)] = [
+            (
+                sources.catalog,
+                "Model catalog timestamp is invalid",
+                "Model catalog is stale",
+                "Model catalog timestamp is in the future",
+                "Reload the model catalog before deleting this model."
+            ),
+            (
+                sources.localModels,
+                "Local model list timestamp is invalid",
+                "Local model list is stale",
+                "Local model list timestamp is in the future",
+                "Reload local models before deleting this model."
+            ),
+            (
+                sources.daemon,
+                "Provider activity timestamp is invalid",
+                "Provider activity is stale",
+                "Provider activity timestamp is in the future",
+                "Refresh provider activity before deleting this model."
+            ),
+            (
+                sources.loadedModels,
+                "Loaded model state timestamp is invalid",
+                "Loaded model state is stale",
+                "Loaded model state timestamp is in the future",
+                "Refresh loaded model state before deleting this model."
+            ),
         ]
-        for (state, recovery) in checks {
-            switch state {
+        for (state, invalid, stale, future, recovery) in checks {
+            switch state.evaluated(
+                at: currentTime,
+                invalidReason: invalid,
+                staleReason: stale,
+                futureReason: future
+            ) {
             case .fresh:
                 continue
             case .stale(let issue), .unavailable(let issue):
@@ -264,10 +300,12 @@ struct ModelManagerView: View {
     @State private var deletion: ModelDeletionConfirmation?
 
     var body: some View {
-        VStack(spacing: 0) {
-            modelList
-            Divider()
-            ModelManagerFooter(store: store)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(spacing: 0) {
+                modelList(currentTime: context.date)
+                Divider()
+                ModelManagerFooter(store: store)
+            }
         }
         .alert(item: $deletion) { confirmation in
             Alert(
@@ -283,7 +321,7 @@ struct ModelManagerView: View {
         }
     }
 
-    private var modelList: some View {
+    private func modelList(currentTime: Date) -> some View {
         List {
             Section {
                 if let snapshot = store.snapshot, !snapshot.inventory.myCatalog.isEmpty {
@@ -293,6 +331,7 @@ struct ModelManagerView: View {
                             draft: store.draft,
                             operation: store.operation,
                             sources: snapshot.sources,
+                            currentTime: currentTime,
                             sanitize: store.sanitizedDiagnostic,
                             setEnabled: { enabled, modelID in
                                 store.setEnabled(enabled, modelID: modelID)
@@ -358,6 +397,7 @@ private struct DownloadedModelRow: View {
     let draft: ProviderConfigDraft?
     let operation: ProviderOperation
     let sources: ProviderControlSourceStates
+    let currentTime: Date
     let sanitize: (String) -> String
     let setEnabled: (Bool, String) -> Void
     let setPreloaded: (Bool, String) -> Void
@@ -369,6 +409,7 @@ private struct DownloadedModelRow: View {
             draft: draft,
             operation: operation,
             sources: sources,
+            currentTime: currentTime,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: sanitize

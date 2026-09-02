@@ -104,7 +104,7 @@ struct ProviderLifecyclePresentationTests {
                 capturedAt: now,
                 reason: "Darkbloom status is stale"
             ),
-            controlDaemon: .fresh
+            controlDaemon: .fresh(evidenceAt: now)
         )
 
         #expect(input.providerKnownRunning == true)
@@ -139,60 +139,82 @@ struct ProviderLifecyclePresentationTests {
         let input = lifecycleInput(
             daemon: .unavailable(reason: "Waiting for daemon state"),
             daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
-            controlDaemon: .fresh,
-            controlCapturedAt: now,
+            controlDaemon: .fresh(evidenceAt: now),
             currentTime: now
         )
 
         #expect(input.providerKnownRunning == true)
     }
 
-    @Test("fresh control fallback remains valid at exactly ten seconds")
+    @Test("nine-second-old control evidence expires from its source time")
+    func controlEvidenceAgesFromSourceTime() {
+        let evidenceAt = now.addingTimeInterval(-9)
+        let initiallyFresh = lifecycleInput(
+            daemon: .unavailable(reason: "Waiting for daemon state"),
+            daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
+            controlDaemon: .fresh(evidenceAt: evidenceAt),
+            currentTime: now
+        )
+        let input = lifecycleInput(
+            daemon: .unavailable(reason: "Waiting for daemon state"),
+            daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
+            controlDaemon: .fresh(evidenceAt: evidenceAt),
+            currentTime: now.addingTimeInterval(1)
+        )
+        let expired = lifecycleInput(
+            daemon: .unavailable(reason: "Waiting for daemon state"),
+            daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
+            controlDaemon: .fresh(evidenceAt: evidenceAt),
+            currentTime: now.addingTimeInterval(1.001)
+        )
+
+        #expect(initiallyFresh.providerKnownRunning == true)
+        #expect(input.providerKnownRunning == true)
+        expectUnknownLifecycle(expired)
+    }
+
+    @Test("control evidence remains valid at exactly ten seconds")
     func controlFreshnessBoundaryIsInclusive() {
         let input = lifecycleInput(
             daemon: .unavailable(reason: "Waiting for daemon state"),
             daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
-            controlDaemon: .fresh,
-            controlCapturedAt: now.addingTimeInterval(-10),
+            controlDaemon: .fresh(evidenceAt: now.addingTimeInterval(-10)),
             currentTime: now
         )
 
         #expect(input.providerKnownRunning == true)
     }
 
-    @Test("fresh control fallback expires just beyond ten seconds")
+    @Test("control evidence expires just beyond ten seconds")
     func controlFreshnessExpires() {
         let input = lifecycleInput(
             daemon: .unavailable(reason: "Waiting for daemon state"),
             daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
-            controlDaemon: .fresh,
-            controlCapturedAt: now.addingTimeInterval(-10.001),
+            controlDaemon: .fresh(evidenceAt: now.addingTimeInterval(-10.001)),
             currentTime: now
         )
 
         expectUnknownLifecycle(input)
     }
 
-    @Test("future control capture cannot establish running")
-    func futureControlCaptureIsUnknown() {
+    @Test("future control evidence cannot establish running")
+    func futureControlEvidenceIsUnknown() {
         let input = lifecycleInput(
             daemon: .unavailable(reason: "Waiting for daemon state"),
             daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
-            controlDaemon: .fresh,
-            controlCapturedAt: now.addingTimeInterval(0.001),
+            controlDaemon: .fresh(evidenceAt: now.addingTimeInterval(0.001)),
             currentTime: now
         )
 
         expectUnknownLifecycle(input)
     }
 
-    @Test("non-finite control capture cannot establish running")
-    func nonFiniteControlCaptureIsUnknown() {
+    @Test("non-finite control evidence cannot establish running")
+    func nonFiniteControlEvidenceIsUnknown() {
         let input = lifecycleInput(
             daemon: .unavailable(reason: "Waiting for daemon state"),
             daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
-            controlDaemon: .fresh,
-            controlCapturedAt: Date(timeIntervalSince1970: .infinity),
+            controlDaemon: .fresh(evidenceAt: Date(timeIntervalSince1970: .infinity)),
             currentTime: now
         )
 
@@ -232,9 +254,9 @@ struct ProviderLifecyclePresentationTests {
         #expect(PopupModelPresentation.make(
             input: fresh,
             controlSources: ProviderControlSourceStates(
-                catalog: .fresh,
-                localModels: .fresh,
-                daemon: .fresh,
+                catalog: .fresh(evidenceAt: now),
+                localModels: .fresh(evidenceAt: now),
+                daemon: .fresh(evidenceAt: now),
                 loadedModels: .stale("Loaded model state is stale")
             )
         ) == .unavailable)
@@ -446,14 +468,12 @@ private func lifecycleInput(
     daemon: SourceAvailability<DaemonState>,
     daemonStatus: SourceAvailability<StatusSnapshot>,
     controlDaemon: ProviderControlSourceState?,
-    controlCapturedAt: Date? = now,
     currentTime: Date = now
 ) -> ProviderLifecycleSourceInput {
     ProviderLifecycleSourceInput(
         daemonState: daemon,
         status: daemonStatus,
         controlDaemonState: controlDaemon,
-        controlCapturedAt: controlCapturedAt,
         currentTime: currentTime
     )
 }
@@ -519,8 +539,8 @@ private actor InertStopTransitionController: ProviderControlling {
             capturedAt: now,
             sources: didExecute
                 ? ProviderControlSourceStates(
-                    catalog: .fresh,
-                    localModels: .fresh,
+                    catalog: .fresh(evidenceAt: now),
+                    localModels: .fresh(evidenceAt: now),
                     daemon: .stale("Provider activity is stale"),
                     loadedModels: .stale("Loaded model state is stale")
                 )
@@ -551,10 +571,10 @@ private actor InertStopTransitionController: ProviderControlling {
 
 private extension ProviderControlSourceStates {
     static let allFresh = ProviderControlSourceStates(
-        catalog: .fresh,
-        localModels: .fresh,
-        daemon: .fresh,
-        loadedModels: .fresh
+        catalog: .fresh(evidenceAt: now),
+        localModels: .fresh(evidenceAt: now),
+        daemon: .fresh(evidenceAt: now),
+        loadedModels: .fresh(evidenceAt: now)
     )
 }
 

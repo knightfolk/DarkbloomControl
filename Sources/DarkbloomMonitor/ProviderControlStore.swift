@@ -74,10 +74,10 @@ final class ProviderControlStore: ObservableObject {
     var draftValidationMessage: String? {
         guard let draft else { return "Provider configuration is unavailable" }
         guard let snapshot else { return "Model inventory is unavailable" }
-        guard snapshot.sources.catalog == .fresh else {
+        guard snapshot.sources.catalog.isMarkedFresh else {
             return "Refresh the model catalog before changing provider settings"
         }
-        guard snapshot.sources.localModels == .fresh else {
+        guard snapshot.sources.localModels.isMarkedFresh else {
             return "Refresh local models before changing provider settings"
         }
 
@@ -99,7 +99,7 @@ final class ProviderControlStore: ObservableObject {
 
     private var hasFreshModelSources: Bool {
         guard let sources = snapshot?.sources else { return false }
-        return sources.catalog == .fresh && sources.localModels == .fresh
+        return sources.catalog.isMarkedFresh && sources.localModels.isMarkedFresh
     }
 
     func refresh() async {

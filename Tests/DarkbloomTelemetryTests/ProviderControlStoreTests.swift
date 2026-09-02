@@ -5,6 +5,8 @@ import SwiftUI
 import Testing
 @testable import DarkbloomMonitor
 
+private let providerControlTestNow = Date(timeIntervalSince1970: 1_750_000_000)
+
 @Suite("Provider control store")
 @MainActor
 struct ProviderControlStoreTests {
@@ -76,27 +78,27 @@ struct ProviderControlStoreTests {
         let staleStates: [ProviderControlSourceStates] = [
             ProviderControlSourceStates(
                 catalog: .stale("otherwise harmless diagnostic"),
-                localModels: .fresh,
-                daemon: .fresh,
-                loadedModels: .fresh
+                localModels: .fresh(evidenceAt: providerControlTestNow),
+                daemon: .fresh(evidenceAt: providerControlTestNow),
+                loadedModels: .fresh(evidenceAt: providerControlTestNow)
             ),
             ProviderControlSourceStates(
                 catalog: .unavailable("otherwise harmless diagnostic"),
-                localModels: .fresh,
-                daemon: .fresh,
-                loadedModels: .fresh
+                localModels: .fresh(evidenceAt: providerControlTestNow),
+                daemon: .fresh(evidenceAt: providerControlTestNow),
+                loadedModels: .fresh(evidenceAt: providerControlTestNow)
             ),
             ProviderControlSourceStates(
-                catalog: .fresh,
+                catalog: .fresh(evidenceAt: providerControlTestNow),
                 localModels: .stale("otherwise harmless diagnostic"),
-                daemon: .fresh,
-                loadedModels: .fresh
+                daemon: .fresh(evidenceAt: providerControlTestNow),
+                loadedModels: .fresh(evidenceAt: providerControlTestNow)
             ),
             ProviderControlSourceStates(
-                catalog: .fresh,
+                catalog: .fresh(evidenceAt: providerControlTestNow),
                 localModels: .unavailable("otherwise harmless diagnostic"),
-                daemon: .fresh,
-                loadedModels: .fresh
+                daemon: .fresh(evidenceAt: providerControlTestNow),
+                loadedModels: .fresh(evidenceAt: providerControlTestNow)
             ),
         ]
         for sources in staleStates {
@@ -596,8 +598,8 @@ struct ProviderControlStoreTests {
     @Test("failed and timed out lifecycle attempts reconcile changed control state")
     func reconcilesFailedLifecycleAttempts() async throws {
         let changedSources = ProviderControlSourceStates(
-            catalog: .fresh,
-            localModels: .fresh,
+            catalog: .fresh(evidenceAt: providerControlTestNow),
+            localModels: .fresh(evidenceAt: providerControlTestNow),
             daemon: .unavailable("Provider activity is unavailable"),
             loadedModels: .unavailable("Loaded model state is unavailable")
         )
@@ -1055,17 +1057,17 @@ private func fixtureSnapshot(
 
 private func freshProviderSources() -> ProviderControlSourceStates {
     ProviderControlSourceStates(
-        catalog: .fresh,
-        localModels: .fresh,
-        daemon: .fresh,
-        loadedModels: .fresh
+        catalog: .fresh(evidenceAt: providerControlTestNow),
+        localModels: .fresh(evidenceAt: providerControlTestNow),
+        daemon: .fresh(evidenceAt: providerControlTestNow),
+        loadedModels: .fresh(evidenceAt: providerControlTestNow)
     )
 }
 
 private func unavailableLifecycleSources() -> ProviderControlSourceStates {
     ProviderControlSourceStates(
-        catalog: .fresh,
-        localModels: .fresh,
+        catalog: .fresh(evidenceAt: providerControlTestNow),
+        localModels: .fresh(evidenceAt: providerControlTestNow),
         daemon: .unavailable("Provider activity is unavailable"),
         loadedModels: .unavailable("Loaded model state is unavailable")
     )

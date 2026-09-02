@@ -1,8 +1,11 @@
 import AppKit
 import DarkbloomTelemetry
+import Foundation
 import SwiftUI
 import Testing
 @testable import DarkbloomMonitor
+
+private let layoutNow = Date()
 
 @Suite("Monitor popover layout")
 @MainActor
@@ -95,29 +98,29 @@ struct MonitorPopoverLayoutTests {
             (.allFresh, true, true, "Shows a confirmation before deleting Downloaded Model."),
             (ProviderControlSourceStates(
                 catalog: .stale("Catalog refresh required"),
-                localModels: .fresh,
-                daemon: .fresh,
-                loadedModels: .fresh
+                localModels: .fresh(evidenceAt: layoutNow),
+                daemon: .fresh(evidenceAt: layoutNow),
+                loadedModels: .fresh(evidenceAt: layoutNow)
             ), false, false,
              "Catalog refresh required; Reload the model catalog before deleting this model."),
             (ProviderControlSourceStates(
-                catalog: .fresh,
+                catalog: .fresh(evidenceAt: layoutNow),
                 localModels: .stale("Local model refresh required"),
-                daemon: .fresh,
-                loadedModels: .fresh
+                daemon: .fresh(evidenceAt: layoutNow),
+                loadedModels: .fresh(evidenceAt: layoutNow)
             ), false, false,
              "Local model refresh required; Reload local models before deleting this model."),
             (ProviderControlSourceStates(
-                catalog: .fresh,
-                localModels: .fresh,
+                catalog: .fresh(evidenceAt: layoutNow),
+                localModels: .fresh(evidenceAt: layoutNow),
                 daemon: .stale("Provider activity refresh required"),
-                loadedModels: .fresh
+                loadedModels: .fresh(evidenceAt: layoutNow)
             ), true, false,
              "Provider activity refresh required; Refresh provider activity before deleting this model."),
             (ProviderControlSourceStates(
-                catalog: .fresh,
-                localModels: .fresh,
-                daemon: .fresh,
+                catalog: .fresh(evidenceAt: layoutNow),
+                localModels: .fresh(evidenceAt: layoutNow),
+                daemon: .fresh(evidenceAt: layoutNow),
                 loadedModels: .unavailable("Loaded model state unavailable")
             ), true, false,
              "Loaded model state unavailable; Refresh loaded model state before deleting this model."),
@@ -145,6 +148,7 @@ struct MonitorPopoverLayoutTests {
                     draft: controlStore.draft,
                     operation: controlStore.operation,
                     sources: sources,
+                    currentTime: layoutNow,
                     canDownload: false,
                     downloadUnavailableReason: nil,
                     sanitize: controlStore.sanitizedDiagnostic
@@ -284,7 +288,7 @@ private actor InertSettingsController: ProviderControlling {
         value = ProviderControlSnapshot(
             inventory: inventory,
             draft: draft,
-            capturedAt: Date(timeIntervalSince1970: 1_750_000_000),
+            capturedAt: layoutNow,
             sources: sources
         )
     }
@@ -315,9 +319,9 @@ private actor InertSettingsController: ProviderControlling {
 
 private extension ProviderControlSourceStates {
     static let allFresh = ProviderControlSourceStates(
-        catalog: .fresh,
-        localModels: .fresh,
-        daemon: .fresh,
-        loadedModels: .fresh
+        catalog: .fresh(evidenceAt: layoutNow),
+        localModels: .fresh(evidenceAt: layoutNow),
+        daemon: .fresh(evidenceAt: layoutNow),
+        loadedModels: .fresh(evidenceAt: layoutNow)
     )
 }

@@ -75,7 +75,7 @@ struct ProviderControlServiceTests {
         #expect(staleCatalog.sources.catalog == .stale(
             "Model catalog is stale; showing the last successful result"
         ))
-        #expect(staleCatalog.sources.localModels == .fresh)
+        #expect(staleCatalog.sources.localModels == .fresh(evidenceAt: serviceNow))
 
         let residencyHarness = try ServiceHarness.make(
             loadedModelsUpdatedAt: serviceNow.timeIntervalSince1970 - 11
@@ -93,6 +93,29 @@ struct ProviderControlServiceTests {
         ))
         #expect(unknownResidency.inventory.issues.contains("Provider activity is unavailable"))
         #expect(unknownResidency.inventory.issues.contains("Loaded model state is stale"))
+    }
+
+    @Test("refresh preserves embedded residency evidence timestamps")
+    func preservesResidencyEvidenceTimestamps() async throws {
+        let daemonEvidence = serviceNow.addingTimeInterval(-9)
+        let loadedEvidence = serviceNow.addingTimeInterval(-8)
+        let harness = try ServiceHarness.make(
+            daemonState: daemon(
+                currentModel: "",
+                inferenceActive: false,
+                writtenAt: daemonEvidence.timeIntervalSince1970
+            ),
+            loadedModelsUpdatedAt: loadedEvidence.timeIntervalSince1970
+        )
+        defer { harness.cleanup() }
+
+        let snapshot = try await harness.service.refresh()
+
+        #expect(snapshot.capturedAt == serviceNow)
+        #expect(snapshot.sources.catalog == .fresh(evidenceAt: serviceNow))
+        #expect(snapshot.sources.localModels == .fresh(evidenceAt: serviceNow))
+        #expect(snapshot.sources.daemon == .fresh(evidenceAt: daemonEvidence))
+        #expect(snapshot.sources.loadedModels == .fresh(evidenceAt: loadedEvidence))
     }
 
     @Test("an older refresh cannot replace the cache from a completed mutation")
@@ -269,6 +292,27 @@ struct ProviderControlServiceTests {
         #expect(await futureDaemon.runner.mutationArguments.isEmpty)
         #expect(await staleLoaded.runner.mutationArguments.isEmpty)
         #expect(await futureLoaded.runner.mutationArguments.isEmpty)
+    }
+
+    @Test("delete accepts residency evidence at the inclusive ten-second boundary")
+    func deleteAcceptsTenSecondResidencyBoundary() async throws {
+        let boundary = serviceNow.timeIntervalSince1970 - 10
+        let harness = try ServiceHarness.make(
+            daemonState: daemon(
+                currentModel: "",
+                inferenceActive: false,
+                writtenAt: boundary
+            ),
+            loadedModels: [],
+            loadedModelsUpdatedAt: boundary
+        )
+        defer { harness.cleanup() }
+
+        try await harness.service.delete("gpt-oss-20b")
+
+        #expect(await harness.runner.mutationArguments.first == [
+            "models", "remove", "gpt-oss-20b", "--force",
+        ])
     }
 
     @Test("delete residency cancellation propagates without removing and releases serialization")

@@ -13,6 +13,7 @@ struct ModelManagerPresentationTests {
             draft: draft(),
             operation: .idle,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -41,6 +42,7 @@ struct ModelManagerPresentationTests {
             draft: draft(),
             operation: .idle,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: true,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -84,6 +86,7 @@ struct ModelManagerPresentationTests {
             draft: enabledDraft,
             operation: .idle,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -93,6 +96,7 @@ struct ModelManagerPresentationTests {
             draft: preloadedDraft,
             operation: .idle,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -112,6 +116,7 @@ struct ModelManagerPresentationTests {
             draft: changedDraft,
             operation: .idle,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -121,6 +126,7 @@ struct ModelManagerPresentationTests {
             draft: draft(),
             operation: .idle,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -134,6 +140,7 @@ struct ModelManagerPresentationTests {
             draft: nil,
             operation: .idle,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -143,6 +150,7 @@ struct ModelManagerPresentationTests {
             draft: draft(),
             operation: .refreshing,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -177,6 +185,7 @@ struct ModelManagerPresentationTests {
                 draft: draft(),
                 operation: .idle,
                 sources: sourceStates,
+                currentTime: presentationNow,
                 canDownload: false,
                 downloadUnavailableReason: nil,
                 sanitize: store.sanitizedDiagnostic
@@ -185,6 +194,99 @@ struct ModelManagerPresentationTests {
             #expect(row.deleteBlockReason == expectedReason)
             #expect(row.deleteAction?.isEnabled == false)
             #expect(row.deleteAction?.accessibilityHint == expectedReason)
+            var confirmationRequests = 0
+            row.requestDeletion(of: item(isDownloaded: true)) { _ in
+                confirmationRequests += 1
+            }
+            #expect(confirmationRequests == 0)
+        }
+    }
+
+    @Test("delete evidence ages while Settings remains open and never requests stale confirmation")
+    func deleteEvidenceExpiresWithoutStoreRefresh() {
+        let evidenceAt = presentationNow.addingTimeInterval(-9)
+        let sourceCases: [(ProviderControlSourceStates, String)] = [
+            (
+                sources(daemon: .fresh(evidenceAt: evidenceAt)),
+                "Provider activity is stale; Refresh provider activity before deleting this model."
+            ),
+            (
+                sources(loadedModels: .fresh(evidenceAt: evidenceAt)),
+                "Loaded model state is stale; Refresh loaded model state before deleting this model."
+            ),
+        ]
+
+        for (sourceStates, expiredReason) in sourceCases {
+            let initial = ModelRowPresentation.make(
+                item: item(isDownloaded: true),
+                draft: draft(),
+                operation: .idle,
+                sources: sourceStates,
+                currentTime: presentationNow,
+                canDownload: false,
+                downloadUnavailableReason: nil,
+                sanitize: { $0 }
+            )
+            let boundary = ModelRowPresentation.make(
+                item: item(isDownloaded: true),
+                draft: draft(),
+                operation: .idle,
+                sources: sourceStates,
+                currentTime: presentationNow.addingTimeInterval(1),
+                canDownload: false,
+                downloadUnavailableReason: nil,
+                sanitize: { $0 }
+            )
+            let expired = ModelRowPresentation.make(
+                item: item(isDownloaded: true),
+                draft: draft(),
+                operation: .idle,
+                sources: sourceStates,
+                currentTime: presentationNow.addingTimeInterval(1.001),
+                canDownload: false,
+                downloadUnavailableReason: nil,
+                sanitize: { $0 }
+            )
+
+            #expect(initial.deleteAction?.isEnabled == true)
+            #expect(boundary.deleteAction?.isEnabled == true)
+            #expect(expired.deleteAction?.isEnabled == false)
+            #expect(expired.deleteBlockReason == expiredReason)
+            var confirmationRequests = 0
+            expired.requestDeletion(of: item(isDownloaded: true)) { _ in
+                confirmationRequests += 1
+            }
+            #expect(confirmationRequests == 0)
+        }
+    }
+
+    @Test("future and non-finite fresh evidence fail closed before delete confirmation")
+    func invalidDeleteEvidenceFailsClosed() {
+        let cases: [(ProviderControlSourceState, String)] = [
+            (
+                .fresh(evidenceAt: presentationNow.addingTimeInterval(0.001)),
+                "Provider activity timestamp is in the future; Refresh provider activity before deleting this model."
+            ),
+            (
+                .fresh(evidenceAt: Date(timeIntervalSince1970: .infinity)),
+                "Provider activity timestamp is invalid; Refresh provider activity before deleting this model."
+            ),
+        ]
+
+        for (daemonState, expectedReason) in cases {
+            let row = ModelRowPresentation.make(
+                item: item(isDownloaded: true),
+                draft: draft(),
+                operation: .idle,
+                sources: sources(daemon: daemonState),
+                currentTime: presentationNow,
+                canDownload: false,
+                downloadUnavailableReason: nil,
+                sanitize: { $0 }
+            )
+
+            #expect(row.deleteAction?.isEnabled == false)
+            #expect(row.deleteBlockReason == expectedReason)
             var confirmationRequests = 0
             row.requestDeletion(of: item(isDownloaded: true)) { _ in
                 confirmationRequests += 1
@@ -207,6 +309,7 @@ struct ModelManagerPresentationTests {
             draft: selected,
             operation: .idle,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -224,6 +327,7 @@ struct ModelManagerPresentationTests {
             draft: draft(),
             operation: .idle,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: "Refresh the model catalog before downloading",
             sanitize: { "sanitized: \($0)" }
@@ -242,6 +346,7 @@ struct ModelManagerPresentationTests {
             draft: draft(),
             operation: .downloading("model-id"),
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -280,6 +385,7 @@ struct ModelManagerPresentationTests {
             draft: draft(),
             operation: .idle,
             sources: sources(),
+            currentTime: presentationNow,
             canDownload: false,
             downloadUnavailableReason: nil,
             sanitize: { $0 }
@@ -351,10 +457,10 @@ struct ModelManagerPresentationTests {
     }
 
     private func sources(
-        catalog: ProviderControlSourceState = .fresh,
-        localModels: ProviderControlSourceState = .fresh,
-        daemon: ProviderControlSourceState = .fresh,
-        loadedModels: ProviderControlSourceState = .fresh
+        catalog: ProviderControlSourceState = .fresh(evidenceAt: presentationNow),
+        localModels: ProviderControlSourceState = .fresh(evidenceAt: presentationNow),
+        daemon: ProviderControlSourceState = .fresh(evidenceAt: presentationNow),
+        loadedModels: ProviderControlSourceState = .fresh(evidenceAt: presentationNow)
     ) -> ProviderControlSourceStates {
         ProviderControlSourceStates(
             catalog: catalog,
@@ -383,6 +489,8 @@ struct ModelManagerPresentationTests {
         )
     }
 }
+
+private let presentationNow = Date(timeIntervalSince1970: 1_788_282_000)
 
 private actor DiagnosticOnlyProviderController: ProviderControlling {
     func refresh() async throws -> ProviderControlSnapshot { throw DiagnosticOnlyError() }

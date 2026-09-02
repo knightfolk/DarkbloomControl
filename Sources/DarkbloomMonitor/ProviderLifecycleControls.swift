@@ -3,12 +3,9 @@ import Foundation
 import SwiftUI
 
 struct ProviderLifecycleSourceInput: Equatable {
-    private static let controlMaximumAge: TimeInterval = 10
-
     let daemonState: SourceAvailability<DaemonState>
     let status: SourceAvailability<StatusSnapshot>
     let controlDaemonState: ProviderControlSourceState?
-    let controlCapturedAt: Date?
     let currentTime: Date
 
     var providerKnownRunning: Bool? {
@@ -26,13 +23,12 @@ struct ProviderLifecycleSourceInput: Equatable {
     }
 
     private var hasCurrentControlDaemonEvidence: Bool {
-        guard controlDaemonState == .fresh,
-              let controlCapturedAt,
-              controlCapturedAt.timeIntervalSince1970.isFinite,
-              currentTime.timeIntervalSince1970.isFinite
-        else { return false }
-        let age = currentTime.timeIntervalSince(controlCapturedAt)
-        return age.isFinite && age >= 0 && age <= Self.controlMaximumAge
+        controlDaemonState?.evaluated(
+            at: currentTime,
+            invalidReason: "Provider activity timestamp is invalid",
+            staleReason: "Provider activity is stale",
+            futureReason: "Provider activity timestamp is in the future"
+        ).isMarkedFresh == true
     }
 
     private static func runningState(from daemonStatus: String?) -> Bool? {
@@ -234,7 +230,6 @@ struct ProviderLifecycleControls: View {
                 daemonState: snapshot.state,
                 status: snapshot.status,
                 controlDaemonState: store.snapshot?.sources.daemon,
-                controlCapturedAt: store.snapshot?.capturedAt,
                 currentTime: currentTime
             ),
             operation: store.operation,
