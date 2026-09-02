@@ -23,6 +23,16 @@ public struct AccountBalanceSample: Equatable, Sendable {
     }
 }
 
+public struct ObservedEarningsWindow: Equatable, Sendable {
+    public let microUSD: Int64
+    public let observedSeconds: TimeInterval
+
+    public init(microUSD: Int64, observedSeconds: TimeInterval) {
+        self.microUSD = microUSD
+        self.observedSeconds = observedSeconds
+    }
+}
+
 public struct ModelEarnings: Equatable, Sendable {
     public let model: String
     public let microUSD: Int64
@@ -247,6 +257,44 @@ public actor EarningsDatabase {
             availableMicroUSD: sqlite3_column_int64(statement, 2),
             withdrawableMicroUSD: sqlite3_column_int64(statement, 3),
             lifetimeCount: sqlite3_column_int64(statement, 4)
+        )
+    }
+
+    public func observedEarningsWindow(
+        endingAt end: Date,
+        maximumSeconds: TimeInterval = 86_400
+    ) throws -> ObservedEarningsWindow? {
+        let latestStatement = try prepare("""
+            SELECT captured_at, lifetime_micro_usd
+            FROM account_hourly
+            WHERE captured_at <= ?
+            ORDER BY captured_at DESC
+            LIMIT 1
+            """)
+        defer { sqlite3_finalize(latestStatement) }
+        sqlite3_bind_double(latestStatement, 1, end.timeIntervalSince1970)
+        guard sqlite3_step(latestStatement) == SQLITE_ROW else { return nil }
+        let latestAt = sqlite3_column_double(latestStatement, 0)
+        let latestTotal = sqlite3_column_int64(latestStatement, 1)
+
+        let earliestStatement = try prepare("""
+            SELECT captured_at, lifetime_micro_usd
+            FROM account_hourly
+            WHERE captured_at >= ? AND captured_at < ?
+            ORDER BY captured_at ASC
+            LIMIT 1
+            """)
+        defer { sqlite3_finalize(earliestStatement) }
+        sqlite3_bind_double(earliestStatement, 1, latestAt - maximumSeconds)
+        sqlite3_bind_double(earliestStatement, 2, latestAt)
+        guard sqlite3_step(earliestStatement) == SQLITE_ROW else { return nil }
+        let earliestAt = sqlite3_column_double(earliestStatement, 0)
+        let earliestTotal = sqlite3_column_int64(earliestStatement, 1)
+        guard latestTotal >= earliestTotal, latestAt > earliestAt else { return nil }
+
+        return ObservedEarningsWindow(
+            microUSD: latestTotal - earliestTotal,
+            observedSeconds: latestAt - earliestAt
         )
     }
 

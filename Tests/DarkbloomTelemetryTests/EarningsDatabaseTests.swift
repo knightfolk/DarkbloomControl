@@ -86,6 +86,32 @@ struct EarningsDatabaseTests {
             RewardEarnings(microUSD: 25_000, events: 1))
     }
 
+    @Test("observed earnings use the lifetime delta across the locally sampled window")
+    func calculatesObservedEarningsWindow() async throws {
+        let database = try EarningsDatabase(url: temporaryDatabaseURL())
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let start = now.addingTimeInterval(-43_200)
+        try await database.ingest(AccountEarningsResponse(
+            accountID: "account-never-persisted",
+            earnings: [earning(id: 1, model: "gemma", microUSD: 100_000, at: start)],
+            count: 1_000,
+            historyLimit: 1_000,
+            recentCount: 1_000,
+            totalMicroUSD: 10_000_000
+        ), capturedAt: start)
+        try await database.ingest(AccountEarningsResponse(
+            accountID: "account-never-persisted",
+            earnings: [earning(id: 2, model: "gemma", microUSD: 200_000, at: now)],
+            count: 2_000,
+            historyLimit: 1_000,
+            recentCount: 1_000,
+            totalMicroUSD: 11_100_000
+        ), capturedAt: now)
+
+        #expect(try await database.observedEarningsWindow(endingAt: now) ==
+            ObservedEarningsWindow(microUSD: 1_100_000, observedSeconds: 43_200))
+    }
+
     @Test("opening an existing database migrates base rewards out of work history")
     func migratesExistingBaseRewardBuckets() async throws {
         let databaseURL = temporaryDatabaseURL()

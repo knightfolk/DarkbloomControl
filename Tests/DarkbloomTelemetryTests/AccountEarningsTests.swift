@@ -99,6 +99,39 @@ struct AccountEarningsTests {
             "https://api.darkbloom.dev/v1/leaderboard?metric=earnings&window=24h&limit=200")
     }
 
+    @Test("authenticated client falls back to the locally observed earnings window")
+    func fallsBackToObservedWindow() async throws {
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DarkbloomObservedEarningsTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(
+            at: home.appendingPathComponent(".darkbloom", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("test-token".utf8).write(to: home.appendingPathComponent(".darkbloom/auth_token"))
+        let database = try EarningsDatabase(url: home.appendingPathComponent("earnings.sqlite3"))
+        try await database.ingest(AccountEarningsResponse(
+            accountID: "acct-1",
+            earnings: [earning(id: 1, microUSD: 100_000, at: now.addingTimeInterval(-43_200))],
+            count: 1_000,
+            historyLimit: 1_000,
+            recentCount: 1_000,
+            totalMicroUSD: 10_000_000
+        ), capturedAt: now.addingTimeInterval(-43_200))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ObservedEarningsURLProtocol.self]
+        let client = AuthenticatedEarningsClient(
+            homeDirectory: home,
+            session: URLSession(configuration: configuration),
+            database: database
+        )
+
+        let value = try await client.fetch(now: now)
+
+        #expect(value == .observed(microUSD: 1_100_000, observedSeconds: 43_200))
+    }
+
     private var responseData: Data {
         Data("""
         {
@@ -147,4 +180,51 @@ struct AccountEarningsTests {
             createdAt: date
         )
     }
+}
+
+private final class ObservedEarningsURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let data: Data
+        if request.url?.path == "/v1/provider/account-earnings" {
+            data = Data("""
+            {
+              "account_id": "acct-1",
+              "count": 2000,
+              "earnings": [{
+                "id": 2,
+                "provider_id": "provider-1",
+                "provider_key": "key-1",
+                "model": "gemma",
+                "amount_micro_usd": 200000,
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "created_at": "1970-01-24T03:33:20Z"
+              }],
+              "history_limit": 1000,
+              "recent_count": 1000,
+              "total_micro_usd": 11100000,
+              "available_balance_micro_usd": 11100000,
+              "withdrawable_balance_micro_usd": 11100000
+            }
+            """.utf8)
+        } else {
+            data = Data("""
+            {"metric":"earnings","window":"24h","entries":[]}
+            """.utf8)
+        }
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

@@ -97,6 +97,20 @@ struct MonitorPresentationTests {
             "Darkbloom routable, thermal fair. 0.13 dollars earned in the last 24 hours.")
     }
 
+    @Test("automatic mode shows the truthful locally observed earnings window while warming")
+    func automaticModeUsesObservedIdleEarnings() {
+        let presentation = MenuBarPresentation.make(
+            snapshot: snapshot(menuStatus: .online, active: false),
+            thermal: .nominal,
+            earnings: .observed(microUSD: 1_100_000, observedSeconds: 43_200),
+            mode: .automatic
+        )
+
+        #expect(presentation.metricText == "$1.10/12h")
+        #expect(presentation.accessibilityLabel ==
+            "Darkbloom routable, thermal nominal. 1.10 dollars observed over 12 hours.")
+    }
+
     @Test("missing measured rate falls back to real earnings")
     func unavailableRateUsesEarnings() {
         let presentation = MenuBarPresentation.make(

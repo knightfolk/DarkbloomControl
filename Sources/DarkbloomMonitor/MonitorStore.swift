@@ -120,7 +120,7 @@ final class MonitorStore: ObservableObject {
             do {
                 let value = try await client.fetch(now: refreshedAt)
                 switch value {
-                case .available:
+                case .available, .observed:
                     refreshedEarnings = value
                 case .stale(let microUSD, let reason):
                     refreshedEarnings = .stale(microUSD: microUSD, reason: reason)
@@ -261,6 +261,8 @@ final class MonitorStore: ObservableObject {
         switch previous {
         case .available(let microUSD), .stale(let microUSD, _):
             .stale(microUSD: microUSD, reason: reason)
+        case .observed:
+            .unavailable(reason: reason)
         case .unavailable:
             .unavailable(reason: reason)
         }

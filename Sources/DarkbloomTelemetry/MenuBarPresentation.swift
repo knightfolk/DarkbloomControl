@@ -80,6 +80,7 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
 
 public enum EarningsPresentationValue: Equatable, Sendable {
     case available(microUSD: Int64)
+    case observed(microUSD: Int64, observedSeconds: TimeInterval)
     case stale(microUSD: Int64, reason: String)
     case unavailable(reason: String)
 }
@@ -159,12 +160,33 @@ public struct MenuBarPresentation: Equatable, Sendable {
     }
 
     private static func availableEarnings(_ earnings: EarningsPresentationValue) -> Metric? {
-        guard case .available(let microUSD) = earnings else { return nil }
+        let microUSD: Int64
+        let windowText: String
+        let accessibility: String
+        switch earnings {
+        case .available(let value):
+            microUSD = value
+            windowText = "24h"
+            accessibility = "earned in the last 24 hours"
+        case .observed(let value, let observedSeconds):
+            guard observedSeconds.isFinite, observedSeconds > 0 else { return nil }
+            microUSD = value
+            if observedSeconds < 3_600 {
+                windowText = "<1h"
+                accessibility = "observed over less than one hour"
+            } else {
+                let hours = min(24, max(1, Int((observedSeconds / 3_600).rounded())))
+                windowText = "\(hours)h"
+                accessibility = "observed over \(hours) hours"
+            }
+        case .stale, .unavailable:
+            return nil
+        }
         let dollars = Double(microUSD) / 1_000_000
         let compact = decimal(dollars, fractionDigits: 2)
         return Metric(
-            text: "$\(compact)/24h",
-            accessibility: "\(compact) dollars earned in the last 24 hours.",
+            text: "$\(compact)/\(windowText)",
+            accessibility: "\(compact) dollars \(accessibility).",
             unavailableReason: nil
         )
     }
@@ -173,7 +195,7 @@ public struct MenuBarPresentation: Equatable, Sendable {
         _ earnings: EarningsPresentationValue
     ) -> String {
         switch earnings {
-        case .available:
+        case .available, .observed:
             "Earnings unavailable"
         case .stale(_, let reason):
             "Rolling earnings stale — \(reason)"

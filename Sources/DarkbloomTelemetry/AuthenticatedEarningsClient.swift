@@ -89,10 +89,20 @@ public struct AuthenticatedEarningsClient: AccountEarningsFetching, Sendable {
         let leaderboardRequest = AccountLeaderboardRequest.make()
         let (leaderboardData, leaderboardResponse) = try await session.data(for: leaderboardRequest)
         try validate(leaderboardResponse)
-        return try AccountLeaderboardParser.rolling24Hours(
+        let leaderboard = try AccountLeaderboardParser.rolling24Hours(
             leaderboardData,
             accountID: account.accountID
         )
+        if case .available = leaderboard {
+            return leaderboard
+        }
+        if let observed = try await database?.observedEarningsWindow(endingAt: now) {
+            return .observed(
+                microUSD: observed.microUSD,
+                observedSeconds: observed.observedSeconds
+            )
+        }
+        return leaderboard
     }
 
     public func jobCompletionSummary(
