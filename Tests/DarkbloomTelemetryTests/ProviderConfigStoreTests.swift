@@ -77,6 +77,20 @@ struct ProviderConfigStoreTests {
         #expect(try fileGroup(harness.configURL) == sourceGroup)
     }
 
+    @Test("save preserves the macOS tracked file flag")
+    func preservesTrackedFileFlag() async throws {
+        let harness = try ConfigStoreHarness.make(mode: 0o640)
+        defer { harness.cleanup() }
+        try setFileFlags(UInt32(UF_TRACKED), at: harness.configURL)
+        let draft = try await harness.store.load()
+
+        _ = try await harness.store.save(draft.withSelection(
+            ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+        ))
+
+        #expect(try fileFlags(harness.configURL) & UInt32(UF_TRACKED) != 0)
+    }
+
     @Test("metadata preservation failure rejects publication with a safe error")
     func rejectsMetadataPreservationFailure() async throws {
         let metadataRecorder = MetadataRecorder(failure: "/Users/private/provider.toml acl=secret-value")
@@ -782,6 +796,28 @@ private func fileOwner(_ url: URL) throws -> UInt32 {
 private func fileGroup(_ url: URL) throws -> UInt32 {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     return try #require((attributes[.groupOwnerAccountID] as? NSNumber)?.uint32Value)
+}
+
+private func fileFlags(_ url: URL) throws -> UInt32 {
+    var value = Darwin.stat()
+    let descriptor = url.withUnsafeFileSystemRepresentation { path in
+        guard let path else { return Int32(-1) }
+        return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    }
+    guard descriptor >= 0 else { throw FakeExecutorError(message: "could not open file flags") }
+    defer { Darwin.close(descriptor) }
+    guard Darwin.fstat(descriptor, &value) == 0 else {
+        throw FakeExecutorError(message: "could not read file flags")
+    }
+    return value.st_flags
+}
+
+private func setFileFlags(_ flags: UInt32, at url: URL) throws {
+    let result = url.withUnsafeFileSystemRepresentation { path in
+        guard let path else { return Int32(-1) }
+        return Darwin.chflags(path, flags)
+    }
+    guard result == 0 else { throw FakeExecutorError(message: "could not set file flags") }
 }
 
 private func acquireExclusiveTestLock(_ url: URL) throws -> Int32 {

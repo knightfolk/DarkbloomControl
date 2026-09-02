@@ -428,6 +428,16 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
                     }
                 }
                 guard result == 0 else { throw Self.metadataFailure }
+
+                let candidateDescriptor = candidateURL.withUnsafeFileSystemRepresentation { candidatePath in
+                    guard let candidatePath else { return Int32(-1) }
+                    return Darwin.open(candidatePath, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+                }
+                guard candidateDescriptor >= 0 else { throw Self.metadataFailure }
+                defer { Darwin.close(candidateDescriptor) }
+                guard Darwin.fchflags(candidateDescriptor, expectedState.flags) == 0 else {
+                    throw Self.metadataFailure
+                }
             }
 
             let candidateState = try readSnapshot(at: candidateURL).state
