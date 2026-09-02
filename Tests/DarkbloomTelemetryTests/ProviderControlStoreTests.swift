@@ -657,6 +657,96 @@ struct ProviderControlStoreTests {
         #expect(await controller.refreshCount == 2)
     }
 
+    @Test("controller lifecycle cancellation skips reconciliation and publication")
+    func skipsReconciliationAfterControllerCancellation() async throws {
+        let telemetry = TelemetryRefreshGate()
+        await telemetry.release()
+        let changedSources = unavailableLifecycleSources()
+        let controller = FakeProviderController.fixture(
+            executeCancellation: true,
+            lifecycleSnapshotAfterExecute: fixtureSnapshot(sources: changedSources)
+        )
+        let store = ProviderControlStore(
+            controller: controller,
+            refreshTelemetry: { await telemetry.refresh() }
+        )
+        await store.refresh()
+        let initialSnapshot = try #require(store.snapshot)
+
+        await store.request(.start)
+
+        #expect(store.operation == .idle)
+        #expect(store.errorMessage == nil)
+        #expect(store.snapshot == initialSnapshot)
+        #expect(store.snapshot?.sources != changedSources)
+        #expect(await telemetry.callCount == 0)
+        #expect(await controller.refreshCount == 1)
+    }
+
+    @Test("cancellation during telemetry reconciliation prevents control refresh and publication")
+    func cancelsDuringTelemetryReconciliation() async throws {
+        let telemetry = TelemetryRefreshGate()
+        let changedSources = unavailableLifecycleSources()
+        let controller = FakeProviderController.fixture(
+            lifecycleSnapshotAfterExecute: fixtureSnapshot(sources: changedSources)
+        )
+        let store = ProviderControlStore(
+            controller: controller,
+            refreshTelemetry: { await telemetry.refresh() }
+        )
+        await store.refresh()
+        let initialSnapshot = try #require(store.snapshot)
+
+        let start = Task { await store.request(.start) }
+        let telemetryStarted = await telemetry.waitUntilStarted()
+        #expect(telemetryStarted)
+        #expect(store.operation == .lifecycle(.start))
+
+        start.cancel()
+        await telemetry.release()
+        await start.value
+
+        #expect(store.operation == .idle)
+        #expect(store.errorMessage == nil)
+        #expect(store.snapshot == initialSnapshot)
+        #expect(store.snapshot?.sources != changedSources)
+        #expect(await controller.refreshCount == 1)
+    }
+
+    @Test("cancellation during controller reconciliation prevents snapshot publication")
+    func cancelsDuringControllerReconciliation() async throws {
+        let telemetry = TelemetryRefreshGate()
+        await telemetry.release()
+        let controllerRefresh = TelemetryRefreshGate()
+        let changedSources = unavailableLifecycleSources()
+        let controller = FakeProviderController.fixture(
+            lifecycleSnapshotAfterExecute: fixtureSnapshot(sources: changedSources),
+            reconciliationRefreshGate: controllerRefresh
+        )
+        let store = ProviderControlStore(
+            controller: controller,
+            refreshTelemetry: { await telemetry.refresh() }
+        )
+        await store.refresh()
+        let initialSnapshot = try #require(store.snapshot)
+
+        let start = Task { await store.request(.start) }
+        let refreshStarted = await controllerRefresh.waitUntilStarted()
+        #expect(refreshStarted)
+        #expect(store.operation == .lifecycle(.start))
+
+        start.cancel()
+        await controllerRefresh.release()
+        await start.value
+
+        #expect(store.operation == .idle)
+        #expect(store.errorMessage == nil)
+        #expect(store.snapshot == initialSnapshot)
+        #expect(store.snapshot?.sources != changedSources)
+        #expect(await telemetry.callCount == 1)
+        #expect(await controller.refreshCount == 2)
+    }
+
     @Test("status controller retains the one store injected into both surfaces")
     func sharesOneInjectedStore() async throws {
         let telemetryService = TelemetryService(source: InertStoreTelemetrySource())
@@ -735,8 +825,11 @@ private actor FakeProviderController: ProviderControlling {
     private let deleteFailure: ProviderControlError?
     private let executeFailure: Failure?
     private let executeControlFailure: ProviderControlError?
+    private let executeCancellation: Bool
     private let lifecycleSnapshotAfterExecute: ProviderControlSnapshot?
     private let failRefreshAfterExecute: Bool
+    private let reconciliationRefreshGate: TelemetryRefreshGate?
+    private var shouldGateRefresh = false
     private var downloadStarted = false
     private(set) var downloadedModels: [String] = []
     private(set) var deletedModels: [String] = []
@@ -758,8 +851,10 @@ private actor FakeProviderController: ProviderControlling {
         deleteFailure: ProviderControlError? = nil,
         executeFailure: Failure? = nil,
         executeControlFailure: ProviderControlError? = nil,
+        executeCancellation: Bool = false,
         lifecycleSnapshotAfterExecute: ProviderControlSnapshot? = nil,
-        failRefreshAfterExecute: Bool = false
+        failRefreshAfterExecute: Bool = false,
+        reconciliationRefreshGate: TelemetryRefreshGate? = nil
     ) -> FakeProviderController {
         FakeProviderController(
             snapshot: snapshot,
@@ -773,8 +868,10 @@ private actor FakeProviderController: ProviderControlling {
             deleteFailure: deleteFailure,
             executeFailure: executeFailure,
             executeControlFailure: executeControlFailure,
+            executeCancellation: executeCancellation,
             lifecycleSnapshotAfterExecute: lifecycleSnapshotAfterExecute,
-            failRefreshAfterExecute: failRefreshAfterExecute
+            failRefreshAfterExecute: failRefreshAfterExecute,
+            reconciliationRefreshGate: reconciliationRefreshGate
         )
     }
 
@@ -790,8 +887,10 @@ private actor FakeProviderController: ProviderControlling {
         deleteFailure: ProviderControlError?,
         executeFailure: Failure?,
         executeControlFailure: ProviderControlError?,
+        executeCancellation: Bool,
         lifecycleSnapshotAfterExecute: ProviderControlSnapshot?,
-        failRefreshAfterExecute: Bool
+        failRefreshAfterExecute: Bool,
+        reconciliationRefreshGate: TelemetryRefreshGate?
     ) {
         currentSnapshot = snapshot
         self.activityRisks = activityRisks
@@ -804,12 +903,17 @@ private actor FakeProviderController: ProviderControlling {
         self.deleteFailure = deleteFailure
         self.executeFailure = executeFailure
         self.executeControlFailure = executeControlFailure
+        self.executeCancellation = executeCancellation
         self.lifecycleSnapshotAfterExecute = lifecycleSnapshotAfterExecute
         self.failRefreshAfterExecute = failRefreshAfterExecute
+        self.reconciliationRefreshGate = reconciliationRefreshGate
     }
 
     func refresh() async throws -> ProviderControlSnapshot {
         refreshCount += 1
+        if shouldGateRefresh, let reconciliationRefreshGate {
+            await reconciliationRefreshGate.refresh()
+        }
         if let refreshFailure { throw refreshFailure }
         return currentSnapshot
     }
@@ -884,6 +988,8 @@ private actor FakeProviderController: ProviderControlling {
         if failRefreshAfterExecute {
             refreshFailure = .secret("post-execution refresh failed")
         }
+        shouldGateRefresh = reconciliationRefreshGate != nil
+        if executeCancellation { throw CancellationError() }
         if let executeControlFailure { throw executeControlFailure }
         if let executeFailure { throw executeFailure }
     }
@@ -953,6 +1059,15 @@ private func freshProviderSources() -> ProviderControlSourceStates {
         localModels: .fresh,
         daemon: .fresh,
         loadedModels: .fresh
+    )
+}
+
+private func unavailableLifecycleSources() -> ProviderControlSourceStates {
+    ProviderControlSourceStates(
+        catalog: .fresh,
+        localModels: .fresh,
+        daemon: .unavailable("Provider activity is unavailable"),
+        loadedModels: .unavailable("Loaded model state is unavailable")
     )
 }
 

@@ -41,3 +41,35 @@ download/delete, relaunch, or live UI action was performed.
 Committed as `fix: reconcile failed provider controls`. The unrelated
 untracked `Sources/DarkbloomMonitor/Resources/DarkbloomLogo.svg` and concurrent
 model-manager/lifecycle-presentation edits remain outside this scoped commit.
+
+## Fix round 1 — cancellation boundary
+
+The review found that the failed-command reconciliation path also caught
+`CancellationError`, and that cancellation arriving during either awaited
+reconciliation stage could still publish a refreshed controller snapshot.
+
+The store now rethrows command cancellation before reconciliation. It checks
+for cancellation immediately after the telemetry/status refresh and again
+after the controller refresh before accepting that snapshot. A cancellation
+during reconciliation is also propagated instead of being replaced by an
+earlier ordinary command failure. Non-cancellation command failures retain the
+original reconciliation and error-precedence behavior.
+
+Three focused regressions cover controller-thrown cancellation, caller
+cancellation while telemetry reconciliation is gated, and caller cancellation
+while controller reconciliation is gated. Each proves a clean return to idle,
+no user-facing error, and no stale snapshot publication; the first two also
+prove that later reconciliation stages are not called.
+
+Fix-round verification:
+
+- RED: all three new cancellation tests failed against the reviewed code for
+  the intended reconciliation/publication defects.
+- `swift test --filter ProviderControlStoreTests`: passed, 33 tests in 1 suite.
+- `swift test`: passed, 261 tests in 23 suites.
+- `swift build -c release`: passed.
+- `git diff --check`: silent/pass.
+
+No live provider command, lifecycle action, configuration write, model
+mutation, relaunch, or UI action was performed. The unrelated untracked logo
+remains untouched.

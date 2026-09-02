@@ -317,10 +317,14 @@ final class ProviderControlStore: ObservableObject {
     ) async throws {
         do {
             try await controller.execute(action, enabledModels: enabledModels)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             let commandError = error
             do {
                 try await reconcileLifecycleState()
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 // The lifecycle command's outcome is the primary user-facing
                 // failure. Reconciliation is best-effort after that attempt.
@@ -335,7 +339,9 @@ final class ProviderControlStore: ObservableObject {
 
     private func reconcileLifecycleState() async throws {
         await refreshTelemetry()
+        try Task.checkCancellation()
         let refreshed = try await controller.refresh()
+        try Task.checkCancellation()
         accept(refreshed, preserving: draft)
     }
 
