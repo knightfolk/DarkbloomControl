@@ -62,8 +62,11 @@ The complete field inventory and known gaps are documented in
 | Authenticated account earnings API | Recent earning records and account balances | Every 10 minutes |
 | Public 24-hour earnings leaderboard | Exact server-computed rolling account total when the account is ranked | Every 10 minutes |
 
-These are periodic telemetry reads, not a complete list of the monitor's
-separate bounded provider-control, config, or authenticated-earnings surfaces.
+These are the monitor's bounded telemetry acquisition/read surfaces: periodic
+polls where specified, an app-lifetime unified-log stream, and
+launch/notification-driven thermal-state reads. They are not a complete list
+of the monitor's separate bounded provider-control, config, or
+authenticated-earnings surfaces.
 The state and loaded-model polls are independent, so a slow source does not
 delay the other. Recent events are deduplicated, sorted newest first, and capped
 at 100 even though they are no longer displayed in the compact popover.
@@ -105,7 +108,8 @@ color is not the only signal.
 
 The monitor has a deliberately narrow management allowlist:
 
-- uses the fixed telemetry sources listed above for periodic polling;
+- uses the fixed telemetry sources listed above, with periodic polling where
+  specified and app-lifetime or notification-driven acquisition where noted;
 - reads and may change only top-level `enabled_models` and `preload_models` in
   the fixed `~/.config/darkbloom/provider.toml`; it preserves unrelated TOML
   bytes and comments when a save completes with the observed source revision;
