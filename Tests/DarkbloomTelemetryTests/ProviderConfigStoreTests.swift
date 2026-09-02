@@ -663,8 +663,7 @@ private actor FakeConfigExecutor: ProcessExecuting {
         _ command: ProcessCommand,
         timeout: Duration,
         outputLimit: Int,
-        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
-        onLaunch: (@Sendable () -> Void)?
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
     ) async throws -> CommandResult {
         let candidateURL = command.arguments.count >= 3
             ? URL(fileURLWithPath: command.arguments[2])
@@ -677,7 +676,6 @@ private actor FakeConfigExecutor: ProcessExecuting {
             candidateMode: candidateURL.flatMap { try? fileMode($0) }
         ))
         try hook?(command)
-        onLaunch?()
 
         switch behavior {
         case .succeed:

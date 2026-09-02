@@ -4,6 +4,20 @@ import Testing
 
 @Suite("Source policy")
 struct SourcePolicyTests {
+    @Test("legacy four-argument process executors remain source compatible")
+    func preservesLegacyProcessExecutorConformance() async throws {
+        let runner: any ProcessExecuting = LegacyOnlyProcessExecutor()
+
+        let result = try await runner.run(
+            .testOnly(executable: URL(fileURLWithPath: "/inert"), arguments: []),
+            timeout: .seconds(1),
+            outputLimit: 64,
+            onOutput: nil
+        )
+
+        #expect(result.exitCode == 0)
+    }
+
     @Test("telemetry reads use the approved telemetry-file allowlist")
     func allowlistsTelemetryFiles() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
@@ -101,6 +115,17 @@ struct SourcePolicyTests {
     }
 }
 
+private actor LegacyOnlyProcessExecutor: ProcessExecuting {
+    func run(
+        _ command: ProcessCommand,
+        timeout: Duration,
+        outputLimit: Int,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+    ) async throws -> CommandResult {
+        CommandResult(exitCode: 0, standardOutput: Data(), standardError: Data())
+    }
+}
+
 private actor RejectingConfigValidationRunner: ProcessExecuting {
     private var invocations = 0
 
@@ -110,11 +135,9 @@ private actor RejectingConfigValidationRunner: ProcessExecuting {
         _ command: ProcessCommand,
         timeout: Duration,
         outputLimit: Int,
-        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?,
-        onLaunch: (@Sendable () -> Void)?
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
     ) async throws -> CommandResult {
         invocations += 1
-        onLaunch?()
         return CommandResult(
             exitCode: 2,
             standardOutput: Data(),

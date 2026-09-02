@@ -1,13 +1,13 @@
 import Foundation
 
-private final class ProcessLaunchAcknowledgement: @unchecked Sendable {
+private final class MutationDispatchEvidence: @unchecked Sendable {
     private let lock = NSLock()
-    private var launched = false
+    private var outcomeMayBeAmbiguous = false
 
-    var wasRecorded: Bool { lock.withLock { launched } }
+    var indicatesPossibleLaunch: Bool { lock.withLock { outcomeMayBeAmbiguous } }
 
-    func record() {
-        lock.withLock { launched = true }
+    func recordPossibleLaunch() {
+        lock.withLock { outcomeMayBeAmbiguous = true }
     }
 }
 
@@ -485,17 +485,29 @@ public actor ProviderControlService: ProviderControlling {
         executable: URL
     ) async throws -> ProviderMutationCompletion {
         try Task.checkCancellation()
-        let launch = ProcessLaunchAcknowledgement()
+        let dispatchEvidence = MutationDispatchEvidence()
         do {
-            _ = try await runner.run(
-                command,
-                timeout: timeout,
-                outputLimit: outputLimit,
-                onOutput: onOutput,
-                onLaunch: launch.record
-            )
+            if let reportingRunner = runner as? any LaunchReportingProcessExecuting {
+                _ = try await reportingRunner.run(
+                    command,
+                    timeout: timeout,
+                    outputLimit: outputLimit,
+                    onOutput: onOutput,
+                    onLaunch: dispatchEvidence.recordPossibleLaunch
+                )
+            } else {
+                // A legacy executor cannot prove that cancellation preceded its
+                // external side effect, so invocation is the conservative boundary.
+                dispatchEvidence.recordPossibleLaunch()
+                _ = try await runner.run(
+                    command,
+                    timeout: timeout,
+                    outputLimit: outputLimit,
+                    onOutput: onOutput
+                )
+            }
         } catch let error as CancellationError {
-            guard launch.wasRecorded else { throw error }
+            guard dispatchEvidence.indicatesPossibleLaunch else { throw error }
             await onPhase?(.reconciling)
             let completion = await refreshAfterCompletedMutation(using: executable)
             return completion == .refreshUncertain ? .outcomeUncertain : completion

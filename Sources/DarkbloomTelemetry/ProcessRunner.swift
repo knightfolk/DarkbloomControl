@@ -19,7 +19,7 @@ public enum ProcessRunnerError: Error, Equatable, Sendable {
     case nonzeroExit(code: Int32, message: String)
 }
 
-public struct CappedProcessRunner: ProcessExecuting, Sendable {
+public struct CappedProcessRunner: LaunchReportingProcessExecuting, Sendable {
     private let testOnlyCleanupObserver: (@Sendable (ProcessCleanupState) -> Void)?
     private let testOnlyPostExitObserver: (@Sendable (ProcessCommand) async -> Void)?
     private let testOnlyBeforeLaunchObserver: (@Sendable (ProcessCommand) async -> Void)?
@@ -70,6 +70,21 @@ public struct CappedProcessRunner: ProcessExecuting, Sendable {
         testOnlyBeforeLaunchObserver = nil
         self.testOnlyBeforeTerminationHandlerObserver = testOnlyBeforeTerminationHandlerObserver
         self.testOnlyCancellationObserver = testOnlyCancellationObserver
+    }
+
+    public func run(
+        _ command: ProcessCommand,
+        timeout: Duration,
+        outputLimit: Int,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)? = nil
+    ) async throws -> CommandResult {
+        try await run(
+            command,
+            timeout: timeout,
+            outputLimit: outputLimit,
+            onOutput: onOutput,
+            onLaunch: nil
+        )
     }
 
     public func run(

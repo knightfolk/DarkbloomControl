@@ -833,6 +833,60 @@ struct ProviderControlServiceTests {
         try await harness.service.execute(.stop, enabledModels: [])
     }
 
+    @Test(
+        "legacy executor cancellation after invocation is conservatively reconciled",
+        arguments: PreLaunchProviderMutation.allCases
+    )
+    func reconcilesLegacyExecutorCancellation(
+        _ mutation: PreLaunchProviderMutation
+    ) async throws {
+        let harness = try ServiceHarness.make(useLegacyExecutor: true)
+        defer { harness.cleanup() }
+        let phases = ServicePhaseRecorder()
+        await harness.runner.blockNextMutation()
+        let operation = Task { () throws -> ProviderMutationCompletion in
+            switch mutation {
+            case .download:
+                return try await harness.service.performDownload(
+                    "qwen3-8b",
+                    onOutput: nil,
+                    onPhase: { phase in await phases.record(phase) }
+                )
+            case .delete:
+                return try await harness.service.performDelete(
+                    "gpt-oss-20b",
+                    onPhase: { phase in await phases.record(phase) }
+                )
+            case .lifecycle:
+                return try await harness.service.performLifecycle(
+                    .stop,
+                    enabledModels: [],
+                    onPhase: { phase in await phases.record(phase) }
+                )
+            }
+        }
+        await harness.runner.waitUntilBlocked()
+        switch mutation {
+        case .download:
+            await harness.runner.useLocalByDefault(localWithQwenJSON)
+        case .delete:
+            await harness.runner.useLocalByDefault(localGemmaOnlyJSON)
+        case .lifecycle:
+            break
+        }
+
+        operation.cancel()
+        let completion = try await operation.value
+
+        #expect(completion.snapshot != nil)
+        #expect(await phases.values == [.reconciling])
+        #expect(await harness.runner.launchedMutationInvocations.count == 1)
+        #expect(
+            await harness.runner.sourceArguments.count
+                == mutation.preflightSourceReadCount + 2
+        )
+    }
+
     @Test("refresh propagates cancellation from model and telemetry sources")
     func refreshPropagatesCancellation() async throws {
         let catalogSource = try ServiceHarness.make()
@@ -1000,7 +1054,8 @@ private final class ServiceHarness: @unchecked Sendable {
         ),
         daemonState: DaemonState = daemon(currentModel: "", inferenceActive: false),
         loadedModels: [String] = ["gemma-4-26b-qat-4bit"],
-        loadedModelsUpdatedAt: TimeInterval = serviceNow.timeIntervalSince1970
+        loadedModelsUpdatedAt: TimeInterval = serviceNow.timeIntervalSince1970,
+        useLegacyExecutor: Bool = false
     ) throws -> ServiceHarness {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("darkbloom-provider-service-\(UUID().uuidString)", isDirectory: true)
@@ -1027,7 +1082,8 @@ private final class ServiceHarness: @unchecked Sendable {
             runner: runner,
             telemetry: telemetry,
             configStore: configStore,
-            policy: policy
+            policy: policy,
+            useLegacyExecutor: useLegacyExecutor
         )
     }
 
@@ -1038,7 +1094,8 @@ private final class ServiceHarness: @unchecked Sendable {
         runner: ServiceRunnerFake,
         telemetry: ServiceTelemetryFake,
         configStore: ServiceConfigStoreFake,
-        policy: DarkbloomSourcePolicy
+        policy: DarkbloomSourcePolicy,
+        useLegacyExecutor: Bool
     ) {
         self.directory = directory
         self.configURL = configURL
@@ -1046,11 +1103,14 @@ private final class ServiceHarness: @unchecked Sendable {
         self.runner = runner
         self.telemetry = telemetry
         self.configStore = configStore
+        let executor: any ProcessExecuting = useLegacyExecutor
+            ? LegacyServiceRunnerAdapter(base: runner)
+            : runner
         service = ProviderControlService(
             policy: policy,
             telemetrySource: telemetry,
             configStore: configStore,
-            runner: runner,
+            runner: executor,
             now: { serviceNow }
         )
     }
@@ -1060,7 +1120,27 @@ private final class ServiceHarness: @unchecked Sendable {
     }
 }
 
-private actor ServiceRunnerFake: ProcessExecuting {
+/// Compatibility fixture: intentionally implements only the original public
+/// four-argument `ProcessExecuting` requirement.
+private struct LegacyServiceRunnerAdapter: ProcessExecuting {
+    let base: ServiceRunnerFake
+
+    func run(
+        _ command: ProcessCommand,
+        timeout: Duration,
+        outputLimit: Int,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+    ) async throws -> CommandResult {
+        try await base.run(
+            command,
+            timeout: timeout,
+            outputLimit: outputLimit,
+            onOutput: onOutput
+        )
+    }
+}
+
+private actor ServiceRunnerFake: LaunchReportingProcessExecuting {
     private enum Response: Sendable {
         case data(Data)
         case failure
@@ -1168,6 +1248,21 @@ private actor ServiceRunnerFake: ProcessExecuting {
     func cancelNextCatalog() { nextCatalog = .cancellation }
     func useNextCatalog(_ data: Data) { nextCatalog = .data(data) }
     func useNextLocal(_ data: Data) { nextLocal = .data(data) }
+
+    func run(
+        _ command: ProcessCommand,
+        timeout: Duration,
+        outputLimit: Int,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+    ) async throws -> CommandResult {
+        try await run(
+            command,
+            timeout: timeout,
+            outputLimit: outputLimit,
+            onOutput: onOutput,
+            onLaunch: nil
+        )
+    }
 
     func run(
         _ command: ProcessCommand,
