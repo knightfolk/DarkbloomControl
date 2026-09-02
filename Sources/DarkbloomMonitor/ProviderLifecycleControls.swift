@@ -223,6 +223,17 @@ struct ProviderLifecycleControls: View {
     @ObservedObject var store: ProviderControlStore
     @State private var dismissalCoordinator = LifecycleConfirmationDismissalCoordinator()
     let snapshot: TelemetrySnapshot
+    let currentTime: Date?
+
+    init(
+        store: ProviderControlStore,
+        snapshot: TelemetrySnapshot,
+        currentTime: Date? = nil
+    ) {
+        self.store = store
+        self.snapshot = snapshot
+        self.currentTime = currentTime
+    }
 
     private func presentation(currentTime: Date) -> ProviderLifecyclePresentation {
         .make(
@@ -240,8 +251,14 @@ struct ProviderLifecycleControls: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            controls(currentTime: context.date)
+        Group {
+            if let currentTime {
+                controls(currentTime: currentTime)
+            } else {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    controls(currentTime: context.date)
+                }
+            }
         }
         .alert(item: confirmation) { confirmation in
             let alert = LifecycleConfirmationPresentation.make(confirmation)

@@ -7,12 +7,23 @@ enum PopupModelPresentation: Equatable {
 
     static func make(
         input: PopupModelSourceInput,
-        controlSources: ProviderControlSourceStates?
+        controlSources: ProviderControlSourceStates?,
+        currentTime: Date
     ) -> Self {
         guard case .available(let state, _) = input.daemonState,
               case .available(let loadedModels, _) = input.loadedModels,
-              controlSources?.daemon.isMarkedFresh == true,
-              controlSources?.loadedModels.isMarkedFresh == true
+              controlSources?.daemon.evaluated(
+                at: currentTime,
+                invalidReason: "Provider activity timestamp is invalid",
+                staleReason: "Provider activity is stale",
+                futureReason: "Provider activity timestamp is in the future"
+              ).isMarkedFresh == true,
+              controlSources?.loadedModels.evaluated(
+                at: currentTime,
+                invalidReason: "Loaded model state timestamp is invalid",
+                staleReason: "Loaded model state is stale",
+                futureReason: "Loaded model state timestamp is in the future"
+              ).isMarkedFresh == true
         else { return .unavailable }
 
         let enabledFilter: String?
@@ -68,23 +79,29 @@ struct MonitorPopover: View {
     }
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            content(currentTime: context.date)
+        }
+    }
+
+    private func content(currentTime: Date) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            header
-            providerHeader
+            header(currentTime: currentTime)
+            providerHeader(currentTime: currentTime)
             throughputSection
             jobsSection
-            modelsSection
+            modelsSection(currentTime: currentTime)
         }
         .padding(20)
         .frame(width: 400, height: 600, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var header: some View {
+    private func header(currentTime: Date) -> some View {
         HStack(spacing: 10) {
             DarkbloomLogo(
                 image: DarkbloomLogoAsset.sourceImage,
-                tint: logoColor
+                tint: logoColor(currentTime: currentTime)
             )
             .frame(width: 22, height: 25)
 
@@ -113,13 +130,17 @@ struct MonitorPopover: View {
         }
     }
 
-    private var providerHeader: some View {
+    private func providerHeader(currentTime: Date) -> some View {
         HStack {
             Label("Provider", systemImage: "server.rack")
                 .font(.headline)
                 .foregroundStyle(.secondary)
             Spacer()
-            ProviderLifecycleControls(store: controlStore, snapshot: store.snapshot)
+            ProviderLifecycleControls(
+                store: controlStore,
+                snapshot: store.snapshot,
+                currentTime: currentTime
+            )
         }
     }
 
@@ -196,9 +217,9 @@ struct MonitorPopover: View {
         }
     }
 
-    private var modelsSection: some View {
+    private func modelsSection(currentTime: Date) -> some View {
         DashboardSection(title: "Models", systemImage: "cpu") {
-            switch modelPresentation {
+            switch modelPresentation(currentTime: currentTime) {
             case .unavailable:
                 Text("Model state unavailable")
                     .font(.title3.weight(.medium))
@@ -247,20 +268,21 @@ struct MonitorPopover: View {
         jobSummary?.averagePerDay
     }
 
-    private var modelPresentation: PopupModelPresentation {
+    private func modelPresentation(currentTime: Date) -> PopupModelPresentation {
         .make(
             input: PopupModelSourceInput(snapshot: store.snapshot),
-            controlSources: controlStore.snapshot?.sources
+            controlSources: controlStore.snapshot?.sources,
+            currentTime: currentTime
         )
     }
 
-    private var models: [DashboardModel] {
-        guard case .models(let models) = modelPresentation else { return [] }
+    private func models(currentTime: Date) -> [DashboardModel] {
+        guard case .models(let models) = modelPresentation(currentTime: currentTime) else { return [] }
         return models
     }
 
-    private var logoColor: Color {
-        switch models.first?.state {
+    private func logoColor(currentTime: Date) -> Color {
+        switch models(currentTime: currentTime).first?.state {
         case .active: .green
         case .loadedIdle: .yellow
         case .availableUnloaded, nil: .secondary

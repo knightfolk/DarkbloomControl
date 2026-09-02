@@ -246,11 +246,11 @@ struct ProviderLifecyclePresentationTests {
             status: fresh.status
         )
 
-        #expect(PopupModelPresentation.make(input: fresh, controlSources: .allFresh) == .models([
+        #expect(PopupModelPresentation.make(input: fresh, controlSources: .allFresh, currentTime: now) == .models([
             DashboardModel(name: "gpt-oss", state: .availableUnloaded),
         ]))
-        #expect(PopupModelPresentation.make(input: staleDaemon, controlSources: .allFresh) == .unavailable)
-        #expect(PopupModelPresentation.make(input: futureLoaded, controlSources: .allFresh) == .unavailable)
+        #expect(PopupModelPresentation.make(input: staleDaemon, controlSources: .allFresh, currentTime: now) == .unavailable)
+        #expect(PopupModelPresentation.make(input: futureLoaded, controlSources: .allFresh, currentTime: now) == .unavailable)
         #expect(PopupModelPresentation.make(
             input: fresh,
             controlSources: ProviderControlSourceStates(
@@ -258,8 +258,47 @@ struct ProviderLifecyclePresentationTests {
                 localModels: .fresh(evidenceAt: now),
                 daemon: .fresh(evidenceAt: now),
                 loadedModels: .stale("Loaded model state is stale")
-            )
+            ),
+            currentTime: now
         ) == .unavailable)
+    }
+
+    @Test("popup model pills age marked-fresh daemon and loaded evidence without a store event")
+    func modelPillsAgeControlEvidenceFromTimelineTime() {
+        let input = PopupModelSourceInput(
+            daemonState: .available(value: daemonState(), capturedAt: now),
+            loadedModels: .available(
+                value: LoadedModelsState(schema: 1, models: [], updatedAt: now.timeIntervalSince1970),
+                capturedAt: now
+            ),
+            status: .available(value: status(daemon: "running", enabled: "gpt-oss"), capturedAt: now)
+        )
+        let expected = PopupModelPresentation.models([
+            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        ])
+        let exactBoundary = now.addingTimeInterval(-ProviderControlSourceState.maximumEvidenceAge)
+        let stale = now.addingTimeInterval(-ProviderControlSourceState.maximumEvidenceAge - 0.001)
+        let future = now.addingTimeInterval(0.001)
+        let nonFinite = Date(timeIntervalSince1970: .infinity)
+
+        #expect(PopupModelPresentation.make(
+            input: input,
+            controlSources: popupControlSources(daemon: .fresh(evidenceAt: exactBoundary), loadedModels: .fresh(evidenceAt: exactBoundary)),
+            currentTime: now
+        ) == expected)
+
+        for evidenceAt in [stale, future, nonFinite] {
+            #expect(PopupModelPresentation.make(
+                input: input,
+                controlSources: popupControlSources(daemon: .fresh(evidenceAt: evidenceAt), loadedModels: .fresh(evidenceAt: now)),
+                currentTime: now
+            ) == .unavailable)
+            #expect(PopupModelPresentation.make(
+                input: input,
+                controlSources: popupControlSources(daemon: .fresh(evidenceAt: now), loadedModels: .fresh(evidenceAt: evidenceAt)),
+                currentTime: now
+            ) == .unavailable)
+        }
     }
 
     @Test("awaited Stop telemetry refresh makes Start available without relaunch")
@@ -575,6 +614,18 @@ private extension ProviderControlSourceStates {
         localModels: .fresh(evidenceAt: now),
         daemon: .fresh(evidenceAt: now),
         loadedModels: .fresh(evidenceAt: now)
+    )
+}
+
+private func popupControlSources(
+    daemon: ProviderControlSourceState,
+    loadedModels: ProviderControlSourceState
+) -> ProviderControlSourceStates {
+    ProviderControlSourceStates(
+        catalog: .fresh(evidenceAt: now),
+        localModels: .fresh(evidenceAt: now),
+        daemon: daemon,
+        loadedModels: loadedModels
     )
 }
 
