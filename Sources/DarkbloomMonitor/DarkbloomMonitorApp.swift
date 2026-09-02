@@ -66,7 +66,13 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
             configStore: configStore,
             runner: runner
         )
-        let providerControlStore = ProviderControlStore(controller: controlService)
+        let providerControlStore = ProviderControlStore(
+            controller: controlService,
+            homeDirectory: home,
+            refreshTelemetry: { [weak monitorStore] in
+                await monitorStore?.refreshTelemetryImmediately()
+            }
+        )
         store = monitorStore
         controlStore = providerControlStore
         statusItemController = StatusItemController(

@@ -90,6 +90,18 @@ final class MonitorStore: ObservableObject {
         }
     }
 
+    func refreshTelemetryImmediately() async {
+        guard shutdownTask == nil else { return }
+
+        // The first read drains any refresh that began before a provider command.
+        // The second read is therefore guaranteed to begin after that command.
+        _ = await service.refreshNow()
+        guard !Task.isCancelled, shutdownTask == nil else { return }
+        let refreshed = await service.refreshNow()
+        guard !Task.isCancelled, shutdownTask == nil else { return }
+        accept(refreshed)
+    }
+
     func refreshEarnings() async {
         if let earningsRefreshTask {
             let refresh = await earningsRefreshTask.value

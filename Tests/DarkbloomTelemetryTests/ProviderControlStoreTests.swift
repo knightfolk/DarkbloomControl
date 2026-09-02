@@ -50,6 +50,68 @@ struct ProviderControlStoreTests {
         #expect(await controller.saveCount == 1)
     }
 
+    @Test("save preserves typed source freshness before its follow-up refresh")
+    func savePreservesSourceFreshness() async throws {
+        let expectedSources = freshProviderSources()
+        let controller = FakeProviderController.fixture(failRefreshAfterSave: true)
+        let store = ProviderControlStore(controller: controller)
+        await store.refresh()
+        store.setEnabled(true, modelID: "second-model")
+
+        await store.save()
+
+        #expect(store.snapshot?.sources == expectedSources)
+        #expect(store.errorMessage == "Settings were saved, but model controls could not refresh.")
+    }
+
+    @Test("save and download gates require typed fresh catalog and local state")
+    func gatesMutationsOnTypedFreshSources() async throws {
+        let freshController = FakeProviderController.fixture()
+        let freshStore = ProviderControlStore(controller: freshController)
+        await freshStore.refresh()
+        freshStore.setEnabled(true, modelID: "second-model")
+        #expect(freshStore.canSave)
+        #expect(freshStore.canDownload("available-model"))
+
+        let staleStates: [ProviderControlSourceStates] = [
+            ProviderControlSourceStates(
+                catalog: .stale("otherwise harmless diagnostic"),
+                localModels: .fresh,
+                daemon: .fresh,
+                loadedModels: .fresh
+            ),
+            ProviderControlSourceStates(
+                catalog: .unavailable("otherwise harmless diagnostic"),
+                localModels: .fresh,
+                daemon: .fresh,
+                loadedModels: .fresh
+            ),
+            ProviderControlSourceStates(
+                catalog: .fresh,
+                localModels: .stale("otherwise harmless diagnostic"),
+                daemon: .fresh,
+                loadedModels: .fresh
+            ),
+            ProviderControlSourceStates(
+                catalog: .fresh,
+                localModels: .unavailable("otherwise harmless diagnostic"),
+                daemon: .fresh,
+                loadedModels: .fresh
+            ),
+        ]
+        for sources in staleStates {
+            let controller = FakeProviderController.fixture(
+                snapshot: fixtureSnapshot(sources: sources)
+            )
+            let store = ProviderControlStore(controller: controller)
+            await store.refresh()
+            store.setEnabled(true, modelID: "second-model")
+
+            #expect(!store.canSave)
+            #expect(!store.canDownload("available-model"))
+        }
+    }
+
     @Test("download and delete never stage enable or preload")
     func keepsModelMutationsSeparate() async throws {
         let controller = FakeProviderController.fixture()
@@ -131,7 +193,10 @@ struct ProviderControlStoreTests {
             ),
         ]
         let controller = FakeProviderController.fixture(downloadChunks: chunks)
-        let store = ProviderControlStore(controller: controller)
+        let store = ProviderControlStore(
+            controller: controller,
+            homeDirectory: URL(fileURLWithPath: "/Users/alice", isDirectory: true)
+        )
         await store.refresh()
 
         await store.download("available-model")
@@ -141,6 +206,117 @@ struct ProviderControlStoreTests {
         #expect(!progress.contains("super-secret"))
         #expect(!progress.contains("\u{001B}"))
         #expect(progress.count <= 200)
+    }
+
+    @Test("user diagnostics redact credentials and the injected home path")
+    func sanitizesUserDiagnostics() async throws {
+        let home = URL(fileURLWithPath: "/Volumes/Network Homes/kevin", isDirectory: true)
+        let store = ProviderControlStore(
+            controller: FakeProviderController.fixture(),
+            homeDirectory: home
+        )
+        let secrets = [
+            "Authorization: Bearer bearer-secret",
+            "access_token=access-secret",
+            "refresh_token: refresh-secret",
+            "token=token-secret",
+            "api_key=underscore-secret",
+            "api-key: hyphen-secret",
+            "api key = spaced-secret",
+            "password=password-secret",
+            "secret: plain-secret",
+        ]
+
+        for value in secrets {
+            let sanitized = store.sanitizedDiagnostic(
+                "\(value) /Volumes/Network Homes/kevin/private/config " + String(repeating: "x", count: 300)
+            )
+            #expect(sanitized.contains("<redacted>"))
+            #expect(sanitized.contains("~/private/config"))
+            #expect(!sanitized.contains("-secret"))
+            #expect(!sanitized.contains("/Volumes/Network Homes/kevin"))
+            #expect(sanitized.count <= 200)
+        }
+    }
+
+    @Test("download sanitization joins split credential and home-path chunks")
+    func sanitizesSplitProgressChunks() async throws {
+        let chunks = [
+            ProcessOutputChunk(
+                destination: .standardError,
+                data: Data("Authorization: Bea".utf8)
+            ),
+            ProcessOutputChunk(
+                destination: .standardError,
+                data: Data("rer split-secret /Volumes/Network Homes/kevin/private.bin\n".utf8)
+            ),
+        ]
+        let controller = FakeProviderController.fixture(downloadChunks: chunks)
+        let store = ProviderControlStore(
+            controller: controller,
+            homeDirectory: URL(fileURLWithPath: "/Volumes/Network Homes/kevin", isDirectory: true)
+        )
+        await store.refresh()
+
+        await store.download("available-model")
+
+        let progress = try #require(store.latestDownloadProgressLine)
+        #expect(progress.contains("Authorization: <redacted>"))
+        #expect(progress.contains("~/private.bin"))
+        #expect(!progress.contains("split-secret"))
+        #expect(!progress.contains("/Volumes/Network Homes/kevin"))
+    }
+
+    @Test("configuration failures map only fixed safe diagnostics")
+    func mapsConfigurationFailures() async throws {
+        let cases: [(ProviderConfigError, String)] = [
+            (.changedExternally, "Provider settings changed outside the app. Reload and try again."),
+            (.validationFailed("Darkbloom rejected the candidate configuration"), "Darkbloom rejected the provider settings."),
+            (.validationFailed("Could not read the provider configuration"), "Could not read the provider configuration."),
+            (.validationFailed("Could not save the provider configuration"), "Could not save the provider configuration."),
+            (.validationFailed("Provider configuration changed during recovery; recovery data was preserved beside it"), "Provider configuration changed during recovery; recovery data was preserved beside it."),
+            (.validationFailed("Could not preserve provider configuration security metadata"), "Could not preserve provider configuration security metadata."),
+            (.validationFailed("Provider configuration is busy; try again"), "Provider configuration is busy; try again."),
+            (.validationFailed("Could not remove the candidate configuration; recovery data was preserved beside the provider configuration"), "Could not remove the candidate configuration; recovery data was preserved beside the provider configuration."),
+            (.validationFailed("Authorization: Bearer arbitrary-secret"), "Could not save provider settings."),
+        ]
+
+        for (failure, expected) in cases {
+            let controller = FakeProviderController.fixture(saveFailure: failure)
+            let store = ProviderControlStore(controller: controller)
+            await store.refresh()
+            store.setEnabled(true, modelID: "second-model")
+
+            await store.save()
+
+            #expect(store.errorMessage == expected)
+            #expect(!store.errorMessage.orEmpty.contains("arbitrary-secret"))
+        }
+    }
+
+    @Test("delete and inventory blockers preserve only precise safe diagnostics")
+    func mapsControlBlockers() async throws {
+        let safeCases: [(ProviderControlError, String)] = [
+            (.deleteBlocked("A loaded model cannot be deleted"), "A loaded model cannot be deleted"),
+            (.inventoryUnavailable("Loaded model state is stale"), "Loaded model state is stale"),
+        ]
+        for (failure, expected) in safeCases {
+            let controller = FakeProviderController.fixture(deleteFailure: failure)
+            let store = ProviderControlStore(controller: controller)
+            await store.refresh()
+
+            await store.delete("second-model")
+
+            #expect(store.errorMessage == expected)
+        }
+
+        let unsafeController = FakeProviderController.fixture(
+            deleteFailure: .deleteBlocked("Authorization: Bearer arbitrary-secret")
+        )
+        let unsafeStore = ProviderControlStore(controller: unsafeController)
+        await unsafeStore.refresh()
+        await unsafeStore.delete("second-model")
+        #expect(unsafeStore.errorMessage == "The model cannot be deleted safely.")
     }
 
     @Test("a failed refresh retains the last good snapshot and maps a secret error")
@@ -253,6 +429,28 @@ struct ProviderControlStoreTests {
         #expect(await controller.activityReadCount == 0)
     }
 
+    @Test("lifecycle remains active until the awaited telemetry refresh completes")
+    func awaitsTelemetryRefreshBeforeBecomingIdle() async throws {
+        let gate = TelemetryRefreshGate()
+        let controller = FakeProviderController.fixture()
+        let store = ProviderControlStore(
+            controller: controller,
+            refreshTelemetry: { await gate.refresh() }
+        )
+        await store.refresh()
+
+        let start = Task { await store.request(.start) }
+        await gate.waitUntilStarted()
+
+        #expect(store.operation == .lifecycle(.start))
+        #expect(await controller.executedActions.map(\.action) == [.start])
+        await gate.release()
+        await start.value
+
+        #expect(store.operation == .idle)
+        #expect(await gate.callCount == 1)
+    }
+
     @Test("status controller retains the one store injected into both surfaces")
     func sharesOneInjectedStore() async throws {
         let telemetryService = TelemetryService(source: InertStoreTelemetrySource())
@@ -323,6 +521,9 @@ private actor FakeProviderController: ProviderControlling {
     private let blockDownload: Bool
     private let downloadChunks: [ProcessOutputChunk]
     private let downloadFailure: Failure?
+    private let saveFailure: ProviderConfigError?
+    private let failRefreshAfterSave: Bool
+    private let deleteFailure: ProviderControlError?
     private var downloadStarted = false
     private(set) var downloadedModels: [String] = []
     private(set) var deletedModels: [String] = []
@@ -332,17 +533,24 @@ private actor FakeProviderController: ProviderControlling {
     private(set) var downloadCancellationCount = 0
 
     static func fixture(
+        snapshot: ProviderControlSnapshot = fixtureSnapshot(),
         activityRisks: [ProviderActivityRisk] = [],
         blockDownload: Bool = false,
         downloadChunks: [ProcessOutputChunk] = [],
-        downloadFailure: Failure? = nil
+        downloadFailure: Failure? = nil,
+        saveFailure: ProviderConfigError? = nil,
+        failRefreshAfterSave: Bool = false,
+        deleteFailure: ProviderControlError? = nil
     ) -> FakeProviderController {
         FakeProviderController(
-            snapshot: fixtureSnapshot(),
+            snapshot: snapshot,
             activityRisks: activityRisks,
             blockDownload: blockDownload,
             downloadChunks: downloadChunks,
-            downloadFailure: downloadFailure
+            downloadFailure: downloadFailure,
+            saveFailure: saveFailure,
+            failRefreshAfterSave: failRefreshAfterSave,
+            deleteFailure: deleteFailure
         )
     }
 
@@ -351,13 +559,19 @@ private actor FakeProviderController: ProviderControlling {
         activityRisks: [ProviderActivityRisk],
         blockDownload: Bool,
         downloadChunks: [ProcessOutputChunk],
-        downloadFailure: Failure?
+        downloadFailure: Failure?,
+        saveFailure: ProviderConfigError?,
+        failRefreshAfterSave: Bool,
+        deleteFailure: ProviderControlError?
     ) {
         currentSnapshot = snapshot
         self.activityRisks = activityRisks
         self.blockDownload = blockDownload
         self.downloadChunks = downloadChunks
         self.downloadFailure = downloadFailure
+        self.saveFailure = saveFailure
+        self.failRefreshAfterSave = failRefreshAfterSave
+        self.deleteFailure = deleteFailure
     }
 
     func refresh() async throws -> ProviderControlSnapshot {
@@ -371,6 +585,7 @@ private actor FakeProviderController: ProviderControlling {
 
     func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
         saveCount += 1
+        if let saveFailure { throw saveFailure }
         let savedDraft = ProviderConfigDraft(
             sourceRevision: "saved-revision-\(saveCount)",
             original: draft.selection,
@@ -379,8 +594,12 @@ private actor FakeProviderController: ProviderControlling {
         currentSnapshot = ProviderControlSnapshot(
             inventory: currentSnapshot.inventory,
             draft: savedDraft,
-            capturedAt: currentSnapshot.capturedAt.addingTimeInterval(1)
+            capturedAt: currentSnapshot.capturedAt.addingTimeInterval(1),
+            sources: currentSnapshot.sources
         )
+        if failRefreshAfterSave {
+            refreshFailure = .secret("post-save refresh failed")
+        }
         return ProviderConfigSaveResult(draft: savedDraft, restartRequired: true)
     }
 
@@ -408,6 +627,7 @@ private actor FakeProviderController: ProviderControlling {
     }
 
     func delete(_ localModelID: String) async throws {
+        if let deleteFailure { throw deleteFailure }
         deletedModels.append(localModelID)
     }
 
@@ -425,7 +645,9 @@ private actor FakeProviderController: ProviderControlling {
     }
 }
 
-private func fixtureSnapshot() -> ProviderControlSnapshot {
+private func fixtureSnapshot(
+    sources: ProviderControlSourceStates = freshProviderSources()
+) -> ProviderControlSnapshot {
     let draft = ProviderConfigDraft(
         sourceRevision: "fixture-revision",
         original: ProviderModelSelection(enabled: ["saved-model"], preloaded: []),
@@ -476,8 +698,46 @@ private func fixtureSnapshot() -> ProviderControlSnapshot {
             loadedModels: []
         ),
         draft: draft,
-        capturedAt: Date(timeIntervalSince1970: 1_750_000_000)
+        capturedAt: Date(timeIntervalSince1970: 1_750_000_000),
+        sources: sources
     )
+}
+
+private func freshProviderSources() -> ProviderControlSourceStates {
+    ProviderControlSourceStates(
+        catalog: .fresh,
+        localModels: .fresh,
+        daemon: .fresh,
+        loadedModels: .fresh
+    )
+}
+
+private actor TelemetryRefreshGate {
+    private var started = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var callCount = 0
+
+    func refresh() async {
+        callCount += 1
+        started = true
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !started {
+            await Task.yield()
+        }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
 }
 
 private struct InertStoreTelemetrySource: TelemetrySource {
