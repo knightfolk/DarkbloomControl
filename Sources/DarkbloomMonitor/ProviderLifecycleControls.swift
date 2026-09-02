@@ -1,11 +1,51 @@
 import DarkbloomTelemetry
 import SwiftUI
 
+struct ProviderLifecycleSourceInput: Equatable {
+    let daemonState: SourceAvailability<DaemonState>
+    let status: SourceAvailability<StatusSnapshot>
+    let controlDaemonState: ProviderControlSourceState?
+
+    var providerKnownRunning: Bool? {
+        if case .available(let status, _) = status,
+           let statusValue = Self.runningState(from: status.daemon) {
+            return statusValue
+        }
+        if case .available = daemonState {
+            return true
+        }
+        if controlDaemonState == .fresh {
+            return true
+        }
+        return nil
+    }
+
+    private static func runningState(from daemonStatus: String?) -> Bool? {
+        guard let daemonStatus else { return nil }
+        let normalized = daemonStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.hasPrefix("running") { return true }
+        if normalized.hasPrefix("stopped") || normalized.hasPrefix("not running") { return false }
+        return nil
+    }
+}
+
 struct ProviderLifecyclePresentation: Equatable {
     let canStart: Bool
     let canStop: Bool
     let canRestart: Bool
     let unavailableReason: String?
+
+    static func make(
+        sourceInput: ProviderLifecycleSourceInput,
+        operation: ProviderOperation,
+        enabledModels: [String]
+    ) -> Self {
+        make(
+            providerKnownRunning: sourceInput.providerKnownRunning,
+            operation: operation,
+            enabledModels: enabledModels
+        )
+    }
 
     static func make(
         providerKnownRunning: Bool?,
@@ -52,17 +92,6 @@ struct ProviderLifecyclePresentation: Equatable {
         )
     }
 
-    static func providerKnownRunning(
-        hasDaemonState: Bool,
-        daemonStatus: String?
-    ) -> Bool? {
-        if hasDaemonState { return true }
-        guard let daemonStatus else { return nil }
-        let normalized = daemonStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized.hasPrefix("running") { return true }
-        if normalized.hasPrefix("stopped") || normalized.hasPrefix("not running") { return false }
-        return nil
-    }
 }
 
 enum ProviderLifecycleControl: CaseIterable {
@@ -186,9 +215,10 @@ struct ProviderLifecycleControls: View {
 
     private var presentation: ProviderLifecyclePresentation {
         .make(
-            providerKnownRunning: ProviderLifecyclePresentation.providerKnownRunning(
-                hasDaemonState: snapshot.state.value != nil,
-                daemonStatus: snapshot.status.value?.daemon
+            sourceInput: ProviderLifecycleSourceInput(
+                daemonState: snapshot.state,
+                status: snapshot.status,
+                controlDaemonState: store.snapshot?.sources.daemon
             ),
             operation: store.operation,
             enabledModels: store.draft?.original.enabled

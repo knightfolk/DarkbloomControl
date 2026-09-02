@@ -1,6 +1,59 @@
 import DarkbloomTelemetry
 import SwiftUI
 
+enum PopupModelPresentation: Equatable {
+    case models([DashboardModel])
+    case unavailable
+
+    static func make(
+        input: PopupModelSourceInput,
+        controlSources: ProviderControlSourceStates?
+    ) -> Self {
+        guard case .available(let state, _) = input.daemonState,
+              case .available(let loadedModels, _) = input.loadedModels,
+              controlSources?.daemon == .fresh,
+              controlSources?.loadedModels == .fresh
+        else { return .unavailable }
+
+        let enabledFilter: String?
+        if case .available(let status, _) = input.status {
+            enabledFilter = status.enabledModelFilter
+        } else {
+            enabledFilter = nil
+        }
+        return .models(DashboardModelDeriver.models(
+            enabledFilter: enabledFilter,
+            loadedModels: loadedModels.models,
+            warmModels: state.warmModels,
+            slotModels: state.slots.map(\.model),
+            currentModel: state.currentModel,
+            inferenceActive: state.inferenceActive
+        ))
+    }
+}
+
+struct PopupModelSourceInput: Equatable {
+    let daemonState: SourceAvailability<DaemonState>
+    let loadedModels: SourceAvailability<LoadedModelsState>
+    let status: SourceAvailability<StatusSnapshot>
+
+    init(snapshot: TelemetrySnapshot) {
+        daemonState = snapshot.state
+        loadedModels = snapshot.loadedModels
+        status = snapshot.status
+    }
+
+    init(
+        daemonState: SourceAvailability<DaemonState>,
+        loadedModels: SourceAvailability<LoadedModelsState>,
+        status: SourceAvailability<StatusSnapshot>
+    ) {
+        self.daemonState = daemonState
+        self.loadedModels = loadedModels
+        self.status = status
+    }
+}
+
 struct MonitorPopover: View {
     @ObservedObject var store: MonitorStore
     @EnvironmentObject private var controlStore: ProviderControlStore
@@ -145,12 +198,18 @@ struct MonitorPopover: View {
 
     private var modelsSection: some View {
         DashboardSection(title: "Models", systemImage: "cpu") {
-            if models.isEmpty {
+            switch modelPresentation {
+            case .unavailable:
+                Text("Model state unavailable")
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            case .models(let models) where models.isEmpty:
                 Text("No models reported")
                     .font(.title3.weight(.medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            } else {
+            case .models(let models):
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(models) { model in
                         ModelStatusPill(model: model)
@@ -188,16 +247,16 @@ struct MonitorPopover: View {
         jobSummary?.averagePerDay
     }
 
-    private var models: [DashboardModel] {
-        let state = store.snapshot.state.value
-        return DashboardModelDeriver.models(
-            enabledFilter: store.snapshot.status.value?.enabledModelFilter,
-            loadedModels: store.snapshot.loadedModels.value?.models ?? [],
-            warmModels: state?.warmModels ?? [],
-            slotModels: state?.slots.map(\.model) ?? [],
-            currentModel: state?.currentModel,
-            inferenceActive: state?.inferenceActive ?? false
+    private var modelPresentation: PopupModelPresentation {
+        .make(
+            input: PopupModelSourceInput(snapshot: store.snapshot),
+            controlSources: controlStore.snapshot?.sources
         )
+    }
+
+    private var models: [DashboardModel] {
+        guard case .models(let models) = modelPresentation else { return [] }
+        return models
     }
 
     private var logoColor: Color {

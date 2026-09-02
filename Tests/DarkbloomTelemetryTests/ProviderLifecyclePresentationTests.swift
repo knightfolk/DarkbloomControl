@@ -1,4 +1,5 @@
 import DarkbloomTelemetry
+import Foundation
 import Testing
 @testable import DarkbloomMonitor
 
@@ -55,24 +56,176 @@ struct ProviderLifecyclePresentationTests {
         #expect(value.unavailableReason == "Provider state is unavailable")
     }
 
-    @Test("daemon telemetry takes precedence while status distinguishes a stopped provider")
-    func derivesKnownRunningState() {
-        #expect(ProviderLifecyclePresentation.providerKnownRunning(
-            hasDaemonState: true,
-            daemonStatus: "not running"
-        ) == true)
-        #expect(ProviderLifecyclePresentation.providerKnownRunning(
-            hasDaemonState: false,
-            daemonStatus: "running (pid 123, up 3m)"
-        ) == true)
-        #expect(ProviderLifecyclePresentation.providerKnownRunning(
-            hasDaemonState: false,
-            daemonStatus: "not running"
-        ) == false)
-        #expect(ProviderLifecyclePresentation.providerKnownRunning(
-            hasDaemonState: false,
-            daemonStatus: nil
-        ) == nil)
+    @Test("fresh stopped status overrides stale last-good daemon state")
+    func freshStoppedStatusWins() {
+        let daemonCases: [(
+            SourceAvailability<DaemonState>,
+            ProviderControlSourceState
+        )] = [
+            (
+                .stale(
+                    value: daemonState(),
+                    capturedAt: now,
+                    reason: "Provider activity is stale"
+                ),
+                .stale("Provider activity is stale")
+            ),
+            (
+                .unavailable(reason: "Provider activity is unavailable"),
+                .unavailable("Provider activity is unavailable")
+            ),
+        ]
+
+        for (daemon, controlDaemon) in daemonCases {
+            let input = lifecycleInput(
+                daemon: daemon,
+                daemonStatus: .available(value: status(daemon: "not running"), capturedAt: now),
+                controlDaemon: controlDaemon
+            )
+
+            #expect(input.providerKnownRunning == false)
+            let value = ProviderLifecyclePresentation.make(
+                sourceInput: input,
+                operation: .idle,
+                enabledModels: ["gpt-oss"]
+            )
+            #expect(value.canStart)
+            #expect(!value.canStop)
+            #expect(!value.canRestart)
+        }
+    }
+
+    @Test("fresh daemon evidence wins over stale stopped status")
+    func freshDaemonWinsOverStaleStatus() {
+        let input = lifecycleInput(
+            daemon: .available(value: daemonState(), capturedAt: now),
+            daemonStatus: .stale(
+                value: status(daemon: "not running"),
+                capturedAt: now,
+                reason: "Darkbloom status is stale"
+            ),
+            controlDaemon: .fresh
+        )
+
+        #expect(input.providerKnownRunning == true)
+    }
+
+    @Test("future and unavailable observations remain unverifiable")
+    func futureAndUnknownDisableLifecycle() {
+        let input = lifecycleInput(
+            daemon: .stale(
+                value: daemonState(),
+                capturedAt: now,
+                reason: "Provider activity timestamp is in the future"
+            ),
+            daemonStatus: .unavailable(reason: "Darkbloom status is unavailable"),
+            controlDaemon: .stale("Provider activity timestamp is in the future")
+        )
+
+        #expect(input.providerKnownRunning == nil)
+        let value = ProviderLifecyclePresentation.make(
+            sourceInput: input,
+            operation: .idle,
+            enabledModels: ["gpt-oss"]
+        )
+        #expect(!value.canStart)
+        #expect(!value.canStop)
+        #expect(!value.canRestart)
+        #expect(value.unavailableReason == "Provider state is unavailable")
+    }
+
+    @Test("fresh control daemon state can establish running when monitor reads are unavailable")
+    func freshControlStateEstablishesRunning() {
+        let input = lifecycleInput(
+            daemon: .unavailable(reason: "Waiting for daemon state"),
+            daemonStatus: .unavailable(reason: "Waiting for Darkbloom status"),
+            controlDaemon: .fresh
+        )
+
+        #expect(input.providerKnownRunning == true)
+    }
+
+    @Test("popup model pills require fresh daemon and loaded-model evidence")
+    func modelPillsFailClosedOnResidencyFreshness() {
+        let fresh = PopupModelSourceInput(
+            daemonState: .available(value: daemonState(), capturedAt: now),
+            loadedModels: .available(
+                value: LoadedModelsState(schema: 1, models: [], updatedAt: now.timeIntervalSince1970),
+                capturedAt: now
+            ),
+            status: .available(value: status(daemon: "running", enabled: "gpt-oss"), capturedAt: now)
+        )
+        let staleDaemon = PopupModelSourceInput(
+            daemonState: .stale(value: daemonState(), capturedAt: now, reason: "stale"),
+            loadedModels: fresh.loadedModels,
+            status: fresh.status
+        )
+        let futureLoaded = PopupModelSourceInput(
+            daemonState: fresh.daemonState,
+            loadedModels: .stale(
+                value: LoadedModelsState(schema: 1, models: [], updatedAt: now.timeIntervalSince1970 + 30),
+                capturedAt: now,
+                reason: "Loaded model state timestamp is in the future"
+            ),
+            status: fresh.status
+        )
+
+        #expect(PopupModelPresentation.make(input: fresh, controlSources: .allFresh) == .models([
+            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        ]))
+        #expect(PopupModelPresentation.make(input: staleDaemon, controlSources: .allFresh) == .unavailable)
+        #expect(PopupModelPresentation.make(input: futureLoaded, controlSources: .allFresh) == .unavailable)
+        #expect(PopupModelPresentation.make(
+            input: fresh,
+            controlSources: ProviderControlSourceStates(
+                catalog: .fresh,
+                localModels: .fresh,
+                daemon: .fresh,
+                loadedModels: .stale("Loaded model state is stale")
+            )
+        ) == .unavailable)
+    }
+
+    @Test("awaited Stop telemetry refresh makes Start available without relaunch")
+    @MainActor
+    func stopTransitionUsesRefreshedPresentation() async {
+        let controller = InertStopTransitionController()
+        var daemonAvailability: SourceAvailability<DaemonState> =
+            .available(value: daemonState(), capturedAt: now)
+        var statusAvailability: SourceAvailability<StatusSnapshot> =
+            .available(value: status(daemon: "running"), capturedAt: now)
+        let store = ProviderControlStore(
+            controller: controller,
+            refreshTelemetry: {
+                daemonAvailability = .stale(
+                    value: daemonState(),
+                    capturedAt: now,
+                    reason: "Provider activity is stale"
+                )
+                statusAvailability = .available(
+                    value: status(daemon: "not running"),
+                    capturedAt: now
+                )
+            }
+        )
+        await store.refresh()
+
+        await store.request(.stop)
+
+        #expect(await controller.executedActions == [.stop])
+        #expect(store.snapshot?.sources.daemon == .stale("Provider activity is stale"))
+        let value = ProviderLifecyclePresentation.make(
+            sourceInput: lifecycleInput(
+                daemon: daemonAvailability,
+                daemonStatus: statusAvailability,
+                controlDaemon: store.snapshot?.sources.daemon
+            ),
+            operation: store.operation,
+            enabledModels: store.draft?.original.enabled ?? []
+        )
+        #expect(value.canStart)
+        #expect(!value.canStop)
+        #expect(!value.canRestart)
     }
 
     @Test("any in-flight provider operation disables every action")
@@ -231,6 +384,107 @@ struct ProviderLifecyclePresentationTests {
             await Task.yield()
         }
     }
+}
+
+private let now = Date(timeIntervalSince1970: 1_788_282_000)
+
+private func lifecycleInput(
+    daemon: SourceAvailability<DaemonState>,
+    daemonStatus: SourceAvailability<StatusSnapshot>,
+    controlDaemon: ProviderControlSourceState?
+) -> ProviderLifecycleSourceInput {
+    ProviderLifecycleSourceInput(
+        daemonState: daemon,
+        status: daemonStatus,
+        controlDaemonState: controlDaemon
+    )
+}
+
+private func status(daemon: String?, enabled: String? = nil) -> StatusSnapshot {
+    var value = StatusSnapshot()
+    value.daemon = daemon
+    value.enabledModelFilter = enabled
+    return value
+}
+
+private func daemonState() -> DaemonState {
+    DaemonState(
+        schema: 1,
+        version: "test",
+        currentModel: "",
+        warmModels: [],
+        stats: ProviderStats(tokensGenerated: 0, requestsServed: 0, usageGaps: 0),
+        trust: TrustState(level: "local", status: "online", reason: "test", receivedAt: 0),
+        capacity: MemoryCapacity(totalMemoryGB: 64, gpuMemoryActiveGB: 0, gpuMemoryCacheGB: 0),
+        slots: [],
+        inferenceActive: false,
+        startedAt: now.timeIntervalSince1970 - 60,
+        writtenAt: now.timeIntervalSince1970,
+        pid: 123,
+        processIdentity: ProcessIdentity(pid: 123, startTimeMicros: 1)
+    )
+}
+
+private actor InertStopTransitionController: ProviderControlling {
+    private(set) var executedActions: [ProviderLifecycleAction] = []
+    private var didExecute = false
+
+    func refresh() async throws -> ProviderControlSnapshot {
+        let selection = ProviderModelSelection(enabled: ["gpt-oss"], preloaded: [])
+        let draft = ProviderConfigDraft(
+            sourceRevision: "stop-transition",
+            original: selection,
+            selection: selection
+        )
+        return ProviderControlSnapshot(
+            inventory: ModelInventoryBuilder.build(
+                catalog: [],
+                local: [],
+                selection: selection,
+                daemon: nil,
+                loadedModels: []
+            ),
+            draft: draft,
+            capturedAt: now,
+            sources: didExecute
+                ? ProviderControlSourceStates(
+                    catalog: .fresh,
+                    localModels: .fresh,
+                    daemon: .stale("Provider activity is stale"),
+                    loadedModels: .stale("Loaded model state is stale")
+                )
+                : .allFresh
+        )
+    }
+
+    func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
+        ProviderConfigSaveResult(draft: draft, restartRequired: false)
+    }
+
+    func download(
+        _ modelID: String,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+    ) async throws {}
+
+    func delete(_ localModelID: String) async throws {}
+    func activityRisk() async -> ProviderActivityRisk { .idle }
+
+    func execute(
+        _ action: ProviderLifecycleAction,
+        enabledModels: [String]
+    ) async throws {
+        executedActions.append(action)
+        didExecute = true
+    }
+}
+
+private extension ProviderControlSourceStates {
+    static let allFresh = ProviderControlSourceStates(
+        catalog: .fresh,
+        localModels: .fresh,
+        daemon: .fresh,
+        loadedModels: .fresh
+    )
 }
 
 @MainActor
