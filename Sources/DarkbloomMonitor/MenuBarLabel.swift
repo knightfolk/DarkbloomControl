@@ -47,7 +47,7 @@ struct DarkbloomLogo: View {
 }
 
 struct MenuBarMetric: View {
-    static let width: CGFloat = 96
+    static let width: CGFloat = 72
     static let height: CGFloat = 18
 
     let text: String?

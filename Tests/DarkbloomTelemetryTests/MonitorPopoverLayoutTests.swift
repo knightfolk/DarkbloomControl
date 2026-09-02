@@ -52,7 +52,7 @@ struct MonitorPopoverLayoutTests {
 
         #expect(earnings.sizeThatFits(in: proposed) == expected)
         #expect(unavailable.sizeThatFits(in: proposed) == expected)
-        #expect(expected.width == 96)
+        #expect(expected.width == 72)
         #expect(expected.height <= 19)
     }
 
@@ -71,7 +71,7 @@ struct MonitorPopoverLayoutTests {
 
         let size = hostingController.sizeThatFits(in: NSSize(width: 500, height: 100))
 
-        #expect(size.width == 120)
+        #expect(size.width == 96)
         #expect(size.height == 18)
     }
 
@@ -84,7 +84,7 @@ struct MonitorPopoverLayoutTests {
         )
         let controller = StatusItemController(store: store)
 
-        #expect(controller.statusItemLength == 132)
+        #expect(controller.statusItemLength == 104)
         #expect(controller.settingsWindowTitle == "Darkbloom Monitor Settings")
         #expect(controller.settingsWindowIsReleasedWhenClosed == false)
         #expect(controller.settingsWindowIsResizable)
