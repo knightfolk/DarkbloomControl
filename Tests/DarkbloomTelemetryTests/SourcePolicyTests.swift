@@ -25,6 +25,7 @@ struct SourcePolicyTests {
         #expect(policy.daemonState.path == "/Users/example/.darkbloom/daemon-state.json")
         #expect(policy.loadedModels.path == "/Users/example/.darkbloom/loaded-models.json")
         #expect(policy.legacyLog.path == "/Users/example/.darkbloom/provider.log")
+        #expect(policy.localEndpointDiscovery.path == "/Users/example/.darkbloom/local.json")
         #expect(policy.providerConfig.path == "/Users/example/.config/darkbloom/provider.toml")
         #expect(policy.allowedFiles == [policy.daemonState, policy.loadedModels, policy.legacyLog])
         #expect(!policy.allowedFiles.map(\.lastPathComponent).contains("auth_token"))
@@ -53,7 +54,9 @@ struct SourcePolicyTests {
         #expect(!DarkbloomCommand.stop(executable: executable).arguments.contains("--uninstall"))
         #expect(DarkbloomCommand.start(executable: executable, config: config, models: ["first", "second"]).arguments == [
             "start", "--config", config.path, "--model", "first", "--model", "second",
+            "--local-endpoint",
         ])
+        #expect(!commands.flatMap(\.arguments).contains("--no-auth"))
     }
 
     @Test("polling and byte bounds match the approved design")
@@ -68,6 +71,7 @@ struct SourcePolicyTests {
         #expect(DarkbloomSourcePolicy.catalogTimeout == .seconds(15))
         #expect(DarkbloomSourcePolicy.downloadTimeout == .seconds(21_600))
         #expect(DarkbloomSourcePolicy.mutationOutputByteLimit == 1_048_576)
+        #expect(DarkbloomSourcePolicy.localEndpointDiscoveryByteLimit == 16_384)
     }
 
     @Test("CLI candidate descriptions cover home bundled app and PATH")

@@ -11,6 +11,7 @@ public struct DarkbloomSourcePolicy: Equatable, Sendable {
     public static let catalogTimeout: Duration = .seconds(15)
     public static let downloadTimeout: Duration = .seconds(21_600)
     public static let mutationOutputByteLimit = 1_048_576
+    public static let localEndpointDiscoveryByteLimit = 16_384
     public static let cliCandidateDescriptions = [
         "~/.darkbloom/bin/darkbloom",
         "~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom",
@@ -20,6 +21,7 @@ public struct DarkbloomSourcePolicy: Equatable, Sendable {
     public let daemonState: URL
     public let loadedModels: URL
     public let legacyLog: URL
+    public let localEndpointDiscovery: URL
     public let providerConfig: URL
     public let cliCandidates: [URL]
 
@@ -30,6 +32,7 @@ public struct DarkbloomSourcePolicy: Equatable, Sendable {
         daemonState = root.appendingPathComponent("daemon-state.json")
         loadedModels = root.appendingPathComponent("loaded-models.json")
         legacyLog = root.appendingPathComponent("provider.log")
+        localEndpointDiscovery = root.appendingPathComponent("local.json")
         providerConfig = homeDirectory.appendingPathComponent(".config/darkbloom/provider.toml")
         cliCandidates = [root.appendingPathComponent("bin/darkbloom"), root.appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom")] + environmentPath.split(separator: ":").map {
             URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent("darkbloom")
@@ -84,7 +87,10 @@ public enum DarkbloomCommand {
     public static func download(executable: URL, config: URL, modelID: String) -> ProcessCommand { ProcessCommand(executable: executable, arguments: ["models", "download", "--config", config.path, modelID]) }
     public static func remove(executable: URL, modelID: String) -> ProcessCommand { ProcessCommand(executable: executable, arguments: ["models", "remove", modelID, "--force"]) }
     public static func start(executable: URL, config: URL, models: [String]) -> ProcessCommand {
-        var args = ["start", "--config", config.path]; for model in models { args += ["--model", model] }; return ProcessCommand(executable: executable, arguments: args)
+        var args = ["start", "--config", config.path]
+        for model in models { args += ["--model", model] }
+        args.append("--local-endpoint")
+        return ProcessCommand(executable: executable, arguments: args)
     }
     public static func stop(executable: URL) -> ProcessCommand { ProcessCommand(executable: executable, arguments: ["stop"]) }
     public static func restart(executable: URL, config: URL) -> ProcessCommand { ProcessCommand(executable: executable, arguments: ["restart", "--config", config.path]) }

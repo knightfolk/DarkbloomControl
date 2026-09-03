@@ -18,7 +18,10 @@ struct DarkbloomCommandTests {
             "start", "--config", config.path,
             "--model", "gemma-4-26b-qat-4bit",
             "--model", "gpt-oss",
+            "--local-endpoint",
         ])
+        #expect(!command.arguments.contains("--all"))
+        #expect(!command.arguments.contains("--no-auth"))
     }
 
     @Test("stop cannot uninstall")
