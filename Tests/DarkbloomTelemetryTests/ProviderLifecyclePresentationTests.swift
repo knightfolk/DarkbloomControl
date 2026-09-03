@@ -221,8 +221,8 @@ struct ProviderLifecyclePresentationTests {
         expectUnknownLifecycle(input)
     }
 
-    @Test("popup model pills require fresh daemon evidence and ignore stale loaded-model evidence")
-    func modelPillsFailClosedOnResidencyFreshness() {
+    @Test("popup model pills retain configured models when residency evidence is stale")
+    func modelPillsRetainConfiguredModelsWithoutFreshResidency() {
         let fresh = PopupModelSourceInput(
             daemonState: .available(value: daemonState(), capturedAt: now),
             loadedModels: .available(
@@ -246,24 +246,16 @@ struct ProviderLifecyclePresentationTests {
             status: fresh.status
         )
 
-        #expect(PopupModelPresentation.make(input: fresh, controlSources: .allFresh, currentTime: now) == .models([
+        #expect(PopupModelPresentation.make(input: fresh) == .models([
             DashboardModel(name: "gpt-oss", state: .availableUnloaded),
         ]))
-        #expect(PopupModelPresentation.make(input: staleDaemon, controlSources: .allFresh, currentTime: now) == .unavailable)
+        #expect(PopupModelPresentation.make(input: staleDaemon) == .models([
+            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        ]))
         let daemonOnly = PopupModelPresentation.models([
             DashboardModel(name: "gpt-oss", state: .availableUnloaded),
         ])
-        #expect(PopupModelPresentation.make(input: futureLoaded, controlSources: .allFresh, currentTime: now) == daemonOnly)
-        #expect(PopupModelPresentation.make(
-            input: fresh,
-            controlSources: ProviderControlSourceStates(
-                catalog: .fresh(evidenceAt: now),
-                localModels: .fresh(evidenceAt: now),
-                daemon: .fresh(evidenceAt: now),
-                loadedModels: .stale("Loaded model state is stale")
-            ),
-            currentTime: now
-        ) == daemonOnly)
+        #expect(PopupModelPresentation.make(input: futureLoaded) == daemonOnly)
     }
 
     @Test("fresh daemon model state remains visible when the loaded-model file is stale")
@@ -306,57 +298,101 @@ struct ProviderLifecyclePresentationTests {
                 capturedAt: now
             )
         )
-        let controlSources = popupControlSources(
-            daemon: .fresh(evidenceAt: now),
-            loadedModels: .stale("Loaded model state is stale")
-        )
-
-        #expect(PopupModelPresentation.make(
-            input: input,
-            controlSources: controlSources,
-            currentTime: now
-        ) == .models([
+        #expect(PopupModelPresentation.make(input: input) == .models([
             DashboardModel(name: "gemma-4-26b-qat-4bit", state: .active),
             DashboardModel(name: "gpt-oss", state: .availableUnloaded),
         ]))
     }
 
-    @Test("popup model pills age daemon evidence and discard expired loaded-model evidence")
-    func modelPillsAgeControlEvidenceFromTimelineTime() {
+    @Test("popup model pills derive from the continuously refreshed telemetry snapshot")
+    func modelPillsUseTelemetrySnapshot() {
         let input = PopupModelSourceInput(
             daemonState: .available(value: daemonState(), capturedAt: now),
             loadedModels: .available(
-                value: LoadedModelsState(schema: 1, models: [], updatedAt: now.timeIntervalSince1970),
+                value: LoadedModelsState(
+                    schema: 1,
+                    models: ["gemma"],
+                    updatedAt: now.timeIntervalSince1970
+                ),
                 capturedAt: now
             ),
             status: .available(value: status(daemon: "running", enabled: "gpt-oss"), capturedAt: now)
         )
         let expected = PopupModelPresentation.models([
+            DashboardModel(name: "gemma", state: .loadedIdle),
             DashboardModel(name: "gpt-oss", state: .availableUnloaded),
         ])
-        let exactBoundary = now.addingTimeInterval(-ProviderControlSourceState.maximumEvidenceAge)
-        let stale = now.addingTimeInterval(-ProviderControlSourceState.maximumEvidenceAge - 0.001)
-        let future = now.addingTimeInterval(0.001)
-        let nonFinite = Date(timeIntervalSince1970: .infinity)
+        #expect(PopupModelPresentation.make(input: input) == expected)
+    }
 
-        #expect(PopupModelPresentation.make(
-            input: input,
-            controlSources: popupControlSources(daemon: .fresh(evidenceAt: exactBoundary), loadedModels: .fresh(evidenceAt: exactBoundary)),
-            currentTime: now
-        ) == expected)
+    @Test("stale active daemon state is demoted to loaded idle while status says running")
+    func staleDaemonStateNeverShowsActive() {
+        let input = PopupModelSourceInput(
+            daemonState: .stale(
+                value: activeDaemonState(),
+                capturedAt: now,
+                reason: "Provider activity is stale"
+            ),
+            loadedModels: .stale(
+                value: LoadedModelsState(
+                    schema: 1,
+                    models: ["gemma"],
+                    updatedAt: now.addingTimeInterval(-60).timeIntervalSince1970
+                ),
+                capturedAt: now,
+                reason: "Loaded models are stale"
+            ),
+            status: .available(
+                value: status(daemon: "running", enabled: "gemma,gpt-oss"),
+                capturedAt: now
+            )
+        )
 
-        for evidenceAt in [stale, future, nonFinite] {
-            #expect(PopupModelPresentation.make(
-                input: input,
-                controlSources: popupControlSources(daemon: .fresh(evidenceAt: evidenceAt), loadedModels: .fresh(evidenceAt: now)),
-                currentTime: now
-            ) == .unavailable)
-            #expect(PopupModelPresentation.make(
-                input: input,
-                controlSources: popupControlSources(daemon: .fresh(evidenceAt: now), loadedModels: .fresh(evidenceAt: evidenceAt)),
-                currentTime: now
-            ) == expected)
-        }
+        #expect(PopupModelPresentation.make(input: input) == .models([
+            DashboardModel(name: "gemma", state: .loadedIdle),
+            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        ]))
+    }
+
+    @Test("stopped provider shows configured models as available instead of stale residency")
+    func stoppedProviderShowsConfiguredModelsAvailable() {
+        let input = PopupModelSourceInput(
+            daemonState: .available(value: activeDaemonState(), capturedAt: now),
+            loadedModels: .available(
+                value: LoadedModelsState(
+                    schema: 1,
+                    models: ["gemma"],
+                    updatedAt: now.timeIntervalSince1970
+                ),
+                capturedAt: now
+            ),
+            status: .available(
+                value: status(daemon: "not running", enabled: "gemma,gpt-oss"),
+                capturedAt: now
+            )
+        )
+
+        #expect(PopupModelPresentation.make(input: input) == .models([
+            DashboardModel(name: "gemma", state: .availableUnloaded),
+            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        ]))
+    }
+
+    @Test("configured models remain visible when daemon residency is unavailable")
+    func unavailableDaemonShowsConfiguredModels() {
+        let input = PopupModelSourceInput(
+            daemonState: .unavailable(reason: "Waiting for daemon state"),
+            loadedModels: .unavailable(reason: "Waiting for loaded models"),
+            status: .available(
+                value: status(daemon: "running", enabled: "gemma,gpt-oss"),
+                capturedAt: now
+            )
+        )
+
+        #expect(PopupModelPresentation.make(input: input) == .models([
+            DashboardModel(name: "gemma", state: .availableUnloaded),
+            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        ]))
     }
 
     @Test("awaited Stop telemetry refresh makes Start available without relaunch")
@@ -606,6 +642,24 @@ private func daemonState() -> DaemonState {
         capacity: MemoryCapacity(totalMemoryGB: 64, gpuMemoryActiveGB: 0, gpuMemoryCacheGB: 0),
         slots: [],
         inferenceActive: false,
+        startedAt: now.timeIntervalSince1970 - 60,
+        writtenAt: now.timeIntervalSince1970,
+        pid: 123,
+        processIdentity: ProcessIdentity(pid: 123, startTimeMicros: 1)
+    )
+}
+
+private func activeDaemonState() -> DaemonState {
+    DaemonState(
+        schema: 1,
+        version: "test",
+        currentModel: "gemma",
+        warmModels: ["gemma"],
+        stats: ProviderStats(tokensGenerated: 10, requestsServed: 1, usageGaps: 0),
+        trust: TrustState(level: "local", status: "online", reason: "test", receivedAt: 0),
+        capacity: MemoryCapacity(totalMemoryGB: 64, gpuMemoryActiveGB: 24, gpuMemoryCacheGB: 0),
+        slots: [],
+        inferenceActive: true,
         startedAt: now.timeIntervalSince1970 - 60,
         writtenAt: now.timeIntervalSince1970,
         pid: 123,

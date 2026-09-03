@@ -42,6 +42,9 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
         let observedUptimeDatabase = try? ObservedUptimeDatabase(
             url: applicationSupport.appendingPathComponent("observed-uptime.sqlite3")
         )
+        let tokenRateDatabase = try? ModelTokenRateDatabase(
+            url: applicationSupport.appendingPathComponent("model-token-rates.sqlite3")
+        )
         let earningsClient = AuthenticatedEarningsClient(
             homeDirectory: home,
             database: earningsDatabase
@@ -50,7 +53,8 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
             service: service,
             initial: .unavailable(now: Date()),
             earningsClient: earningsClient,
-            uptimeRecorder: observedUptimeDatabase
+            uptimeRecorder: observedUptimeDatabase,
+            tokenRateRecorder: tokenRateDatabase
         )
         let configExecutable = policy.cliCandidates.first(where: {
             FileManager.default.isExecutableFile(atPath: $0.path)

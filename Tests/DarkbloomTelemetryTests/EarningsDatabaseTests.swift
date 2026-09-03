@@ -112,6 +112,177 @@ struct EarningsDatabaseTests {
             ObservedEarningsWindow(microUSD: 1_100_000, observedSeconds: 43_200))
     }
 
+    @Test("today earnings reset at local calendar midnight")
+    func calculatesTodayEarnings() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: -7 * 3_600))
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 9,
+            day: 2,
+            hour: 17
+        )))
+        let todayStart = calendar.startOfDay(for: now)
+        let firstToday = todayStart.addingTimeInterval(600)
+        let database = try EarningsDatabase(url: temporaryDatabaseURL())
+
+        try await database.ingest(AccountEarningsResponse(
+            accountID: "account-never-persisted",
+            earnings: [],
+            count: 1,
+            historyLimit: 1_000,
+            recentCount: 0,
+            totalMicroUSD: 10_000_000
+        ), capturedAt: todayStart.addingTimeInterval(-600))
+        try await database.ingest(AccountEarningsResponse(
+            accountID: "account-never-persisted",
+            earnings: [],
+            count: 2,
+            historyLimit: 1_000,
+            recentCount: 0,
+            totalMicroUSD: 10_100_000
+        ), capturedAt: firstToday)
+        try await database.ingest(AccountEarningsResponse(
+            accountID: "account-never-persisted",
+            earnings: [],
+            count: 3,
+            historyLimit: 1_000,
+            recentCount: 0,
+            totalMicroUSD: 11_300_000
+        ), capturedAt: now)
+
+        #expect(try await database.todayEarningsSummary(now: now, calendar: calendar) ==
+            ObservedEarningsWindow(
+                microUSD: 1_200_000,
+                observedSeconds: now.timeIntervalSince(firstToday)
+            ))
+    }
+
+    @Test("complete calendar-day history includes work and rewards since midnight")
+    func calculatesCompleteCalendarDayEarnings() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: -7 * 3_600))
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 9,
+            day: 2,
+            hour: 18
+        )))
+        let todayStart = calendar.startOfDay(for: now)
+        let database = try EarningsDatabase(url: temporaryDatabaseURL())
+        try await database.ingest(AccountEarningsResponse(
+            accountID: "account-never-persisted",
+            earnings: [
+                earning(
+                    id: 1,
+                    model: "gemma",
+                    microUSD: 1_200_000,
+                    at: todayStart.addingTimeInterval(3_600)
+                ),
+                earning(
+                    id: 2,
+                    model: "base_reward",
+                    microUSD: 600_000,
+                    promptTokens: 0,
+                    completionTokens: 0,
+                    at: todayStart.addingTimeInterval(7_200)
+                ),
+            ],
+            count: 2,
+            historyLimit: 1_000,
+            recentCount: 2,
+            totalMicroUSD: 50_000_000
+        ), capturedAt: now)
+
+        #expect(try await database.todayEarningsSummary(now: now, calendar: calendar) ==
+            ObservedEarningsWindow(
+                microUSD: 1_800_000,
+                observedSeconds: 18 * 3_600
+            ))
+    }
+
+    @Test("complete local calendar week includes work and rewards")
+    func calculatesCompleteCalendarWeekEarnings() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: -7 * 3_600))
+        calendar.firstWeekday = 2
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 9,
+            day: 2,
+            hour: 18
+        )))
+        let weekStart = try #require(calendar.dateInterval(of: .weekOfYear, for: now)?.start)
+        let database = try EarningsDatabase(url: temporaryDatabaseURL())
+        try await database.ingest(AccountEarningsResponse(
+            accountID: "account-never-persisted",
+            earnings: [
+                earning(
+                    id: 1,
+                    model: "gemma",
+                    microUSD: 1_200_000,
+                    at: weekStart.addingTimeInterval(3_600)
+                ),
+                earning(
+                    id: 2,
+                    model: "base_reward",
+                    microUSD: 600_000,
+                    promptTokens: 0,
+                    completionTokens: 0,
+                    at: weekStart.addingTimeInterval(25 * 3_600)
+                ),
+            ],
+            count: 2,
+            historyLimit: 1_000,
+            recentCount: 2,
+            totalMicroUSD: 50_000_000
+        ), capturedAt: now)
+
+        #expect(try await database.weekEarningsSummary(now: now, calendar: calendar) ==
+            CalendarWeekEarningsSummary(microUSD: 1_800_000, isComplete: true))
+    }
+
+    @Test("partial local calendar week is explicitly marked as observed")
+    func marksPartialCalendarWeekEarnings() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: -7 * 3_600))
+        calendar.firstWeekday = 2
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 9,
+            day: 2,
+            hour: 18
+        )))
+        let weekStart = try #require(calendar.dateInterval(of: .weekOfYear, for: now)?.start)
+        let database = try EarningsDatabase(url: temporaryDatabaseURL())
+        try await database.ingest(AccountEarningsResponse(
+            accountID: "account-never-persisted",
+            earnings: [
+                earning(
+                    id: 99,
+                    model: "gemma",
+                    microUSD: 1_200_000,
+                    at: weekStart.addingTimeInterval(25 * 3_600)
+                ),
+                earning(
+                    id: 100,
+                    model: "base_reward",
+                    microUSD: 600_000,
+                    promptTokens: 0,
+                    completionTokens: 0,
+                    at: weekStart.addingTimeInterval(49 * 3_600)
+                ),
+            ],
+            count: 100,
+            historyLimit: 1_000,
+            recentCount: 2,
+            totalMicroUSD: 50_000_000
+        ), capturedAt: now)
+
+        #expect(try await database.weekEarningsSummary(now: now, calendar: calendar) ==
+            CalendarWeekEarningsSummary(microUSD: 1_800_000, isComplete: false))
+    }
+
     @Test("opening an existing database migrates base rewards out of work history")
     func migratesExistingBaseRewardBuckets() async throws {
         let databaseURL = temporaryDatabaseURL()

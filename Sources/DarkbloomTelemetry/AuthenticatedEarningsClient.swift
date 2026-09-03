@@ -46,10 +46,23 @@ public enum AccountEarningsClientError: Error, LocalizedError, Equatable, Sendab
 public protocol AccountEarningsFetching: Sendable {
     func fetch(now: Date) async throws -> EarningsPresentationValue
     func jobCompletionSummary(now: Date, calendar: Calendar) async throws -> JobCompletionSummary?
+    func todayEarningsSummary(now: Date, calendar: Calendar) async throws -> ObservedEarningsWindow?
+    func weekEarningsSummary(now: Date, calendar: Calendar) async throws -> CalendarWeekEarningsSummary?
 }
 
 public extension AccountEarningsFetching {
     func jobCompletionSummary(now: Date, calendar: Calendar) async throws -> JobCompletionSummary? {
+        nil
+    }
+
+    func todayEarningsSummary(now: Date, calendar: Calendar) async throws -> ObservedEarningsWindow? {
+        nil
+    }
+
+    func weekEarningsSummary(
+        now: Date,
+        calendar: Calendar
+    ) async throws -> CalendarWeekEarningsSummary? {
         nil
     }
 }
@@ -110,6 +123,20 @@ public struct AuthenticatedEarningsClient: AccountEarningsFetching, Sendable {
         calendar: Calendar
     ) async throws -> JobCompletionSummary? {
         try await database?.jobCompletionSummary(now: now, calendar: calendar)
+    }
+
+    public func todayEarningsSummary(
+        now: Date,
+        calendar: Calendar
+    ) async throws -> ObservedEarningsWindow? {
+        try await database?.todayEarningsSummary(now: now, calendar: calendar)
+    }
+
+    public func weekEarningsSummary(
+        now: Date,
+        calendar: Calendar
+    ) async throws -> CalendarWeekEarningsSummary? {
+        try await database?.weekEarningsSummary(now: now, calendar: calendar)
     }
 
     private func validate(_ response: URLResponse) throws {

@@ -9,6 +9,7 @@ struct MonitorStoreDashboardTests {
     @Test("observed token progress updates the active-session average")
     func updatesAverageTokenRate() async {
         let source = AdvancingDashboardSource()
+        let recorder = RecordingModelTokenRates()
         let service = TelemetryService(
             source: source,
             now: { Date(timeIntervalSince1970: 2_000_000) }
@@ -16,21 +17,16 @@ struct MonitorStoreDashboardTests {
         let store = MonitorStore(
             service: service,
             initial: .unavailable(now: Date(timeIntervalSince1970: 2_000_000)),
-            earningsClient: EmptyDashboardEarningsClient()
+            earningsClient: EmptyDashboardEarningsClient(),
+            tokenRateRecorder: recorder
         )
 
-        store.start()
-        _ = await service.refreshNow()
-        _ = await service.refreshNow()
-        let observed = await eventually {
-            store.averageTokenRate == .available(
-                tokensPerSecond: 10,
-                label: "active session average"
-            )
-        }
-        await store.stop()
+        await store.refreshTelemetryImmediately()
 
-        #expect(observed)
+        #expect(store.modelTokenRateAverages == [
+            ModelTokenRateAverage(model: "gemma", tokensPerSecond: 10, sampleCount: 1),
+        ])
+        #expect(await recorder.recordedModels == ["gemma"])
     }
 
     @Test("immediate telemetry refresh awaits a new post-command read")
@@ -53,12 +49,77 @@ struct MonitorStoreDashboardTests {
         #expect(store.snapshot.status.value?.enabledModelFilter == "generation-2")
     }
 
+    @Test("an empty calendar day never falls back to an older session average")
+    func doesNotCarrySessionAverageIntoEmptyDay() async {
+        let service = TelemetryService(
+            source: AdvancingDashboardSource(),
+            now: { Date(timeIntervalSince1970: 2_000_000) }
+        )
+        let store = MonitorStore(
+            service: service,
+            initial: .unavailable(now: Date(timeIntervalSince1970: 2_000_000)),
+            earningsClient: EmptyDashboardEarningsClient(),
+            tokenRateRecorder: DiscardingModelTokenRates()
+        )
+
+        await store.refreshTelemetryImmediately()
+
+        #expect(store.averageTokenRate == .unavailable(
+            reason: "No measured token rates today"
+        ))
+    }
+
     private func eventually(_ condition: @MainActor () -> Bool) async -> Bool {
         for _ in 0..<100 {
             if condition() { return true }
             try? await Task.sleep(for: .milliseconds(10))
         }
         return false
+    }
+}
+
+private actor DiscardingModelTokenRates: ModelTokenRateRecording {
+    func record(
+        model: String,
+        tokensPerSecond: Double,
+        capturedAt: Date,
+        processIdentity: ProcessIdentity,
+        writtenAt: TimeInterval
+    ) {}
+
+    func averages(
+        from start: Date,
+        through end: Date
+    ) -> [ModelTokenRateAverage] {
+        []
+    }
+}
+
+private actor RecordingModelTokenRates: ModelTokenRateRecording {
+    private(set) var recordedModels: [String] = []
+    private var rates: [Double] = []
+
+    func record(
+        model: String,
+        tokensPerSecond: Double,
+        capturedAt: Date,
+        processIdentity: ProcessIdentity,
+        writtenAt: TimeInterval
+    ) {
+        recordedModels.append(model)
+        rates.append(tokensPerSecond)
+    }
+
+    func averages(
+        from start: Date,
+        through end: Date
+    ) -> [ModelTokenRateAverage] {
+        guard !rates.isEmpty else { return [] }
+        return [ModelTokenRateAverage(
+            model: "gemma",
+            tokensPerSecond: rates.reduce(0, +) / Double(rates.count),
+            sampleCount: rates.count
+        )]
     }
 }
 

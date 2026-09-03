@@ -9,13 +9,18 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var snapshot: TelemetrySnapshot
     @Published private(set) var thermalState: SystemThermalState
     @Published private(set) var earnings: EarningsPresentationValue
+    @Published private(set) var todayEarnings: ObservedEarningsWindow?
+    @Published private(set) var earningsPerHourUSD: Double?
+    @Published private(set) var weekEarnings: CalendarWeekEarningsSummary?
     @Published private(set) var observedUptime: ObservedUptimeValue
     @Published private(set) var jobSummary: SourceAvailability<JobCompletionSummary>
     @Published private(set) var averageTokenRate: TokenRate
+    @Published private(set) var modelTokenRateAverages: [ModelTokenRateAverage]
 
     private let service: TelemetryService
     private let earningsClient: any AccountEarningsFetching
     private let uptimeRecorder: (any ObservedUptimeRecording)?
+    private let tokenRateRecorder: (any ModelTokenRateRecording)?
     private var tokenRateAccumulator = ActiveTokenRateAccumulator()
     private var observationTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
@@ -31,19 +36,25 @@ final class MonitorStore: ObservableObject {
         earningsClient: any AccountEarningsFetching = AuthenticatedEarningsClient(
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser
         ),
-        uptimeRecorder: (any ObservedUptimeRecording)? = nil
+        uptimeRecorder: (any ObservedUptimeRecording)? = nil,
+        tokenRateRecorder: (any ModelTokenRateRecording)? = nil
     ) {
         self.service = service
         self.earningsClient = earningsClient
         self.uptimeRecorder = uptimeRecorder
+        self.tokenRateRecorder = tokenRateRecorder
         snapshot = initial
         thermalState = SystemThermalState(ProcessInfo.processInfo.thermalState)
         earnings = .unavailable(reason: "Waiting for authenticated account earnings")
+        todayEarnings = nil
+        earningsPerHourUSD = nil
+        weekEarnings = nil
         observedUptime = uptimeRecorder == nil
             ? .unavailable(reason: "Local observed-uptime storage unavailable")
             : .warming(observedSeconds: 0)
         jobSummary = .unavailable(reason: "Waiting for completed-job history")
         averageTokenRate = .unavailable(reason: "Waiting for active inference samples")
+        modelTokenRateAverages = []
     }
 
     func start() {
@@ -69,7 +80,7 @@ final class MonitorStore: ObservableObject {
 
             for await snapshot in snapshots {
                 guard !Task.isCancelled else { return }
-                self.accept(snapshot)
+                await self.accept(snapshot)
                 await self.recordObservedUptime(from: snapshot)
             }
         }
@@ -86,7 +97,7 @@ final class MonitorStore: ObservableObject {
             let snapshot = await refreshed
             await earningsRefresh
             guard !Task.isCancelled, shutdownTask == nil else { return }
-            self.accept(snapshot)
+            await self.accept(snapshot)
         }
     }
 
@@ -99,13 +110,21 @@ final class MonitorStore: ObservableObject {
         guard !Task.isCancelled, shutdownTask == nil else { return }
         let refreshed = await service.refreshNow()
         guard !Task.isCancelled, shutdownTask == nil else { return }
-        accept(refreshed)
+        await accept(refreshed)
     }
 
     func refreshEarnings() async {
         if let earningsRefreshTask {
             let refresh = await earningsRefreshTask.value
             earnings = refresh.earnings
+            todayEarnings = refresh.todayEarnings
+            weekEarnings = refresh.weekEarnings
+            earningsPerHourUSD = refresh.todayEarnings.flatMap {
+                EarningsHourlyRate.derive(
+                    microUSD: $0.microUSD,
+                    observedSeconds: $0.observedSeconds
+                )
+            }
             jobSummary = refresh.jobSummary
             return
         }
@@ -156,14 +175,40 @@ final class MonitorStore: ObservableObject {
                     reason: error.localizedDescription
                 )
             }
+            let refreshedTodayEarnings: ObservedEarningsWindow?
+            let refreshedWeekEarnings: CalendarWeekEarningsSummary?
+            switch refreshedEarnings {
+            case .available, .observed:
+                refreshedTodayEarnings = try? await client.todayEarningsSummary(
+                    now: refreshedAt,
+                    calendar: calendar
+                )
+                refreshedWeekEarnings = try? await client.weekEarningsSummary(
+                    now: refreshedAt,
+                    calendar: calendar
+                )
+            case .stale, .unavailable:
+                refreshedTodayEarnings = nil
+                refreshedWeekEarnings = nil
+            }
             return AccountRefreshState(
                 earnings: refreshedEarnings,
-                jobSummary: refreshedJobSummary
+                jobSummary: refreshedJobSummary,
+                todayEarnings: refreshedTodayEarnings,
+                weekEarnings: refreshedWeekEarnings
             )
         }
         earningsRefreshTask = task
         let refresh = await task.value
         earnings = refresh.earnings
+        todayEarnings = refresh.todayEarnings
+        weekEarnings = refresh.weekEarnings
+        earningsPerHourUSD = refresh.todayEarnings.flatMap {
+            EarningsHourlyRate.derive(
+                microUSD: $0.microUSD,
+                observedSeconds: $0.observedSeconds
+            )
+        }
         jobSummary = refresh.jobSummary
         earningsRefreshTask = nil
     }
@@ -230,7 +275,7 @@ final class MonitorStore: ObservableObject {
         }
     }
 
-    private func accept(_ snapshot: TelemetrySnapshot) {
+    private func accept(_ snapshot: TelemetrySnapshot) async {
         if let state = snapshot.state.value {
             tokenRateAccumulator.record(
                 snapshot.tokenRate,
@@ -238,6 +283,38 @@ final class MonitorStore: ObservableObject {
                 writtenAt: state.writtenAt
             )
             averageTokenRate = tokenRateAccumulator.value
+
+            if let tokenRateRecorder {
+                if case .available(let tokensPerSecond, _) = snapshot.tokenRate {
+                    try? await tokenRateRecorder.record(
+                        model: state.currentModel,
+                        tokensPerSecond: tokensPerSecond,
+                        capturedAt: snapshot.capturedAt,
+                        processIdentity: state.processIdentity,
+                        writtenAt: state.writtenAt
+                    )
+                }
+                if let averages = try? await tokenRateRecorder.averages(
+                    from: Calendar.current.startOfDay(for: snapshot.capturedAt),
+                    through: snapshot.capturedAt
+                ) {
+                    modelTokenRateAverages = averages
+                    let sampleCount = averages.reduce(0) { $0 + $1.sampleCount }
+                    if sampleCount > 0 {
+                        let weightedTotal = averages.reduce(0.0) {
+                            $0 + ($1.tokensPerSecond * Double($1.sampleCount))
+                        }
+                        averageTokenRate = .available(
+                            tokensPerSecond: weightedTotal / Double(sampleCount),
+                            label: "today's average"
+                        )
+                    } else {
+                        averageTokenRate = .unavailable(
+                            reason: "No measured token rates today"
+                        )
+                    }
+                }
+            }
         }
         self.snapshot = snapshot
     }
@@ -284,4 +361,6 @@ final class MonitorStore: ObservableObject {
 private struct AccountRefreshState: Sendable {
     let earnings: EarningsPresentationValue
     let jobSummary: SourceAvailability<JobCompletionSummary>
+    let todayEarnings: ObservedEarningsWindow?
+    let weekEarnings: CalendarWeekEarningsSummary?
 }

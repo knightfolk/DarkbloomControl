@@ -33,6 +33,16 @@ public struct ObservedEarningsWindow: Equatable, Sendable {
     }
 }
 
+public struct CalendarWeekEarningsSummary: Equatable, Sendable {
+    public let microUSD: Int64
+    public let isComplete: Bool
+
+    public init(microUSD: Int64, isComplete: Bool) {
+        self.microUSD = microUSD
+        self.isComplete = isComplete
+    }
+}
+
 public struct ModelEarnings: Equatable, Sendable {
     public let model: String
     public let microUSD: Int64
@@ -295,6 +305,113 @@ public actor EarningsDatabase {
         return ObservedEarningsWindow(
             microUSD: latestTotal - earliestTotal,
             observedSeconds: latestAt - earliestAt
+        )
+    }
+
+    public func todayEarningsSummary(
+        now: Date,
+        calendar: Calendar
+    ) throws -> ObservedEarningsWindow? {
+        let startDate = calendar.startOfDay(for: now)
+        let start = startDate.timeIntervalSince1970
+        let end = now.timeIntervalSince1970
+        guard end >= start else { return nil }
+
+        if end > start, try historyCovers(since: startDate) {
+            let currentHour = floor(end / 3_600) * 3_600
+            let statement = try prepare("""
+                SELECT COALESCE(SUM(amount_micro_usd), 0)
+                FROM (
+                    SELECT amount_micro_usd
+                    FROM earnings_hourly
+                    WHERE hour_start >= ? AND hour_start <= ?
+                    UNION ALL
+                    SELECT amount_micro_usd
+                    FROM rewards_hourly
+                    WHERE hour_start >= ? AND hour_start <= ?
+                )
+                """)
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_double(statement, 1, start)
+            sqlite3_bind_double(statement, 2, currentHour)
+            sqlite3_bind_double(statement, 3, start)
+            sqlite3_bind_double(statement, 4, currentHour)
+            guard sqlite3_step(statement) == SQLITE_ROW else { throw lastError() }
+            return ObservedEarningsWindow(
+                microUSD: sqlite3_column_int64(statement, 0),
+                observedSeconds: end - start
+            )
+        }
+
+        let latestStatement = try prepare("""
+            SELECT captured_at, lifetime_micro_usd
+            FROM account_hourly
+            WHERE captured_at >= ? AND captured_at <= ?
+            ORDER BY captured_at DESC
+            LIMIT 1
+            """)
+        defer { sqlite3_finalize(latestStatement) }
+        sqlite3_bind_double(latestStatement, 1, start)
+        sqlite3_bind_double(latestStatement, 2, end)
+        guard sqlite3_step(latestStatement) == SQLITE_ROW else { return nil }
+        let latestAt = sqlite3_column_double(latestStatement, 0)
+        let latestTotal = sqlite3_column_int64(latestStatement, 1)
+
+        let earliestStatement = try prepare("""
+            SELECT captured_at, lifetime_micro_usd
+            FROM account_hourly
+            WHERE captured_at >= ? AND captured_at < ?
+            ORDER BY captured_at ASC
+            LIMIT 1
+            """)
+        defer { sqlite3_finalize(earliestStatement) }
+        sqlite3_bind_double(earliestStatement, 1, start)
+        sqlite3_bind_double(earliestStatement, 2, latestAt)
+        guard sqlite3_step(earliestStatement) == SQLITE_ROW else { return nil }
+        let earliestAt = sqlite3_column_double(earliestStatement, 0)
+        let earliestTotal = sqlite3_column_int64(earliestStatement, 1)
+        guard latestTotal >= earliestTotal, latestAt > earliestAt else { return nil }
+
+        return ObservedEarningsWindow(
+            microUSD: latestTotal - earliestTotal,
+            observedSeconds: latestAt - earliestAt
+        )
+    }
+
+    public func weekEarningsSummary(
+        now: Date,
+        calendar: Calendar
+    ) throws -> CalendarWeekEarningsSummary? {
+        guard let weekStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start,
+              now >= weekStart
+        else { return nil }
+        let start = weekStart.timeIntervalSince1970
+        let currentHour = floor(now.timeIntervalSince1970 / 3_600) * 3_600
+        let statement = try prepare("""
+            SELECT COALESCE(SUM(amount_micro_usd), 0), COUNT(*)
+            FROM (
+                SELECT amount_micro_usd
+                FROM earnings_hourly
+                WHERE hour_start >= ? AND hour_start <= ?
+                UNION ALL
+                SELECT amount_micro_usd
+                FROM rewards_hourly
+                WHERE hour_start >= ? AND hour_start <= ?
+            )
+            """)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, start)
+        sqlite3_bind_double(statement, 2, currentHour)
+        sqlite3_bind_double(statement, 3, start)
+        sqlite3_bind_double(statement, 4, currentHour)
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw lastError() }
+
+        let isComplete = try historyCovers(since: weekStart)
+        let bucketCount = sqlite3_column_int64(statement, 1)
+        guard isComplete || bucketCount > 0 else { return nil }
+        return CalendarWeekEarningsSummary(
+            microUSD: sqlite3_column_int64(statement, 0),
+            isComplete: isComplete
         )
     }
 

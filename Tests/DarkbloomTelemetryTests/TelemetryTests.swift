@@ -55,6 +55,27 @@ struct TelemetryTests {
         #expect(TelemetryDeriver.tokenRate(previous: previous, current: current) == .unavailable(reason: "Provider process changed between samples"))
     }
 
+    @Test("a model switch prevents cross-model rate derivation")
+    func doesNotDeriveAcrossModelSwitch() {
+        let previous = sample(
+            tokens: 100,
+            writtenAt: 1_000,
+            pid: 42,
+            startMicros: 900_000_000,
+            model: "gemma"
+        )
+        let current = sample(
+            tokens: 160,
+            writtenAt: 1_004,
+            pid: 42,
+            startMicros: 900_000_000,
+            model: "qwen"
+        )
+
+        #expect(TelemetryDeriver.tokenRate(previous: previous, current: current) ==
+            .unavailable(reason: "Current model changed between samples"))
+    }
+
     @Test("status text preserves observed configuration and slot posture")
     func parsesStatus() throws {
         let text = String(decoding: try fixture("status", extension: "txt"), as: UTF8.self)
@@ -106,12 +127,18 @@ struct TelemetryTests {
         return try Data(contentsOf: url)
     }
 
-    private func sample(tokens: Int64, writtenAt: TimeInterval, pid: Int32, startMicros: Int64) -> DaemonState {
+    private func sample(
+        tokens: Int64,
+        writtenAt: TimeInterval,
+        pid: Int32,
+        startMicros: Int64,
+        model: String = "model"
+    ) -> DaemonState {
         DaemonState(
             schema: 1,
             version: "0.8.15",
-            currentModel: "model",
-            warmModels: ["model"],
+            currentModel: model,
+            warmModels: [model],
             stats: .init(tokensGenerated: tokens, requestsServed: 1, usageGaps: 0),
             trust: .init(level: "hardware", status: "online", reason: "same_binary", receivedAt: writtenAt),
             capacity: .init(totalMemoryGB: 64, gpuMemoryActiveGB: 10, gpuMemoryCacheGB: 1),

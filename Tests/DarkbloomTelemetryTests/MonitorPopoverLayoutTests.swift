@@ -10,6 +10,31 @@ private let layoutNow = Date()
 @Suite("Monitor popover layout")
 @MainActor
 struct MonitorPopoverLayoutTests {
+    @Test("popup earnings metrics share the same calendar-day observation")
+    func popupEarningsMetrics() {
+        let metrics = PopupEarningsMetrics.make(from: ObservedEarningsWindow(
+            microUSD: 600_000,
+            observedSeconds: 10_800
+        ))
+
+        #expect(metrics?.totalUSD == 0.6)
+        #expect(abs((metrics?.perHourUSD ?? 0) - 0.2) < 0.000_001)
+        #expect(PopupEarningsMetrics.make(from: nil) == nil)
+    }
+
+    @Test("weekly earnings label distinguishes complete and partial calendar coverage")
+    func popupWeeklyEarningsMetric() {
+        #expect(PopupWeekEarningsMetric.make(from: CalendarWeekEarningsSummary(
+            microUSD: 4_250_000,
+            isComplete: true
+        )) == PopupWeekEarningsMetric(title: "This week", totalUSD: 4.25))
+        #expect(PopupWeekEarningsMetric.make(from: CalendarWeekEarningsSummary(
+            microUSD: 3_125_000,
+            isComplete: false
+        )) == PopupWeekEarningsMetric(title: "Observed this week", totalUSD: 3.125))
+        #expect(PopupWeekEarningsMetric.make(from: nil) == nil)
+    }
+
     @Test("each downloaded-model label stays visually grouped with its own switch")
     func modelOptionToggleGrouping() {
         #expect(ModelOptionToggle.order == .switchThenLabel)

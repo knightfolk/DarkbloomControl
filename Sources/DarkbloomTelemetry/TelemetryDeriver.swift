@@ -8,6 +8,9 @@ public enum TelemetryDeriver {
         guard previous.processIdentity == current.processIdentity else {
             return .unavailable(reason: "Provider process changed between samples")
         }
+        guard previous.currentModel == current.currentModel else {
+            return .unavailable(reason: "Current model changed between samples")
+        }
 
         let elapsed = current.writtenAt - previous.writtenAt
         guard elapsed.isFinite else {

@@ -1,5 +1,39 @@
 import Foundation
 
+public enum EarningsHourlyRate {
+    public static func derive(
+        microUSD: Int64,
+        observedSeconds: TimeInterval
+    ) -> Double? {
+        guard microUSD >= 0,
+              observedSeconds.isFinite,
+              observedSeconds > 0
+        else { return nil }
+        let value = (Double(microUSD) / 1_000_000) / (observedSeconds / 3_600)
+        return value.isFinite ? value : nil
+    }
+}
+
+public struct ModelTokenRateAverage: Equatable, Sendable {
+    public let model: String
+    public let tokensPerSecond: Double
+    public let sampleCount: Int
+
+    public init(model: String, tokensPerSecond: Double, sampleCount: Int) {
+        self.model = model
+        self.tokensPerSecond = tokensPerSecond
+        self.sampleCount = sampleCount
+    }
+}
+
+public enum ModelTokenRatePresentation {
+    public static func breakdown(
+        _ averages: [ModelTokenRateAverage]
+    ) -> [ModelTokenRateAverage] {
+        averages.count > 1 ? averages : []
+    }
+}
+
 public enum DashboardModelState: Equatable, Sendable {
     case active
     case loadedIdle

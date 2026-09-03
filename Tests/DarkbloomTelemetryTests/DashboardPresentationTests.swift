@@ -4,6 +4,33 @@ import Testing
 
 @Suite("Dashboard presentation")
 struct DashboardPresentationTests {
+    @Test("earnings per hour divides a full calendar day")
+    func derivesFullCalendarDayEarningsPerHour() {
+        let rate = EarningsHourlyRate.derive(microUSD: 2_400_000, observedSeconds: 86_400)
+        #expect(abs((rate ?? 0) - 0.1) < 0.000_001)
+    }
+
+    @Test("earnings per hour uses the actual partial observation window")
+    func derivesObservedEarningsPerHour() {
+        let rate = EarningsHourlyRate.derive(microUSD: 600_000, observedSeconds: 10_800)
+        #expect(abs((rate ?? 0) - 0.2) < 0.000_001)
+    }
+
+    @Test("earnings per hour omits invalid observations")
+    func omitsInvalidEarningsPerHour() {
+        #expect(EarningsHourlyRate.derive(microUSD: 100_000, observedSeconds: 0) == nil)
+        #expect(EarningsHourlyRate.derive(microUSD: -1, observedSeconds: 3_600) == nil)
+    }
+
+    @Test("model average breakdown requires at least two observed models")
+    func requiresTwoModelsForBreakdown() {
+        let gemma = ModelTokenRateAverage(model: "gemma", tokensPerSecond: 20, sampleCount: 2)
+        let qwen = ModelTokenRateAverage(model: "qwen", tokensPerSecond: 30, sampleCount: 3)
+
+        #expect(ModelTokenRatePresentation.breakdown([gemma]).isEmpty)
+        #expect(ModelTokenRatePresentation.breakdown([gemma, qwen]) == [gemma, qwen])
+    }
+
     @Test("model badges distinguish active, loaded-idle, and available-unloaded models")
     func classifiesModelBadges() {
         let models = DashboardModelDeriver.models(
