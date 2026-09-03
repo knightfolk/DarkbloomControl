@@ -221,7 +221,7 @@ struct ProviderLifecyclePresentationTests {
         expectUnknownLifecycle(input)
     }
 
-    @Test("popup model pills require fresh daemon and loaded-model evidence")
+    @Test("popup model pills require fresh daemon evidence and ignore stale loaded-model evidence")
     func modelPillsFailClosedOnResidencyFreshness() {
         let fresh = PopupModelSourceInput(
             daemonState: .available(value: daemonState(), capturedAt: now),
@@ -250,7 +250,10 @@ struct ProviderLifecyclePresentationTests {
             DashboardModel(name: "gpt-oss", state: .availableUnloaded),
         ]))
         #expect(PopupModelPresentation.make(input: staleDaemon, controlSources: .allFresh, currentTime: now) == .unavailable)
-        #expect(PopupModelPresentation.make(input: futureLoaded, controlSources: .allFresh, currentTime: now) == .unavailable)
+        let daemonOnly = PopupModelPresentation.models([
+            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        ])
+        #expect(PopupModelPresentation.make(input: futureLoaded, controlSources: .allFresh, currentTime: now) == daemonOnly)
         #expect(PopupModelPresentation.make(
             input: fresh,
             controlSources: ProviderControlSourceStates(
@@ -260,10 +263,65 @@ struct ProviderLifecyclePresentationTests {
                 loadedModels: .stale("Loaded model state is stale")
             ),
             currentTime: now
-        ) == .unavailable)
+        ) == daemonOnly)
     }
 
-    @Test("popup model pills age marked-fresh daemon and loaded evidence without a store event")
+    @Test("fresh daemon model state remains visible when the loaded-model file is stale")
+    func freshDaemonModelsSurviveStaleLoadedModels() {
+        let daemon = DaemonState(
+            schema: 1,
+            version: "test",
+            currentModel: "gemma-4-26b-qat-4bit",
+            warmModels: ["gemma-4-26b-qat-4bit"],
+            stats: ProviderStats(tokensGenerated: 10, requestsServed: 1, usageGaps: 0),
+            trust: TrustState(level: "local", status: "online", reason: "test", receivedAt: 0),
+            capacity: MemoryCapacity(totalMemoryGB: 64, gpuMemoryActiveGB: 24, gpuMemoryCacheGB: 0),
+            slots: [ModelSlot(
+                model: "gemma-4-26b-qat-4bit",
+                mtpEnabled: true,
+                mtpActive: true,
+                mtpReason: nil,
+                kvBackend: "contiguous",
+                requestedKVBackend: "auto"
+            )],
+            inferenceActive: true,
+            startedAt: now.timeIntervalSince1970 - 60,
+            writtenAt: now.timeIntervalSince1970,
+            pid: 123,
+            processIdentity: ProcessIdentity(pid: 123, startTimeMicros: 1)
+        )
+        let input = PopupModelSourceInput(
+            daemonState: .available(value: daemon, capturedAt: now),
+            loadedModels: .stale(
+                value: LoadedModelsState(
+                    schema: 1,
+                    models: ["old-loaded-model"],
+                    updatedAt: now.addingTimeInterval(-86_400).timeIntervalSince1970
+                ),
+                capturedAt: now,
+                reason: "Loaded models are older than 10 seconds"
+            ),
+            status: .available(
+                value: status(daemon: "running", enabled: "gemma-4-26b-qat-4bit,gpt-oss"),
+                capturedAt: now
+            )
+        )
+        let controlSources = popupControlSources(
+            daemon: .fresh(evidenceAt: now),
+            loadedModels: .stale("Loaded model state is stale")
+        )
+
+        #expect(PopupModelPresentation.make(
+            input: input,
+            controlSources: controlSources,
+            currentTime: now
+        ) == .models([
+            DashboardModel(name: "gemma-4-26b-qat-4bit", state: .active),
+            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        ]))
+    }
+
+    @Test("popup model pills age daemon evidence and discard expired loaded-model evidence")
     func modelPillsAgeControlEvidenceFromTimelineTime() {
         let input = PopupModelSourceInput(
             daemonState: .available(value: daemonState(), capturedAt: now),
@@ -297,7 +355,7 @@ struct ProviderLifecyclePresentationTests {
                 input: input,
                 controlSources: popupControlSources(daemon: .fresh(evidenceAt: now), loadedModels: .fresh(evidenceAt: evidenceAt)),
                 currentTime: now
-            ) == .unavailable)
+            ) == expected)
         }
     }
 

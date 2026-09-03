@@ -11,20 +11,26 @@ enum PopupModelPresentation: Equatable {
         currentTime: Date
     ) -> Self {
         guard case .available(let state, _) = input.daemonState,
-              case .available(let loadedModels, _) = input.loadedModels,
               controlSources?.daemon.evaluated(
                 at: currentTime,
                 invalidReason: "Provider activity timestamp is invalid",
                 staleReason: "Provider activity is stale",
                 futureReason: "Provider activity timestamp is in the future"
-              ).isMarkedFresh == true,
-              controlSources?.loadedModels.evaluated(
-                at: currentTime,
-                invalidReason: "Loaded model state timestamp is invalid",
-                staleReason: "Loaded model state is stale",
-                futureReason: "Loaded model state timestamp is in the future"
               ).isMarkedFresh == true
         else { return .unavailable }
+
+        let loadedModels: [String]
+        if case .available(let state, _) = input.loadedModels,
+           controlSources?.loadedModels.evaluated(
+               at: currentTime,
+               invalidReason: "Loaded model state timestamp is invalid",
+               staleReason: "Loaded model state is stale",
+               futureReason: "Loaded model state timestamp is in the future"
+           ).isMarkedFresh == true {
+            loadedModels = state.models
+        } else {
+            loadedModels = []
+        }
 
         let enabledFilter: String?
         if case .available(let status, _) = input.status {
@@ -34,7 +40,7 @@ enum PopupModelPresentation: Equatable {
         }
         return .models(DashboardModelDeriver.models(
             enabledFilter: enabledFilter,
-            loadedModels: loadedModels.models,
+            loadedModels: loadedModels,
             warmModels: state.warmModels,
             slotModels: state.slots.map(\.model),
             currentModel: state.currentModel,
