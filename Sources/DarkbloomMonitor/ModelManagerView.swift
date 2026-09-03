@@ -430,15 +430,14 @@ private struct DownloadedModelRow: View {
                 LiveStatePill(state: item.liveState)
             }
 
-            HStack(spacing: 14) {
+            HStack(spacing: ModelOptionToggle.groupSpacing) {
                 Text(ModelFormatting.size(item.sizeGB))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
 
                 if presentation.showsEnableToggle {
-                    Toggle("Enable", isOn: enabledBinding)
-                        .toggleStyle(.switch)
+                    ModelOptionToggle(title: "Enable", isOn: enabledBinding)
                         .disabled(presentation.enableAction?.isEnabled != true)
                         .accessibilityLabel(
                             presentation.enableAction?.accessibilityLabel ?? "Enable \(item.displayName)"
@@ -449,8 +448,7 @@ private struct DownloadedModelRow: View {
                         .accessibilityIdentifier("model.\(item.catalogID).enable")
                 }
                 if presentation.showsPreloadToggle {
-                    Toggle("Preload", isOn: preloadedBinding)
-                        .toggleStyle(.switch)
+                    ModelOptionToggle(title: "Preload", isOn: preloadedBinding)
                         .disabled(presentation.preloadAction?.isEnabled != true)
                         .accessibilityLabel(
                             presentation.preloadAction?.accessibilityLabel ?? "Preload \(item.displayName)"
@@ -519,6 +517,40 @@ private struct DownloadedModelRow: View {
             return configuredSelector
         }
         return item.configuredSelector ?? item.catalogID
+    }
+}
+
+enum ModelOptionToggleOrder: Equatable {
+    case labelThenSwitch
+    case switchThenLabel
+}
+
+struct ModelOptionToggle: View {
+    static let order = ModelOptionToggleOrder.switchThenLabel
+    static let labelSpacing: CGFloat = 6
+    static let groupSpacing: CGFloat = 20
+
+    let title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(spacing: Self.labelSpacing) {
+            switch Self.order {
+            case .labelThenSwitch:
+                Text(title)
+                switchControl
+            case .switchThenLabel:
+                switchControl
+                Text(title)
+            }
+        }
+        .fixedSize()
+    }
+
+    private var switchControl: some View {
+        Toggle("", isOn: $isOn)
+            .labelsHidden()
+            .toggleStyle(.switch)
     }
 }
 

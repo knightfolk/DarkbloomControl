@@ -10,6 +10,12 @@ private let layoutNow = Date()
 @Suite("Monitor popover layout")
 @MainActor
 struct MonitorPopoverLayoutTests {
+    @Test("each downloaded-model label stays visually grouped with its own switch")
+    func modelOptionToggleGrouping() {
+        #expect(ModelOptionToggle.order == .switchThenLabel)
+        #expect(ModelOptionToggle.groupSpacing > ModelOptionToggle.labelSpacing * 3)
+    }
+
     @Test("official Darkbloom logo loads as a tintable vector asset")
     func officialLogoAsset() throws {
         let sourceImage = try #require(DarkbloomLogoAsset.sourceImage)
