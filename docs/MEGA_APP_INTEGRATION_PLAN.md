@@ -2,17 +2,11 @@
 
 Review snapshot: 2026-09-03
 
-Repositories reviewed at pinned revisions:
-
-- [splittydev/darkbloom-dashboard](https://github.com/SplittyDev/darkbloom-dashboard/tree/87cef17b52e9ca8fb7c6d2f91d863231e7796e45) — `87cef17`, tag `v1.4.1`, MIT
-- [justin-schroeder/darkbloom-monitor](https://github.com/justin-schroeder/darkbloom-monitor/tree/83fed2f3ff67806946d3d092dc40ea9724169255) — `83fed2f`, no repository license at review time
-- [jordglob/darkbloom-live-stats](https://github.com/jordglob/darkbloom-live-stats/tree/59b902a31b99f968ce87a76da4abaa4de1d15048) — `59b902a`, tag `v4`, MIT
-
-This document is an implementation plan, not authorization to copy code, change the current provider, publish a build, or merge the reviewed repositories into this one.
+This document defines this project's implementation requirements. It does not authorize copying third-party code, changing the provider, publishing a build, or merging another repository.
 
 ## Executive decision
 
-Do not merge any of the three applications wholesale.
+Develop the application within this repository's existing architecture.
 
 Keep this repository as the product and architecture owner:
 
@@ -23,13 +17,7 @@ Keep this repository as the product and architecture owner:
 - explicit freshness, provenance, coverage, and unavailable reasons for every displayed value;
 - no prompt, response, reasoning, API-key, or raw job-content persistence.
 
-Independently implement the strongest ideas from the community projects:
-
-| Source | Adopt | Adapt | Do not adopt |
-| --- | --- | --- | --- |
-| Splitty dashboard | Dashboard information architecture, demand/capacity presentation, trust explanations, operation progress UI | Rebuild as native views over our typed telemetry actors and bounded stores | Whole dependency graph, plaintext credentials, chat/load generator, permissive SSH, `start --all`, silent warmup/restart failures |
-| Justin monitor | Compact visual hierarchy, hourly activity charts, chart tooltips, model metadata, release discipline | Reimplement ideas without copying code because the repository has no license | Direct lifecycle runner, fallback restart-on-start, unbounded stderr, root fan helper, inferred fleet identity |
-| Jordi live stats | Power/energy concepts, per-model work-rate math, separated base rewards, distinct polling cadences | Make energy an opt-in typed subsystem with actual elapsed-time integration and safe privilege boundaries | Python HTTP bridge, browser UI, wildcard sudoers, unbounded CSV/logs, fixed-interval energy math, Sweden-specific defaults |
+Implementation priorities are native presentation, bounded telemetry, clear coverage, safe provider controls, and opt-in energy measurement.
 
 The immediate product sequence should be:
 
@@ -42,7 +30,7 @@ The immediate product sequence should be:
 
 ## Current product baseline to preserve
 
-The current application already has stronger foundations than the three projects in several important areas:
+Preserve the current application's foundations:
 
 - `DarkbloomTelemetry` is UI-independent and contains source policy, bounded reads, parsing, derivation, persistence, account earnings, inventory, and provider controls.
 - `DarkbloomMonitor` owns the native `NSStatusItem`, `NSPopover`, SwiftUI presentation, and retained Settings window.
@@ -53,102 +41,6 @@ The current application already has stronger foundations than the three projects
 - The popup is deliberately bounded at approximately 400 × 600 rather than becoming a full dashboard.
 
 These are invariants, not temporary implementation details. New work should extend them.
-
-## Repository deep dive
-
-### 1. Splitty dashboard
-
-#### What it does well
-
-Splitty has the broadest product surface. Its macOS layout separates Overview, Network, Demand, Models, Machines, Logs, Chat, and Load Generator into a sidebar rather than crowding a menu popup. That is the right information architecture for our resizable dashboard. See its [feature inventory](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/README.md#L20-L43) and [macOS navigation](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/DarkbloomDashboard/Views/Bootstrap/Components/ContentView%2BmacOS.swift#L157-L210).
-
-Its API controller separates data by cadence and backs off after failures instead of putting all network work on one fast timer. The approach is visible in [`APIDataController`](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/DarkbloomDashboard/Logic/Observables/APIDataController.swift#L88-L200). We should use the same principle with different implementation details: capacity may refresh quickly, network history slowly, and immutable catalog metadata only occasionally.
-
-Its Demand view turns raw capacity fields into understandable pressure signals, including queued plus active demand per routable provider. See [`DemandTab`](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/DarkbloomDashboard/Views/Tabs/DemandTab.swift#L4-L75) and the [capacity response model](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/DarkbloomDashboard/Logic/API%20Codables/DarkbloomModelCapacity.swift#L3-L23). This is useful as an opportunity explanation, provided it is not presented as guaranteed income.
-
-Its restart flow exposes intermediate subtasks and outcomes rather than showing a spinner with no explanation. See [`RestartController`](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/DarkbloomDashboard/Logic/Observables/RestartController.swift#L160-L291). Our lifecycle service should adopt that presentation contract while retaining our stricter execution and confirmation rules.
-
-Its trust-level explanations and local service details are good examples of progressive-instead-of-hiding. See [`LocalServiceDetails`](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/DarkbloomDashboard/Views/Components/LocalServiceDetails.swift#L5-L55).
-
-#### What must be redesigned
-
-The app stores sensitive settings through `UserDefaults`, including API-oriented settings that should live in Keychain or not be stored at all. The settings implementation is visible in [`Settings`](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/DarkbloomDashboard/Logic/Observables/Settings.swift#L19-L88). It does use Keychain for SSH passwords in [`SSHPasswordKeychain`](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/DarkbloomDashboard/Logic/SSHPasswordKeychain.swift#L9-L84), but host-key validation accepts any host. We should not ship remote control until known-host pinning, per-host authorization, and an audit trail exist.
-
-Its local start path uses `start --all`. That conflicts with this app's explicit enabled/preloaded model configuration and can load unintended models. Our lifecycle service must resolve exact model IDs from the validated provider configuration and pass them directly.
-
-Warmup has useful initial-delay and retry concepts, but uses a hard-coded model recommendation set and can swallow errors. See [`WarmupCoordinator`](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/DarkbloomDashboard/Logic/Observables/WarmupCoordinator.swift#L37-L99). Native provider preload should remain the primary mechanism. Synthetic warmup should be a separate, opt-in feature only if runtime evidence shows it is necessary.
-
-The app has a substantial third-party graph and branch-pinned packages. That is acceptable for a broad standalone dashboard but unnecessary for this focused native app. Every new dependency here should have an explicit feature, security, update, and binary-size justification.
-
-Its earnings snapshot logic is presentation-friendly but does not have our high-water, withdrawal, calendar coverage, and base-reward separation guarantees. See [`EarningsController`](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/DarkbloomDashboard/Logic/Observables/EarningsController.swift#L32-L117). We should retain our database as earnings authority.
-
-The CI workflow skips UI tests, so attractive screenshots are not enough evidence for lifecycle or persistence behavior. See the [CI workflow](https://github.com/SplittyDev/darkbloom-dashboard/blob/87cef17b52e9ca8fb7c6d2f91d863231e7796e45/.github/workflows/ci.yml#L45-L69).
-
-#### Splitty conclusion
-
-Use Splitty as the primary dashboard UX reference and a secondary source for capacity formulas. Do not use it as the data, security, process-control, or persistence foundation.
-
-### 2. Justin monitor
-
-#### What it does well
-
-Justin's app is the closest visual reference to our current product. Its compact native popup uses a clear status header, three primary metric tiles, hourly activity charts, collapsible detail, and controls. Its [README screenshots and feature list](https://github.com/justin-schroeder/darkbloom-monitor/blob/83fed2f3ff67806946d3d092dc40ea9724169255/README.md#L22-L108) demonstrate that hourly detail can remain readable without turning the first screen into a table.
-
-Its activity ledger keeps a bounded multi-day history, deduplicates observations, and separates base rewards from work earnings. See [`ActivityHistory`](https://github.com/justin-schroeder/darkbloom-monitor/blob/83fed2f3ff67806946d3d092dc40ea9724169255/Sources/DarkbloomCore/ActivityHistory.swift#L52-L187). We already have a stronger SQLite foundation, but its visual grouping is worth reproducing.
-
-Its current-hour projection progressively blends prior behavior with the observed portion of the hour. See [`RunRateProjection`](https://github.com/justin-schroeder/darkbloom-monitor/blob/83fed2f3ff67806946d3d092dc40ea9724169255/Sources/DarkbloomCore/RunRateProjection.swift#L3-L44). If we add this, it must be optional, visually differentiated from actual earnings, and never substituted for a missing observed value.
-
-Its serving-model picker makes model RAM/download metadata visible at decision time. See [`ServingModelPickerView`](https://github.com/justin-schroeder/darkbloom-monitor/blob/83fed2f3ff67806946d3d092dc40ea9724169255/Sources/DarkbloomMenu/ServingModelPickerView.swift#L38-L243). Our Models dashboard should combine this idea with our existing My Catalog/Available distinction and separate Enable, Preload, and Delete actions.
-
-Its release workflow runs build/test and includes signing, notarization, disk-image creation, and publication steps. See its [release workflow](https://github.com/justin-schroeder/darkbloom-monitor/blob/83fed2f3ff67806946d3d092dc40ea9724169255/.github/workflows/release.yml). We should adopt the delivery discipline, not assume that the presence of workflow steps proves every published artifact is notarized.
-
-#### What must be redesigned
-
-The repository had no license at review time. Its code and assets must not be copied. Product ideas and observed behavior may be independently implemented. The missing license is tracked in [issue 4](https://github.com/justin-schroeder/darkbloom-monitor/issues/4).
-
-Its lifecycle control is weaker than ours: starting may fall back to restart when no model is selected, active-job confirmation is not equivalent to our customer-impact gate, and provider state reconciliation is less strict. The implementation is visible in [`AppState`](https://github.com/justin-schroeder/darkbloom-monitor/blob/83fed2f3ff67806946d3d092dc40ea9724169255/Sources/DarkbloomMenu/AppState.swift#L283-L407). We should keep our control service and adopt only its compact icon presentation.
-
-Subprocess stderr is accumulated without a strict byte cap in the command path. See the same [`AppState` command implementation](https://github.com/justin-schroeder/darkbloom-monitor/blob/83fed2f3ff67806946d3d092dc40ea9724169255/Sources/DarkbloomMenu/AppState.swift#L449-L522). Every command and diagnostic source in our app must retain timeout and output limits.
-
-Its warmup code claims a stronger coordinator identity relationship than the implementation can consistently prove. See [`CoordinatorAPI`](https://github.com/justin-schroeder/darkbloom-monitor/blob/83fed2f3ff67806946d3d092dc40ea9724169255/Sources/DarkbloomCore/CoordinatorAPI.swift#L314-L369). Any future local warmup endpoint must match the fresh provider PID/process identity and fail closed.
-
-Its fleet logic assumes identity fields that the live public attestation response did not expose during this review. Fleet should therefore remain gated behind a documented, authenticated, stable identity contract rather than inferred from current public responses.
-
-The privileged fan helper uses a setuid-root installation model. See [`FanHelper`](https://github.com/justin-schroeder/darkbloom-monitor/blob/83fed2f3ff67806946d3d092dc40ea9724169255/Sources/DarkbloomMenu/FanHelper.swift#L4-L90). This is too broad for a monitoring application and should not be adopted.
-
-#### Justin conclusion
-
-Use Justin as the primary compact-chart and release-process reference. Independently recreate the relevant interaction patterns. Do not copy source and do not replace our telemetry or control layers.
-
-### 3. Jordi live stats
-
-#### What it does well
-
-Jordi's project is a useful prototype for a deeper operations page. It deliberately separates fast provider state, slower earnings, and power-only updates. Its architecture is summarized in the [README](https://github.com/jordglob/darkbloom-live-stats/blob/59b902a31b99f968ce87a76da4abaa4de1d15048/README.md#L130-L139). We should preserve that separation inside native actors rather than running a local web server.
-
-It calculates per-model work revenue and keeps base rewards separate. The account and earnings paths are in [`server.py`](https://github.com/jordglob/darkbloom-live-stats/blob/59b902a31b99f968ce87a76da4abaa4de1d15048/dashboard/server.py#L555-L758). The useful metric is realized work earnings per million observed tokens, but only when both token coverage and earnings attribution are valid.
-
-Its power history preserves gaps and peaks instead of smoothing every missing interval into zero. See its [energy acquisition and aggregation](https://github.com/jordglob/darkbloom-live-stats/blob/59b902a31b99f968ce87a76da4abaa4de1d15048/dashboard/server.py#L941-L1194) and [downsampling](https://github.com/jordglob/darkbloom-live-stats/blob/59b902a31b99f968ce87a76da4abaa4de1d15048/dashboard/server.py#L854-L878). These are valuable presentation principles.
-
-It also surfaces system RAM, temperature/fan information, and competing local inference processes. Those can make a Health page useful, provided each is labeled direct, estimated, unavailable, or permission-blocked.
-
-#### What must be redesigned
-
-The project has no automated tests or CI and no locked dependency manifest. Its Python and shell implementation should be treated as an exploratory prototype, not production code.
-
-The earnings fetch does not establish complete pagination/coverage before calculating rates. Its inference-duration estimate polls a boolean and cannot accurately account for short or concurrent jobs. We must not present that duration as authoritative.
-
-The dashboard rereads growing CSV files and serves browser content from a loopback HTTP process. Several values flow into HTML, and state-changing routes do not have a native-app trust boundary. The route implementation is visible in [`server.py`](https://github.com/jordglob/darkbloom-live-stats/blob/59b902a31b99f968ce87a76da4abaa4de1d15048/dashboard/server.py#L1197-L1307). We already have a safer native process and should not add another server.
-
-The installer grants a wildcard `powermetrics` sudo rule. See the [sudoers template](https://github.com/jordglob/darkbloom-live-stats/blob/59b902a31b99f968ce87a76da4abaa4de1d15048/launchd/darkbloom-powermetrics.sudoers.template#L1) and [installer](https://github.com/jordglob/darkbloom-live-stats/blob/59b902a31b99f968ce87a76da4abaa4de1d15048/install.sh#L56-L74). Do not adopt this privilege model.
-
-Its energy loop uses a fixed integration interval rather than the actual time between samples and can add an estimated baseline when the primary sample is absent. This can manufacture energy consumption. Our implementation must integrate actual elapsed time and break the series across gaps.
-
-The electricity-cost defaults are geographically specific. The app should start with a user-entered fixed currency/kWh tariff and add explicit time-of-use schedules before considering market-price adapters.
-
-#### Jordi conclusion
-
-Use Jordi as an idea source for an optional Energy page and richer Health diagnostics. Rebuild everything as bounded native Swift sources with no web server and no broad privilege grant.
 
 ## Live API compatibility findings
 
@@ -280,8 +172,9 @@ The dashboard needs stable definitions before it needs charts.
 ### Local throughput
 
 - **Current tok/s:** positive token-counter delta divided by positive elapsed provider time for the same `process_identity`; unavailable after restart, rollback, no progress, or stale input.
-- **Calendar-day average tok/s:** sum of observed generated token deltas divided by sum of covered active inference seconds within the local calendar day. Do not divide by wall-clock day length.
-- **Per-model average tok/s:** same formula, grouped only where model identity is known for the covered interval. Do not attribute an aggregate delta across concurrent unknown models.
+- **Current Alpha calendar-day average tok/s:** arithmetic mean of valid positive same-process samples captured since local midnight, matching the shipped popup contract. It resets its in-memory session fallback when `process_identity` changes.
+- **Current Alpha per-model average tok/s:** the same arithmetic sample mean, grouped only where model identity is known. Do not attribute an aggregate delta across concurrent unknown models.
+- **Future duration-weighted migration:** sum observed generated-token deltas and divide by covered active-inference seconds only after storing interval duration explicitly, migrating the local database, and changing the label and tests together. Do not silently mix this definition with the Alpha arithmetic series or divide by wall-clock day length.
 
 ### Earnings
 
@@ -331,7 +224,7 @@ Work:
 - Capture redacted JSON fixtures from the accepted current API shapes.
 - Add schema-decoding tests for missing fields, added fields, nulls, unknown enum values, malformed numbers, and oversized responses.
 - Record third-party attribution in a new `THIRD_PARTY_NOTICES.md` only if MIT-licensed source is actually reused.
-- Establish a hard rule that Justin's unlicensed source cannot be copied.
+- Do not copy third-party source without an applicable license and required attribution.
 - Decide whether model catalog and capacity values may be cached to SQLite or only retained in memory. Prefer memory plus a small last-good cache with timestamp.
 
 Files:
@@ -498,6 +391,12 @@ Acceptance:
 - Health clearly distinguishes direct state, derived state, and permission-blocked state.
 
 ### Phase 5 — lifecycle progress and live model warming
+
+> Historical Phase 5 text. Superseded for this repository by
+> [`docs/superpowers/specs/2026-09-03-live-model-warming-design.md`](superpowers/specs/2026-09-03-live-model-warming-design.md)
+> and [`docs/superpowers/plans/2026-09-03-live-model-warming.md`](superpowers/plans/2026-09-03-live-model-warming.md).
+> In particular, do not use this phase's eviction-capable warmup, active/unknown
+> warn-and-allow, or one-time setup guidance as the current contract.
 
 Goal: make Start, Stop, Restart, and one-time runtime model selection transparent without weakening safeguards. The detailed approved design is in [`docs/superpowers/specs/2026-09-03-live-model-warming-design.md`](superpowers/specs/2026-09-03-live-model-warming-design.md).
 
@@ -808,9 +707,9 @@ Do not combine all phases into one release branch. The safest first implementati
 
 ## Final recommendation
 
-The strongest version of this product is not a fourth clone of one community dashboard. It is a native operator app with two deliberate speeds:
+This product is a native operator app with two deliberate speeds:
 
 - a stable, minimal menu popup for what is happening now and the three lifecycle actions; and
 - a richer dashboard for understanding history, opportunity, model configuration, health, and eventually true operating cost.
 
-Splitty supplies the best dashboard vocabulary, Justin the best compact-chart vocabulary, and Jordi the most useful energy questions. Our existing telemetry provenance, lifecycle safety, calendar accounting, and native single-process architecture should remain the implementation authority.
+Telemetry provenance, lifecycle safety, calendar accounting, and the native single-process architecture remain the implementation authority.

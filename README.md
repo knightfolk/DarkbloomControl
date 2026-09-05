@@ -4,14 +4,13 @@ Darkbloom Monitor is a native macOS menu-bar companion for a local Darkbloom
 provider. It turns provider telemetry into a compact infographic popup and
 keeps model and lifecycle controls behind explicit safety checks.
 
-> **Alpha software:** Alpha 1 is a source release. It does not yet include a
-> signed or notarized `.app` bundle.
+> **Alpha software:** See [Releases](https://github.com/knightfolk/DarkbloomCLIMenuBarMonitor/releases)
+> for downloadable builds and their signing status. Alpha 1 is source-only.
 
 ## Highlights
 
 - Live menu-bar status with current throughput while inference is active
-- A 400-by-600-point popup designed for quick scanning rather than diagnostic
-  walls of text
+- A compact, content-sized popup with short model pills and inline statistics
 - Current and calendar-day average token throughput, including a per-model
   breakdown once more than one model has measured samples
 - Calendar-day earnings, average earnings per observed hour, and a local
@@ -24,12 +23,26 @@ keeps model and lifecycle controls behind explicit safety checks.
   is active or activity cannot be verified
 - Model catalog management with separate Download, Delete, Enable, and Preload
   actions
-- A resizable Settings window for display preferences and provider model
-  configuration
+- One-model Memory Saver and coordinator-visible two-model capacity modes
+- Current per-model network demand plus a manual protected Warm action
+- Optional demand-aware switching with three-sample hysteresis, a persistent
+  30-minute cooldown, and the same no-interruption checks as manual switching
+- One resizable dashboard and Settings window
+- Qwen, OpenAI/GPT-OSS and Google/Gemma menu-bar icons during observed activity
+- Opt-in estimated adapter power, a saved USD/kWh electricity rate, and earnings
+  after electricity for matching measurement periods
 
 The status item favors current `tok/s` while inference is active and recent
 earnings while idle. Unavailable values are omitted or shown with a compact
 neutral state; the monitor does not manufacture values from unrelated counters.
+
+## Screenshots
+
+Current local review build. Values and model availability vary by provider.
+
+![Model catalog and serving capacity](docs/screenshots/models.png)
+
+![Electricity and menu-bar settings](docs/screenshots/settings.png)
 
 ## Requirements
 
@@ -62,6 +75,12 @@ You can also open `Package.swift` in Xcode and run the `DarkbloomMonitor`
 scheme. The app appears only in the menu bar and intentionally has no Dock icon
 or document window.
 
+Each launch claims one user-scoped kernel lock before creating a status item.
+A duplicate build using this same lock exits only the new process and does not
+terminate the lock owner. Older builds predating this guard may still run beside
+it. Rebuilding also does not replace an already-running process, even when its
+executable path matches. See [the safe review-launch procedure](docs/REVIEW_LAUNCH.md).
+
 ## What it reads and stores
 
 The monitor reads bounded local telemetry from:
@@ -73,6 +92,14 @@ The monitor reads bounded local telemetry from:
 - `darkbloom status`
 - macOS thermal state
 - authenticated Darkbloom account earnings and the public earnings leaderboard
+- the public per-model network-capacity endpoint
+
+`~/.darkbloom/local.json` is a separate control-discovery source, not telemetry.
+The monitor reads it only for protected-control discovery and Warm operations
+that need the current provider endpoint. The record must belong to the current
+user, have private permissions, stay within the bounded size limit, match the
+current provider run, and name an authenticated loopback endpoint; its API key
+is request-scoped and is never persisted by the monitor.
 
 It stores compact, user-only SQLite histories under:
 
@@ -92,41 +119,51 @@ complete weekly total.
 
 ## Provider controls and safety
 
-The monitor may change only the top-level `enabled_models` and
-`preload_models` arrays in `~/.config/darkbloom/provider.toml`. It preserves
-unrelated TOML bytes and comments, validates a candidate file, uses bounded
-locking and revision checks, and keeps one backup before atomic replacement.
+Download, Delete, Enable, Preload and Warm are separate operations. Saved model
+selection is passed explicitly at startup to bypass the CLI picker. Saving
+configuration does not silently restart the provider.
 
-It invokes a narrow allowlist of Darkbloom commands without a shell:
+Protected warming requires the companion provider API. It never evicts active
+customer work. One-slot mode retires an idle model before loading its replacement;
+two-slot mode checks memory before staging the replacement. The second slot is
+shared coordinator capacity, not private staging space. A failed one-slot load
+may leave no model warm.
 
-- `status`
-- `models catalog`, `models list`, `models download`, and `models remove`
-- `start`, `stop`, and `restart`
+Stop and Restart require a customer-impact override when work is active or
+activity is unknown. Delete requires fresh residency evidence. Quitting the
+monitor stops its own work, not the provider.
 
-Starting passes the saved enabled models as repeated `--model` arguments so the
-CLI model picker is bypassed. Saving model choices does not silently restart the
-provider. Download/Delete and Enable/Preload remain independent operations.
+See the [control design](docs/superpowers/specs/2026-09-03-live-model-warming-design.md)
+for memory headroom, capability checks, reconciliation and failure handling.
 
-Stop and Restart can interrupt customer work. The app checks current activity
-and requires an explicit override when work is active or the check is unknown.
-Delete is blocked when fresh residency evidence cannot prove removal is safe.
+## Limitations
 
-## Alpha 1 limitations
-
-- No signed or notarized app bundle is included yet; build and run from source.
+- Consult the release notes for signing and notarization status of each artifact.
+- Electricity is estimated whole-Mac DC adapter input, not wall power or
+  Darkbloom-only consumption. Missing readings leave gaps; only fully matched
+  earnings hours contribute to earnings after electricity.
 - Earnings and model-rate history begin when this monitor collects it. Partial
   weekly coverage is labeled explicitly.
 - A per-model throughput breakdown appears only after at least two models have
   valid measured samples for the current local calendar day.
 - Darkbloom CLI output and APIs may evolve after the validated 0.8.15 contract.
+- Protected live switching requires building and installing the matching
+  provider control branch; the stock 0.8.15 provider does not expose it.
+- One-slot switching deliberately has a cold-load gap and may leave the old
+  model unloaded if the replacement load fails; use the fresh reconciled state
+  before retrying.
 - Provider actions affect the local provider and may affect customer jobs; read
   confirmation dialogs before proceeding.
 
 ## Documentation
 
 - [Telemetry contract](docs/TELEMETRY_CONTRACT.md)
+- [Public API contract](docs/PUBLIC_API_CONTRACT.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Electricity estimates and model icons](docs/ELECTRICITY_AND_MODEL_ICONS.md)
 - [Presentation research](docs/PRESENTATION_OPTIONS.md)
+- [Live model control and demand design](docs/superpowers/specs/2026-09-03-live-model-warming-design.md)
+- [Live model control implementation plan](docs/superpowers/plans/2026-09-03-live-model-warming.md)
 
 ## Development
 
@@ -139,3 +176,21 @@ swift build -c release
 
 The package targets macOS 14 and uses SwiftUI, AppKit, Swift Testing, and
 SQLite3.
+## Local review bundle assembly
+
+After `swift build -c release`, assemble without launching or overwriting an
+existing output (replace the absolute paths with your checkout paths):
+
+```sh
+python3 tools/package_app.py \
+  --executable /absolute/checkout/.build/arm64-apple-macosx/release/DarkbloomMonitor \
+  --resources /absolute/checkout/.build/arm64-apple-macosx/release/DarkbloomMonitor_DarkbloomMonitor.bundle \
+  --output /absolute/checkout/.build/new-local-review \
+  --version 0.1.0 --build-number 1
+```
+
+The new directory contains `DarkbloomMonitor.app` and a SHA-256 file manifest.
+Version/build values are labels, not release provenance. This tool does not
+launch, register, install, distribution-sign, notarize, or publish the app.
+The manifest is not an SBOM or reproducible-build proof. Keep live relaunch,
+unsaved-settings safety, upgrade testing and distribution approval separate.
