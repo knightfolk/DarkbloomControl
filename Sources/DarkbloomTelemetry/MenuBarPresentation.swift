@@ -79,10 +79,23 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
 }
 
 public enum EarningsPresentationValue: Equatable, Sendable {
+    case day(microUSD: Int64, complete: Bool)
     case available(microUSD: Int64)
     case observed(microUSD: Int64, observedSeconds: TimeInterval)
     case stale(microUSD: Int64, reason: String)
     case unavailable(reason: String)
+
+    public static func calendarDay(_ value: ObservedEarningsWindow?, now: Date, calendar: Calendar) -> Self {
+        guard let value, let start = value.calendarDayStart, let captured = value.capturedAt,
+              start == calendar.startOfDay(for: now), captured >= start,
+              now.timeIntervalSince(captured).isFinite,
+              (0...600).contains(now.timeIntervalSince(captured)),
+              value.observedSeconds.isFinite, value.observedSeconds > 0,
+              value.microUSD >= 0 else {
+            return .unavailable(reason: "Today's earnings unavailable or expired")
+        }
+        return .day(microUSD: value.microUSD, complete: value.coversDayToDate)
+    }
 }
 
 public struct MenuBarPresentation: Equatable, Sendable {
@@ -96,10 +109,11 @@ public struct MenuBarPresentation: Equatable, Sendable {
         snapshot: TelemetrySnapshot,
         thermal: SystemThermalState,
         earnings: EarningsPresentationValue,
-        mode: MenuBarDisplayMode
+        mode: MenuBarDisplayMode,
+        activeModelAverage: Double? = nil
     ) -> Self {
         let health = RoutingHealth.derive(menuStatus: snapshot.menuStatus, thermal: thermal)
-        let metric = metric(snapshot: snapshot, earnings: earnings, mode: mode)
+        let metric = metric(snapshot: snapshot, earnings: earnings, mode: mode, activeModelAverage: activeModelAverage)
         let routingText = health.isRoutable ? "Darkbloom routable" : "Darkbloom not routable"
         let statusText = "\(routingText), thermal \(thermal.rawValue)."
         let accessibilityLabel = metric.accessibility.map { "\(statusText) \($0)" } ?? statusText
@@ -122,12 +136,22 @@ public struct MenuBarPresentation: Equatable, Sendable {
     private static func metric(
         snapshot: TelemetrySnapshot,
         earnings: EarningsPresentationValue,
-        mode: MenuBarDisplayMode
+        mode: MenuBarDisplayMode,
+        activeModelAverage: Double?
     ) -> Metric {
         switch mode {
         case .automatic, .throughput:
             if let throughput = availableThroughput(snapshot.tokenRate) {
                 return throughput
+            }
+            if snapshot.menuStatus == .online, snapshot.state.value?.inferenceActive == true {
+                if let average = activeModelAverage, average.isFinite, average > 0 {
+                    return Metric(text: "\(decimal(average, fractionDigits: 0))t/s avg",
+                                  accessibility: "Working. Today's model average \(average) tokens per second; live rate unavailable.",
+                                  unavailableReason: "Working — showing today's model average, not realtime throughput")
+                }
+                return Metric(text: "Working", accessibility: "Working; live token rate unavailable.",
+                              unavailableReason: "The provider has not exposed a live token rate")
             }
             if let earnings = availableEarnings(earnings) {
                 return earnings
@@ -164,6 +188,10 @@ public struct MenuBarPresentation: Equatable, Sendable {
         let windowText: String
         let accessibility: String
         switch earnings {
+        case .day(let value, let complete):
+            microUSD = value
+            windowText = complete ? "d" : "d*"
+            accessibility = complete ? "earned today" : "observed today; partial-day coverage"
         case .available(let value):
             microUSD = value
             windowText = "24h"
@@ -195,7 +223,7 @@ public struct MenuBarPresentation: Equatable, Sendable {
         _ earnings: EarningsPresentationValue
     ) -> String {
         switch earnings {
-        case .available, .observed:
+        case .available, .observed, .day:
             "Earnings unavailable"
         case .stale(_, let reason):
             "Rolling earnings stale — \(reason)"

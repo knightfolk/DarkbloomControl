@@ -11,6 +11,7 @@ struct ProviderConfigDocumentTests {
 
         [backend]
         enabled_models = ["legacy-model"]
+        max_model_slots = 1
         preload_models = ["legacy-model"]
 
         [unrelated]
@@ -24,11 +25,12 @@ struct ProviderConfigDocumentTests {
             enabled: ["legacy-model"],
             preloaded: ["legacy-model"]
         ))
+        #expect(document.maxModelSlots == 1)
 
-        let rendered = try document.rendering(ProviderModelSelection(
-            enabled: ["new-model"],
-            preloaded: []
-        ))
+        let rendered = try document.rendering(
+            ProviderModelSelection(enabled: ["new-model"], preloaded: []),
+            maxModelSlots: 2
+        )
         let expected = """
         title = "preserve me"
 
@@ -36,6 +38,7 @@ struct ProviderConfigDocumentTests {
         enabled_models = [
             "new-model",
         ]
+        max_model_slots = 2
         preload_models = [
         ]
 
@@ -45,6 +48,86 @@ struct ProviderConfigDocumentTests {
 
         """
         #expect(rendered == Data(expected.utf8))
+    }
+
+    @Test("preserves a missing slot setting until the user explicitly chooses a mode")
+    func optionalMaxModelSlots() throws {
+        let source = "enabled_models = []\npreload_models = []\n"
+        let document = try ProviderConfigDocument(data: Data(source.utf8))
+
+        #expect(document.maxModelSlots == nil)
+        let preserved = try ProviderConfigDocument(data: document.rendering(document.selection))
+        #expect(preserved.maxModelSlots == nil)
+        #expect(preserved.selection == document.selection)
+
+        let repaired = try ProviderConfigDocument(data: document.rendering(
+            document.selection,
+            maxModelSlots: 2
+        ))
+        #expect(repaired.maxModelSlots == 2)
+        #expect(repaired.selection == document.selection)
+    }
+
+    @Test("inserts a missing slot setting in the backend table without stealing adjacent comments")
+    func insertsMissingBackendMaxModelSlots() throws {
+        let source = """
+        title = "preserve me"
+
+        [backend]
+        enabled_models = ["model-a"]
+        # This comment belongs with preload.
+        preload_models = []
+
+        [unrelated]
+        max_model_slots = 99
+
+        """
+        let document = try ProviderConfigDocument(data: Data(source.utf8))
+
+        let rendered = try document.rendering(document.selection, maxModelSlots: 2)
+        let expected = """
+        title = "preserve me"
+
+        [backend]
+        enabled_models = [
+            "model-a",
+        ]
+        max_model_slots = 2
+        # This comment belongs with preload.
+        preload_models = [
+        ]
+
+        [unrelated]
+        max_model_slots = 99
+
+        """
+
+        #expect(rendered == Data(expected.utf8))
+        #expect(try ProviderConfigDocument(data: rendered).maxModelSlots == 2)
+    }
+
+    @Test("uses the source line ending when inserting a missing slot setting")
+    func insertsMissingMaxModelSlotsWithCRLF() throws {
+        let source = "enabled_models = []\r\npreload_models = []\r\nprivate_value = \"preserve\"\r\n"
+        let document = try ProviderConfigDocument(data: Data(source.utf8))
+
+        let rendered = try document.rendering(document.selection, maxModelSlots: 1)
+        let expected = "enabled_models = [\r\n]\r\nmax_model_slots = 1\r\npreload_models = [\r\n]\r\nprivate_value = \"preserve\"\r\n"
+
+        #expect(rendered == Data(expected.utf8))
+    }
+
+    @Test("accepts only one or two model slots through the monitor")
+    func validatesMaxModelSlots() throws {
+        let source = "enabled_models = []\nmax_model_slots = 1\npreload_models = []\n"
+        let document = try ProviderConfigDocument(data: Data(source.utf8))
+
+        #expect(throws: ProviderConfigError.unsupportedInteger("max_model_slots", 0)) {
+            try document.rendering(document.selection, maxModelSlots: 0)
+        }
+        #expect(throws: ProviderConfigError.unsupportedInteger("max_model_slots", 3)) {
+            try document.rendering(document.selection, maxModelSlots: 3)
+        }
     }
 
     @Test("renders only enabled and preload array value bytes")

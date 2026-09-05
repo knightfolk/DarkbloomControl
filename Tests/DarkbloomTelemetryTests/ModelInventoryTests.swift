@@ -38,6 +38,25 @@ struct ModelInventoryTests {
         #expect(local.models[0].sizeBytes == 13_421_772_800)
     }
 
+    @Test("download size comes only from one exact valid local inventory record")
+    func downloadedSizeProvenance() throws {
+        let catalog = try ModelCatalogDecoder.decode(fixture("model-catalog.json"))
+        let valid = LocalModel(id: "gpt-oss-20b", modelType: "llm", sizeBytes: 123456, estimatedMemoryGB: nil)
+        for (records, expected) in [
+            ([valid], Optional<Int64>(123456)),
+            ([valid, valid], nil),
+            ([LocalModel(id: "gpt-oss-20b", modelType: "llm", sizeBytes: -1, estimatedMemoryGB: nil)], nil),
+            ([LocalModel(id: "GPT-OSS-20B", modelType: "llm", sizeBytes: 123456, estimatedMemoryGB: nil)], nil),
+            ([], nil)
+        ] {
+            let inventory = ModelInventoryBuilder.build(catalog: catalog, local: records,
+                selection: .init(enabled: [], preloaded: []), daemon: nil, loadedModels: [])
+            let item = try #require((inventory.myCatalog + inventory.available).first { $0.catalogID == "gpt-oss-20b" })
+            #expect(item.downloadedSizeBytes == expected)
+            #expect(item.sizeGB == catalog[0].sizeGB)
+        }
+    }
+
     @Test("matches a unique configured family alias without rewriting it")
     func matchesFamilyAlias() throws {
         let inventory = ModelInventoryBuilder.build(
@@ -147,6 +166,91 @@ struct ModelInventoryTests {
             let inventory = ModelInventoryBuilder.build(catalog: catalog, local: [], selection: ProviderModelSelection(enabled: enabled, preloaded: []), daemon: nil, loadedModels: [])
             #expect(inventory.available.first { $0.catalogID == "gpt-oss-20b" }?.configuredSelector == "gpt-oss-20b")
         }
+    }
+
+    @Test("retains independent enabled alias and preload exact selectors")
+    func independentEnabledAliasAndPreloadExactSelectors() throws {
+        let catalog = try ModelCatalogDecoder.decode(fixture("model-catalog.json"))
+        let inventory = ModelInventoryBuilder.build(
+            catalog: catalog,
+            local: [],
+            selection: ProviderModelSelection(
+                enabled: ["gpt-oss"],
+                preloaded: ["gpt-oss-20b"]
+            ),
+            daemon: nil,
+            loadedModels: []
+        )
+
+        let item = try #require(inventory.available.first {
+            $0.catalogID == "gpt-oss-20b"
+        })
+        #expect(item.enabledSelector == "gpt-oss")
+        #expect(item.preloadSelector == "gpt-oss-20b")
+        #expect(item.isEnabled)
+        #expect(item.isPreloaded)
+    }
+
+    @Test("retains independent enabled exact and preload alias selectors")
+    func independentEnabledExactAndPreloadAliasSelectors() throws {
+        let catalog = try ModelCatalogDecoder.decode(fixture("model-catalog.json"))
+        let inventory = ModelInventoryBuilder.build(
+            catalog: catalog,
+            local: [],
+            selection: ProviderModelSelection(
+                enabled: ["gpt-oss-20b"],
+                preloaded: ["gpt-oss"]
+            ),
+            daemon: nil,
+            loadedModels: []
+        )
+
+        let item = try #require(inventory.available.first {
+            $0.catalogID == "gpt-oss-20b"
+        })
+        #expect(item.enabledSelector == "gpt-oss-20b")
+        #expect(item.preloadSelector == "gpt-oss")
+        #expect(item.isEnabled)
+        #expect(item.isPreloaded)
+    }
+
+    @Test("legacy configured selector initialization follows the independent state flags")
+    func legacyConfiguredSelectorInitialization() {
+        let preloadOnly = ModelInventoryItem(
+            catalogID: "model-id",
+            localID: "model-id",
+            configuredSelector: "model-family",
+            displayName: "Model",
+            modelType: "llm",
+            capabilities: [],
+            sizeGB: 1,
+            minimumRAMGB: 1,
+            isDownloaded: true,
+            isEnabled: false,
+            isPreloaded: true,
+            liveState: .unloaded,
+            issue: nil
+        )
+        let enabledOnly = ModelInventoryItem(
+            catalogID: "model-id",
+            localID: "model-id",
+            configuredSelector: "model-family",
+            displayName: "Model",
+            modelType: "llm",
+            capabilities: [],
+            sizeGB: 1,
+            minimumRAMGB: 1,
+            isDownloaded: true,
+            isEnabled: true,
+            isPreloaded: false,
+            liveState: .unloaded,
+            issue: nil
+        )
+
+        #expect(preloadOnly.enabledSelector == nil)
+        #expect(preloadOnly.preloadSelector == "model-family")
+        #expect(enabledOnly.enabledSelector == "model-family")
+        #expect(enabledOnly.preloadSelector == nil)
     }
 
     @Test("idle current model is loaded-idle from daemon telemetry")

@@ -1,5 +1,10 @@
 # Model Management and Provider Controls
 
+> Historical design retained as a baseline. Superseded for current live model
+> switching by [`2026-09-03-live-model-warming-design.md`](2026-09-03-live-model-warming-design.md),
+> which defines `max_model_slots`, protected no-eviction load, idle-only retire,
+> shared coordinator capacity, and fail-closed reconciliation.
+
 ## Goal
 
 Expand the Darkbloom menu-bar monitor from a read-only dashboard into a narrowly scoped provider control surface. The app will manage downloaded models, stage the provider's enabled and preload selections, and offer non-interactive Start, Stop, and Restart controls without exposing unrelated provider configuration or credentials.

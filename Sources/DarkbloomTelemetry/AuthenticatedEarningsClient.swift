@@ -44,13 +44,25 @@ public enum AccountEarningsClientError: Error, LocalizedError, Equatable, Sendab
 }
 
 public protocol AccountEarningsFetching: Sendable {
+    func modelWorkEarnings(in range: DateInterval, calendar: Calendar) async throws -> [ModelWorkEarnings]
     func fetch(now: Date) async throws -> EarningsPresentationValue
     func jobCompletionSummary(now: Date, calendar: Calendar) async throws -> JobCompletionSummary?
     func todayEarningsSummary(now: Date, calendar: Calendar) async throws -> ObservedEarningsWindow?
     func weekEarningsSummary(now: Date, calendar: Calendar) async throws -> CalendarWeekEarningsSummary?
+    func modelEarnings(since: Date) async throws -> [ModelEarnings]
+    func activity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ActivityBucket]?
+    func modelActivity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar, model: String?) async throws -> [ActivityBucket]?
+    func activityModels(in range: DateInterval) async throws -> [String]
 }
 
 public extension AccountEarningsFetching {
+    func modelWorkEarnings(in range: DateInterval, calendar: Calendar) async throws -> [ModelWorkEarnings] { [] }
+    func modelActivity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar, model: String?) async throws -> [ActivityBucket]? {
+        guard model == nil else { return nil }
+        return try await activity(in: range, unit: unit, calendar: calendar)
+    }
+    func activityModels(in range: DateInterval) async throws -> [String] { [] }
+    func activity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ActivityBucket]? { nil }
     func jobCompletionSummary(now: Date, calendar: Calendar) async throws -> JobCompletionSummary? {
         nil
     }
@@ -65,9 +77,31 @@ public extension AccountEarningsFetching {
     ) async throws -> CalendarWeekEarningsSummary? {
         nil
     }
+
+    func modelEarnings(since: Date) async throws -> [ModelEarnings] { [] }
 }
 
 public struct AuthenticatedEarningsClient: AccountEarningsFetching, Sendable {
+    public func modelWorkEarnings(in range: DateInterval, calendar: Calendar) async throws -> [ModelWorkEarnings] {
+        guard let database else { return [] }
+        let models = try await database.activityModels(in: range)
+        var values: [ModelWorkEarnings] = []
+        for model in models {
+            try Task.checkCancellation()
+            values.append(try await database.modelWorkEarnings(model: model, in: range, calendar: calendar))
+        }
+        return values
+    }
+    public func modelActivity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar, model: String?) async throws -> [ActivityBucket]? {
+        try await database?.activity(in: range, unit: unit, calendar: calendar, model: model)
+    }
+    public func activityModels(in range: DateInterval) async throws -> [String] {
+        try await database?.activityModels(in: range) ?? []
+    }
+    public func activity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ActivityBucket]? {
+        try await database?.activity(in: range, unit: unit, calendar: calendar)
+    }
+
     private let tokenURL: URL
     private let session: URLSession
     private let historyLimit: Int
@@ -137,6 +171,10 @@ public struct AuthenticatedEarningsClient: AccountEarningsFetching, Sendable {
         calendar: Calendar
     ) async throws -> CalendarWeekEarningsSummary? {
         try await database?.weekEarningsSummary(now: now, calendar: calendar)
+    }
+
+    public func modelEarnings(since: Date) async throws -> [ModelEarnings] {
+        try await database?.earningsByModel(since: since) ?? []
     }
 
     private func validate(_ response: URLResponse) throws {

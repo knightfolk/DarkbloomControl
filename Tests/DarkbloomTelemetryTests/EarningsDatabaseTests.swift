@@ -5,6 +5,66 @@ import Testing
 
 @Suite("Local earnings database")
 struct EarningsDatabaseTests {
+    @Test("activity keeps rewards separate and missing hours unavailable")
+    func activityBuckets() async throws {
+        let database = try EarningsDatabase(url: temporaryDatabaseURL())
+        let at = Date(timeIntervalSince1970: 3600)
+        let response = AccountEarningsResponse(
+            accountID: "unused", earnings: [
+                earning(id: 1, model: "qwen", microUSD: 100_000, at: at),
+                earning(id: 2, model: "base_reward", microUSD: 25_000, promptTokens: 0, completionTokens: 0, at: at)
+            ], count: 2, historyLimit: 1000, recentCount: 2,
+            totalMicroUSD: 125_000, availableBalanceMicroUSD: 125_000, withdrawableBalanceMicroUSD: 125_000
+        )
+        try await database.ingest(response, capturedAt: Date(timeIntervalSince1970: 7200))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let buckets = try await database.activity(
+            in: DateInterval(start: at, duration: 7200), unit: .hour, calendar: calendar
+        )
+        #expect(buckets.count == 2)
+        #expect(buckets[0].totals?.workMicroUSD == 100_000)
+        #expect(buckets[0].totals?.rewardMicroUSD == 25_000)
+        #expect(buckets[0].totals?.jobs == 1)
+        #expect(buckets[0].totals?.promptTokens == 10)
+        #expect(buckets[0].totals?.completionTokens == 20)
+        #expect(buckets[1].totals == nil)
+        let qwen = try await database.activity(
+            in: DateInterval(start: at, duration: 3600), unit: .hour, calendar: calendar, model: "qwen"
+        )
+        #expect(qwen[0].totals?.workMicroUSD == 100_000)
+        #expect(qwen[0].totals?.rewardMicroUSD == 0)
+        let other = try await database.activity(
+            in: DateInterval(start: at, duration: 3600), unit: .hour, calendar: calendar, model: "qwen-other"
+        )
+        #expect(other[0].totals == nil)
+        #expect(try await database.activityModels(in: DateInterval(start: at, duration: 3600)) == ["qwen"])
+        #expect(try await database.activityModels(in: DateInterval(start: at.addingTimeInterval(3600), duration: 3600)).isEmpty)
+        let partial = try await database.activity(
+            in: DateInterval(start: at.addingTimeInterval(1800), duration: 1800), unit: .hour, calendar: calendar
+        )
+        #expect(partial[0].totals == nil)
+        #expect(partial[0].coverage == .boundaryUncertain)
+        let summary = try await database.modelWorkEarnings(model: "qwen",
+            in: DateInterval(start: at, duration: 9000), calendar: calendar)
+        #expect(summary.model == "qwen")
+        #expect(summary.workMicroUSD == 100_000)
+        #expect(summary.jobs == 1)
+        #expect(summary.recordedHours == 1)
+        #expect(summary.unknownHours == 1)
+        #expect(summary.uncertainBoundaryHours == 1)
+        #expect(summary.sourceCapturedAt == Date(timeIntervalSince1970: 7200))
+        let excluded = try await database.modelWorkEarnings(model: "qwen",
+            in: DateInterval(start: Date(timeIntervalSince1970: 0), duration: 3600), calendar: calendar)
+        #expect(excluded.workMicroUSD == nil)
+        let mismatched = try await database.modelWorkEarnings(model: "Qwen",
+            in: DateInterval(start: at, duration: 3600), calendar: calendar)
+        #expect(mismatched.workMicroUSD == nil)
+        let client = AuthenticatedEarningsClient(homeDirectory: temporaryDatabaseURL().deletingLastPathComponent(), database: database)
+        let clientValues = try await client.modelWorkEarnings(in: DateInterval(start: at, duration: 9000), calendar: calendar)
+        #expect(clientValues == [summary])
+    }
+
     @Test("hourly model buckets stay compact while payout samples remain queryable")
     func persistsEarningsAndPayoutSamples() async throws {
         let databaseURL = temporaryDatabaseURL()
@@ -154,7 +214,8 @@ struct EarningsDatabaseTests {
         #expect(try await database.todayEarningsSummary(now: now, calendar: calendar) ==
             ObservedEarningsWindow(
                 microUSD: 1_200_000,
-                observedSeconds: now.timeIntervalSince(firstToday)
+                observedSeconds: now.timeIntervalSince(firstToday),
+                calendarDayStart: todayStart, capturedAt: now, coversDayToDate: false
             ))
     }
 
@@ -197,7 +258,8 @@ struct EarningsDatabaseTests {
         #expect(try await database.todayEarningsSummary(now: now, calendar: calendar) ==
             ObservedEarningsWindow(
                 microUSD: 1_800_000,
-                observedSeconds: 18 * 3_600
+                observedSeconds: 18 * 3_600,
+                calendarDayStart: todayStart, capturedAt: now, coversDayToDate: true
             ))
     }
 
@@ -239,7 +301,7 @@ struct EarningsDatabaseTests {
         ), capturedAt: now)
 
         #expect(try await database.weekEarningsSummary(now: now, calendar: calendar) ==
-            CalendarWeekEarningsSummary(microUSD: 1_800_000, isComplete: true))
+            CalendarWeekEarningsSummary(microUSD: 1_800_000, isComplete: true, weekStart: weekStart, capturedAt: now))
     }
 
     @Test("partial local calendar week is explicitly marked as observed")
@@ -280,7 +342,7 @@ struct EarningsDatabaseTests {
         ), capturedAt: now)
 
         #expect(try await database.weekEarningsSummary(now: now, calendar: calendar) ==
-            CalendarWeekEarningsSummary(microUSD: 1_800_000, isComplete: false))
+            CalendarWeekEarningsSummary(microUSD: 1_800_000, isComplete: false, weekStart: weekStart, capturedAt: now))
     }
 
     @Test("opening an existing database migrates base rewards out of work history")
@@ -402,7 +464,9 @@ struct EarningsDatabaseTests {
         ) == JobCompletionSummary(
             completedToday: 3,
             averagePerDay: 1,
-            averagingDays: 7
+            averagingDays: 7,
+            dayStart: calendar.startOfDay(for: now),
+            capturedAt: now
         ))
     }
 

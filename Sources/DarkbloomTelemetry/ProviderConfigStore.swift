@@ -6,18 +6,26 @@ public struct ProviderConfigDraft: Equatable, Sendable {
     public let sourceRevision: String
     public let original: ProviderModelSelection
     public var selection: ProviderModelSelection
+    public let originalMaxModelSlots: Int?
+    public var maxModelSlots: Int?
     fileprivate let sourceFileState: ProviderConfigFileState?
 
-    public var hasChanges: Bool { selection != original }
+    public var hasChanges: Bool {
+        selection != original || maxModelSlots != originalMaxModelSlots
+    }
 
     public init(
         sourceRevision: String,
         original: ProviderModelSelection,
-        selection: ProviderModelSelection
+        selection: ProviderModelSelection,
+        originalMaxModelSlots: Int? = nil,
+        maxModelSlots: Int? = nil
     ) {
         self.sourceRevision = sourceRevision
         self.original = original
         self.selection = selection
+        self.originalMaxModelSlots = originalMaxModelSlots
+        self.maxModelSlots = maxModelSlots
         self.sourceFileState = nil
     }
 
@@ -25,16 +33,21 @@ public struct ProviderConfigDraft: Equatable, Sendable {
         self.sourceRevision = document.revision
         self.original = document.selection
         self.selection = document.selection
+        self.originalMaxModelSlots = document.maxModelSlots
+        self.maxModelSlots = document.maxModelSlots
         self.sourceFileState = sourceFileState
     }
 
     fileprivate init(
         publishedSelection: ProviderModelSelection,
+        publishedMaxModelSlots: Int?,
         sourceFileState: ProviderConfigFileState
     ) {
         self.sourceRevision = sourceFileState.revision
         self.original = publishedSelection
         self.selection = publishedSelection
+        self.originalMaxModelSlots = publishedMaxModelSlots
+        self.maxModelSlots = publishedMaxModelSlots
         self.sourceFileState = sourceFileState
     }
 
@@ -44,10 +57,18 @@ public struct ProviderConfigDraft: Equatable, Sendable {
         return draft
     }
 
+    public func withMaxModelSlots(_ maxModelSlots: Int) -> Self {
+        var draft = self
+        draft.maxModelSlots = maxModelSlots
+        return draft
+    }
+
     public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.sourceRevision == rhs.sourceRevision
             && lhs.original == rhs.original
             && lhs.selection == rhs.selection
+            && lhs.originalMaxModelSlots == rhs.originalMaxModelSlots
+            && lhs.maxModelSlots == rhs.maxModelSlots
     }
 }
 
@@ -164,7 +185,10 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         }
         let current = try ProviderConfigDocument(data: currentSnapshot.data)
 
-        let candidateData = try current.rendering(draft.selection)
+        let candidateData = try current.rendering(
+            draft.selection,
+            maxModelSlots: draft.maxModelSlots
+        )
         let mode = expectedState.permissions
         let candidateURL = uniqueSibling(named: "candidate")
         var candidateNeedsCleanup = false
@@ -197,6 +221,7 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
         return ProviderConfigSaveResult(
             draft: ProviderConfigDraft(
                 publishedSelection: draft.selection,
+                publishedMaxModelSlots: draft.maxModelSlots,
                 sourceFileState: publishedState
             ),
             restartRequired: true

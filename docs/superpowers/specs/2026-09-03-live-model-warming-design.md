@@ -1,280 +1,143 @@
-# Live Model Warming Design
+# Live Model Control and Demand Design
 
 Date: 2026-09-03
-Status: User-approved interaction design; implementation pending
+Status: Implemented locally across monitor and provider; runtime installation pending
 
 ## Goal
 
-Allow a user who serves several enabled models with fewer resident model slots to choose which enabled model is warm now, without restarting the Darkbloom provider for each switch.
+Let an operator enable multiple downloaded models, see current network demand for each enabled model, and choose which model to warm without restarting the provider for each choice. Never interrupt customer inference. Keep the Mac usable by making residency limits and staging headroom explicit.
 
-For the current one-slot configuration, selecting **Make Warm** on an unloaded enabled model should ask the running provider to load that model and allow the provider to evict the current idle resident model. The action must not alter the saved enabled or preload selections.
+## Separate concepts
 
-## Model-state contract
+- **Downloaded** means present in the local model cache.
+- **Enabled** means advertised to the coordinator and eligible for network work.
+- **Preload** means preferred for provider startup.
+- **Resident** means weights currently occupy a provider model slot.
+- **Active** means a resident model is serving inference.
+- **Demand** is current network work and warm-provider supply from the public capacity endpoint. It is not provider payout.
 
-The feature preserves five separate concepts:
+Enable, Preload, Download, Delete, and Warm remain separate operations.
 
-- **Catalog model:** supported by the Darkbloom coordinator.
-- **Downloaded model:** present in the local model cache and shown in My Catalog.
-- **Enabled model:** included in the saved provider configuration and passed as an exact repeated `--model` argument when the provider starts.
-- **Preloaded model:** an enabled model selected to become warm during provider startup.
-- **Warm model:** currently resident in a live provider slot.
+## Capacity modes
 
-All locally downloaded models do not automatically become enabled. All coordinator catalog models do not need to be downloaded. The provider should start with every saved enabled model as eligible to serve, while `max_model_slots` controls how many may be resident at once.
+The app edits the provider's real `max_model_slots` setting through the existing conflict-checked, metadata-preserving configuration transaction. Saving a capacity change requires one provider restart before it takes effect.
 
-**Make Warm** is a one-time runtime action. It does not enable, download, preload, delete, or restart anything. Preload remains the separate persistent startup preference.
+### 1 - Memory Saver
 
-## Verified CLI and runtime constraints
+- At most one model is resident.
+- A manual change waits for fresh idle state.
+- The old idle model must unload before the requested model can load.
+- No customer request is interrupted, but the provider has a cold-load availability gap.
+- If the replacement load fails after the old model retires, fresh reconciliation
+  reports the partial state; the monitor does not claim an automatic rollback.
 
-The design targets the installed Darkbloom CLI 0.8.15 behavior observed on 2026-09-03:
+This mode cannot satisfy load-before-unload because there is no second place to hold the incoming weights.
 
-- `darkbloom start` accepts repeated exact `--model` arguments and `--local-endpoint`.
-- `--local-endpoint` exposes an authenticated loopback OpenAI-compatible endpoint alongside coordinator serving.
-- `darkbloom local --json` reads `~/.darkbloom/local.json`, whose current community-observed shape includes `base_url` and `api_key`.
-- The CLI does not expose a supported `models load`, `models unload`, `models warm`, or `models activate` command.
-- The provider implements lazy model loading and idle-model eviction for inference requests.
-- Live state exposes `inference_active`, `current_model`, `warm_models`, slot models, and `process_identity` through the existing daemon and loaded-model sources.
+### 2 - Two-model capacity
 
-The current provider was launched with four exact `--model` arguments and `max_model_slots = 1`, but without `--local-endpoint`; `~/.darkbloom/local.json` is absent. Therefore the running provider needs one explicit stop/start transition to enable local live switching. Once enabled, subsequent Make Warm actions do not restart the provider.
+- The coordinator may load and serve as many as two enabled models.
+- The second slot is shared network capacity, not a monitor-reserved staging slot.
+- A coordinator-prefetched or otherwise unknown resident also consumes that slot.
+- A coordinator hard swap keeps two-slot capacity while the superseded model is no longer advertised but remains resident long enough to drain; effective capacity is derived from the distinct advertised/resident union and never exceeds the configured cap.
+- A manual staged load is considered when fewer than two models are resident. An existing customer job may continue on the old model while the new model loads.
+- A configurable 8-24 GiB reserve, defaulting to 16 GiB, must remain after the target's padded weight estimate. The gate uses the lower of provider-reported free capacity and live whole-system reclaimable memory so other applications count against staging room.
+- In exact terms, staging requires `min(max(0, total - gpuActive - gpuCache), systemAvailable) >= targetSize * 1.2 + reserve`.
+- If both slots are occupied, headroom is insufficient, or system-memory evidence is unavailable, the action remains unavailable; it never evicts to make room.
 
-## Approaches considered
+## Provider capability boundary
 
-### Authenticated unified local endpoint — selected
+Darkbloom CLI 0.8.15 has an authenticated unified local endpoint, but its local chat-completion acquisition uses the provider's ordinary eviction-capable load path. The local provider branch `codex/protected-model-control` now exposes a separate authenticated operator surface:
 
-Start the provider with `--local-endpoint`, then send a minimal authenticated local inference request for the selected exact model. This uses the same running provider and its native lazy-load/eviction behavior.
+- `GET /v1/provider/model-control` advertises the versioned protected-load and idle-retire capabilities, current residency, the mutable advertised set, the immutable launch selection, and the raw running Enable/Preload/hard-cap configuration.
+- `POST /v1/provider/model-control/load` calls `ensureModelLoaded(modelId:allowEviction:false)` inside the provider actor.
+- `POST /v1/provider/model-control/retire` unloads one exact model only when it has no coordinator or local request in flight.
 
-Benefits:
+Therefore:
 
-- no provider restart per model switch;
-- no coordinator routing dependency;
-- no user account API key;
-- no remote request charge;
-- exact target model;
-- direct reconciliation against local state.
+- one-slot cold switching retires the old model through the idle-only operation before loading the target;
+- two-model switching loads the target first, then asks the provider to retire the previous model;
+- a previous model that gained customer work during staging is not retired, so both models remain resident;
+- the legacy chat-completion warmup client remains classified `mayEvictResident` and is not used by the live service;
+- capability discovery, rather than version guessing, controls whether the action is offered.
 
-Costs:
+This capability gate is mandatory. A host-side free-memory estimate alone cannot prove the provider will not evict because memory and slot state can change between processes.
 
-- one initial provider stop/start is required to install the endpoint into the launch-agent arguments;
-- a tiny synthetic inference is generated because CLI 0.8.15 has no load-only command;
-- the request may wait or fail while every resident model is actively serving.
+## Idle retirement
 
-### Coordinator-routed pinned request — rejected
+The installed provider accepts idle timeout in whole minutes and its idle monitor scans periodically, so the monitor does not repurpose that global setting. The local provider branch adds exact targeted retirement:
 
-A public chat-completion request can attempt to target a particular machine. This depends on user API credentials, remote coordinator behavior, undocumented or changing machine-routing semantics, and possibly billable inference. It is not appropriate for routine local model control.
+1. Protected-load the target with eviction disabled.
+2. Confirm it is resident.
+3. Ask to retire the previous model immediately after the target is confirmed by the load response.
+4. Retire it only when it has no coordinator request or local reservation.
+5. If work arrived during the load, refuse retirement and leave both models resident.
 
-### Rewrite preload and restart — fallback only
+## Network demand
 
-Changing `preload_models` and restarting should load a selected model reliably, but it interrupts provider service and conflates runtime selection with the next-start preference. It remains a manual fallback, not the Make Warm implementation.
+The monitor polls `https://api.darkbloom.dev/v1/models/capacity` every 30 seconds. It displays enabled models only and preserves the last successful sample as stale when refresh fails. Samples older than two minutes or more than five seconds in the future are never actionable, and an older overlapping response cannot replace a newer accepted sample.
 
-## Provider start behavior
+Each compact row shows:
 
-App-managed Start continues to resolve every saved enabled selector to one exact downloaded catalog model and passes each as a repeated `--model` argument. It also adds `--local-endpoint` while retaining authenticated loopback defaults. It never adds `--no-auth`, never binds a non-loopback address, and never uses `--all`.
+- demand band derived from queued work and active requests per warm provider;
+- active request count;
+- queued request count when nonzero;
+- warm-provider count.
 
-The app does not silently restart a provider that is already running without the endpoint. In that state, model rows show that live switching requires one setup transition and offer **Enable Live Switching…**. That action:
+Rows are ranked urgent, high, moderate, then low. These values describe network pressure, not expected revenue. Public customer pricing must not be presented as provider earnings.
 
-1. refreshes provider activity;
-2. presents the normal customer-impact warning if inference is active or cannot be verified;
-3. on confirmation, performs an app-owned Stop followed by an exact app-managed Start with `--local-endpoint`;
-4. waits for a new process identity and fresh endpoint discovery;
-5. reports complete, partial, uncertain, or failed setup explicitly.
+## Manual warm flow
 
-The setup transition is never described as a normal model switch. If Stop succeeds but Start fails, the app must report that the provider is stopped and offer the existing Start recovery action.
+1. Require one exact downloaded, saved-enabled catalog model.
+2. Require fresh daemon and loaded-model evidence.
+3. Return immediately if the target is already resident.
+4. In one-slot mode, wait for idle and retire the resident before loading. In two-slot mode, allow the old customer job to continue.
+5. Apply the selected capacity and memory-headroom rules.
+6. Require a private, current, loopback endpoint discovery record.
+7. Send one bounded authenticated protected-load request for the exact model.
+8. In two-slot mode, request exact idle retirement of the prior resident only after load succeeds.
+9. Reconcile fresh local state even when either HTTP result is ambiguous and report success only when the target is resident.
 
-## Local endpoint discovery and security
+The popup presents those transitions as compact progress text: preparing, loading into the active slot or staging in the free slot, retiring the previous idle model, and confirming model state.
 
-Add `~/.darkbloom/local.json` as a narrowly approved control source, not general telemetry.
+The action never edits Enable or Preload, invokes Stop or Restart, uses `--all`, disables endpoint authentication, or targets a remote coordinator request.
 
-The discovery reader must:
+The app's explicit provider Restart control re-runs the CLI's non-interactive Start path with every exact saved enabled model and `--local-endpoint`. The CLI's native restart preserves its old launchd arguments, so it cannot apply a newly saved model selection or add the protected endpoint to an older provider registration. The restart-required gate persists across monitor relaunches and clears only when a fresh provider snapshot proves that raw Enable, Preload, and configured slot-cap values plus immutable launch model IDs match the saved configuration. Live advertised models are intentionally not used for equality because coordinator prefetch can change that set legitimately.
 
-- cap the file size before decoding;
-- reject symlinks, non-regular files, unexpected ownership, and group/world-readable permissions;
-- decode only the required `base_url` and `api_key` fields;
-- reject empty credentials;
-- require plain HTTP to an exact loopback host (`127.0.0.1`, `::1`, or `localhost` after a loopback resolution check);
-- reject URL user information, fragments, and unexpected query parameters;
-- require the discovery timestamp to be compatible with the current provider process start;
-- retain the key only in the request-scoped value lifetime;
-- never place the key in logs, errors, fixtures, crash descriptions, `UserDefaults`, or SQLite.
+## Cancellation, partial outcomes, and shutdown
 
-The request client uses an ephemeral `URLSession`, no persistent cookies or cache, no redirect following, bounded request and response bodies, and a dedicated timeout. Redirects are rejected because they could disclose the bearer credential.
-
-If discovery is missing, stale, insecure, or cannot be associated with the current provider run, Make Warm is unavailable with a specific recovery explanation.
-
-## Make Warm eligibility
-
-A model is eligible when all of the following are true:
-
-- the provider is known running from fresh state;
-- the catalog, local inventory, provider configuration, daemon state, and loaded-model state meet the existing control freshness contract;
-- the model resolves to one exact catalog ID;
-- the exact model is downloaded;
-- the exact model is in the saved enabled set;
-- there are no unsaved model-configuration changes affecting the row;
-- the model is not already warm or active;
-- no conflicting provider mutation is running;
-- a secure endpoint discovery record is available for the current provider run.
-
-The action is disabled rather than guessed when identity, residency, eligibility, or endpoint state is ambiguous.
-
-## User interaction
-
-Each downloaded model row gains a compact **Make Warm** action with an accessible text label and tooltip. It is visually separate from the Enable and Preload switches and Delete action.
-
-Row behavior:
-
-- active model: action replaced by the existing Active state;
-- loaded-idle model: action replaced by the existing Loaded/Warm state;
-- enabled, downloaded, unloaded model: Make Warm available when the endpoint and source states are safe;
-- disabled or unsaved-enabled model: action disabled with “Enable and save this model first”;
-- provider stopped: action disabled with “Start the provider first”;
-- endpoint not installed: show “One restart required to enable live switching” and the separate setup action;
-- another mutation running: action disabled with the operation name.
-
-For a one-slot provider, the confirmation names the selected model and the currently warm model:
-
-> Make Qwen warm now? Gemma currently occupies the only model slot and may be unloaded.
-
-If fresh state reports customer inference active:
-
-> A customer job is currently using a model slot. Darkbloom may wait for it to finish or reject this switch; forcing a restart is not part of this action.
-
-If activity is unknown:
-
-> Darkbloom Monitor cannot confirm whether a customer job is running. The switch may delay work or be rejected.
-
-Both warning states allow Cancel or **Try Make Warm**. Confirmation authorizes the bounded local request; it does not authorize stopping, killing, or restarting the provider.
-
-For multi-slot providers, the confirmation states whether a free slot is currently observed. If all slots are full, it explains that Darkbloom chooses an idle eviction candidate. The app does not implement its own model eviction policy.
-
-## Request and reconciliation flow
-
-After eligibility and any required confirmation:
-
-1. Re-read daemon and loaded-model state.
-2. If the target became warm, finish successfully without sending a request.
-3. If the safety classification worsened, present the current warning before continuing.
-4. Load the secure endpoint discovery record again.
-5. Build a JSON-encoded request to the local `/v1/chat/completions` route containing:
-   - the exact enabled catalog model ID;
-   - one fixed non-sensitive user message;
-   - `stream: false`;
-   - `max_tokens: 1`.
-6. Mark the operation as request sent only after the HTTP task is created.
-7. While the bounded request is pending, show **Waiting for model slot** when all slots are observed busy, otherwise **Loading model**.
-8. On an HTTP success, refresh daemon and loaded-model state until the target is observed warm or the reconciliation deadline expires.
-9. On HTTP failure or timeout, still reconcile once because the provider may have loaded the model before the client saw the result.
-10. Report one of:
-    - target warm;
-    - provider busy/rejected;
-    - request failed with bounded sanitized detail;
-    - target not observed before timeout;
-    - outcome uncertain because authoritative state is unavailable.
-
-Success is based on authoritative loaded/warm state, never only on HTTP status. The app must not claim which old model was evicted until fresh state proves it.
-
-## Active inference behavior
-
-Make Warm never terminates a customer request. If every usable slot is actively serving, Darkbloom may queue the synthetic request or refuse to evict. The app allows the user to try after warning, but it must display the provider's actual outcome.
-
-There is no “force immediately by killing the active model” path. Such behavior would be a lifecycle interruption and would require a different explicitly destructive design.
-
-## Synthetic request accounting
-
-The one-token local request may affect daemon-level inference counters even though it is not customer work. Before release, a controlled live characterization must measure whether it changes:
-
-- provider `jobs_completed`;
-- prompt/completion/generated token counters;
-- current and average tok/s derivation;
-- account earnings history;
-- provider logs used for model attribution.
-
-The app records an in-memory warm-operation interval and the response's usage fields when available. If counters can be subtracted without ambiguity, the derived local activity series excludes exactly that synthetic work. If concurrent customer work prevents exact attribution, the app does not guess: account earnings remains authoritative, and locally derived job/token views disclose that a one-request warmup may be included.
-
-This characterization is an implementation gate, not an optional polish task.
-
-## State and API changes
-
-Add a model-specific runtime operation rather than overloading lifecycle:
-
-```swift
-enum ProviderOperation {
-    case idle
-    case refreshing
-    case saving
-    case downloading(modelID: String)
-    case deleting(modelID: String)
-    case lifecycle(ProviderLifecycleAction)
-    case enablingLiveSwitching
-    case warming(modelID: String)
-}
-```
-
-Add focused types:
-
-- `LocalEndpointDiscovery` — validated loopback URL and request-scoped credential;
-- `LocalEndpointDiscoveryReading` — bounded secure file reader;
-- `ModelWarmupRequesting` — sends one exact bounded local request;
-- `ModelWarmupOutcome` — warm, busy, failed, timed out, or uncertain;
-- `ModelWarmupPresentation` — row eligibility, help text, confirmation, and progress.
-
-`ProviderControlService` remains the mutation serialization owner. It validates inventory/configuration and coordinates the warmup client, but URL/file security stays in dedicated units.
-
-## Expected files
-
-Production:
-
-- modify `Sources/DarkbloomTelemetry/SourcePolicy.swift`
-- add `Sources/DarkbloomTelemetry/LocalEndpointDiscovery.swift`
-- add `Sources/DarkbloomTelemetry/ModelWarmupClient.swift`
-- extend `Sources/DarkbloomTelemetry/ProviderControlService.swift`
-- extend `Sources/DarkbloomMonitor/ProviderControlStore.swift`
-- extend `Sources/DarkbloomMonitor/ModelManagerView.swift`
-- extend `Sources/DarkbloomMonitor/ProviderLifecycleControls.swift` only for the one-time setup transition
-
-Tests:
-
-- add `Tests/DarkbloomTelemetryTests/LocalEndpointDiscoveryTests.swift`
-- add `Tests/DarkbloomTelemetryTests/ModelWarmupClientTests.swift`
-- extend `Tests/DarkbloomTelemetryTests/ProviderControlServiceTests.swift`
-- extend `Tests/DarkbloomTelemetryTests/ModelManagerPresentationTests.swift`
-- extend lifecycle and layout tests for setup/recovery presentation
-
-## Test-first sequence
-
-1. Exact app-managed Start arguments include every resolved enabled model plus `--local-endpoint`, never `--all` or `--no-auth`.
-2. Discovery parsing accepts a private current loopback record and rejects insecure/stale/redirecting cases without exposing the key.
-3. Warmup request generation uses the exact model, JSON encoding, one output token, no redirect, and strict bounds.
-4. Eligibility rejects stopped, disabled, missing, ambiguous, stale, already-warm, unsaved, and conflicting-operation states.
-5. Active and unknown inference create warnings but allow the bounded Try action.
-6. A warm target appearing during preflight prevents the synthetic request.
-7. HTTP success is not success until fresh loaded state contains the target.
-8. HTTP timeout followed by a warm target reports success; timeout plus unavailable state reports uncertainty.
-9. A busy provider leaves the current model untouched and reports busy without restarting.
-10. Operation cancellation cancels only the app's HTTP task and never the provider.
-11. UI tests verify row grouping, accessible names, progress, one-slot eviction copy, and setup recovery.
-12. Controlled live characterization records counter effects before enabling the feature in a release build.
+Warm uses the same operation serialization for manual and automatic requests.
+Cancellation before the protected load or retire request reaches the provider is
+a no-op. Once a load or retire may have started, cancellation still runs fresh
+telemetry and protected-control reconciliation; if that refresh cannot establish
+the outcome, actionable state is invalidated rather than presenting cancellation
+as proof that no residency changed. Success is reported only when fresh local
+state confirms the target resident.
+
+The one-slot cold-load gap is therefore an expected availability trade-off, not
+an active-job interruption guarantee. Protected Warm never invokes Stop or
+Restart and never unloads an active customer model. The user-facing Quit path
+waits for monitor-owned telemetry shutdown. App termination cancels automatic
+switching and the current control task and begins monitor shutdown; it does not
+target the provider process, but an OS termination callback does not guarantee
+that an in-flight provider request or reconciliation completes before exit.
+
+## Automatic selection
+
+Automatic demand-aware selection is opt-in and disabled by default. It reuses the exact manual warmup policy, requires three distinct high-or-urgent demand samples, and permits at most one launched mutation every 30 minutes. A preflight rejection does not consume the cooldown. The last-attempt timestamp persists across monitor relaunches and disabling/re-enabling automation does not clear it. It never acts on stale demand, unsaved or unapplied settings, an already-resident recommendation, an unsupported provider, mismatched live capacity, a full slot set, insufficient whole-system memory, or while another provider action is running. One-slot mode still waits for idle; two-slot mode may stage beside an active job and leaves that job's model resident if retirement is refused.
+
+A recommendation may combine current network pressure, warm-provider scarcity, locally observed model throughput, and locally observed provider earnings history. It must be labeled an opportunity index, not projected dollars per hour, unless direct per-model residency time and payout evidence make that calculation defensible.
 
 ## Acceptance criteria
 
-- Every saved enabled model remains eligible to receive coordinator work after provider startup.
-- With one slot and an idle warm model, the user can select another enabled downloaded model and observe it become warm without a provider restart.
-- Make Warm never edits Enable or Preload state.
-- Preload still controls the preferred warm model for the next provider start.
-- The action never invokes a shell, remote coordinator warmup, `start --all`, `--no-auth`, Stop, Restart, or a direct eviction command.
-- Active or unknown work produces a clear warning but allows the user to try the non-destructive switch.
-- An actively serving model is never killed by Make Warm.
-- Success is confirmed from fresh daemon/loaded-model evidence.
-- Credentials stay request-scoped and absent from logs, storage, fixtures, and errors.
-- Missing local endpoint state leads to a clearly labeled one-time setup transition, not a silent restart.
-- Synthetic-request effects on displayed counters are either precisely excluded or explicitly disclosed.
-
-## Out of scope
-
-- continuous Keep Warm scheduling;
-- periodic synthetic requests;
-- remote-machine warming;
-- user API-key storage;
-- coordinator-pinned warmup;
-- manual model eviction or unloading;
-- interruption of active inference;
-- changing slot count, memory limits, or idle timeout;
-- automatically changing the preload selection after Make Warm.
+- Settings offers exactly one- and two-model capacity and writes `max_model_slots` without disturbing unrelated TOML bytes or security metadata.
+- UI states plainly that the coordinator can use both slots.
+- A configurable staging reserve is visible for two-model mode.
+- Active customer work disables one-slot switching but may continue during a protected two-slot load.
+- A full two-model capacity disables staging rather than selecting an eviction victim.
+- Eviction-capable clients cannot execute a protected two-model stage.
+- Network demand is current, compact, enabled-model-scoped, and honest about stale data.
+- Automatic switching is default-off, requires three fresh consistent samples, and has a 30-minute attempt cooldown.
+- Manual and automatic switching expose the same ordered load, retire, and reconciliation progress.
+- A saved restart requirement survives monitor relaunch and cannot clear from command dispatch alone or from incomplete runtime evidence.
+- All success states are confirmed from fresh local residency evidence.
+- No active customer request is stopped, restarted, or unloaded by the monitor.

@@ -4,6 +4,13 @@ import Testing
 
 @Suite("Bounded local model warmup client")
 struct ModelWarmupClientTests {
+    @Test("current chat-completion warmup is explicitly classified as eviction-capable")
+    func exposesLoadSafety() {
+        #expect(ModelWarmupClient(transport: StubWarmupTransport(
+            response: .init(statusCode: 200, data: Data())
+        )).loadSafety == .mayEvictResident)
+    }
+
     @Test("request targets the exact model through the authenticated loopback endpoint")
     func requestContract() throws {
         let discovery = LocalEndpointDiscovery(
@@ -107,12 +114,124 @@ struct ModelWarmupClientTests {
         }
     }
 
+    @Test("protected control discovers capability and uses separate load and retire routes")
+    func protectedControlContract() async throws {
+        let payload = Data(#"{"api_version":1,"protected_load":true,"idle_retire":true,"max_model_slots":2,"advertised_models":["warm","target","prefetched"],"launch_models":["warm","target"],"configured_max_model_slots":2,"enabled_models":["family"],"preload_models":["warm"],"loaded_models":["warm"]}"#.utf8)
+        let transport = RecordingWarmupTransport(responses: [
+            .init(statusCode: 200, data: payload),
+            .init(statusCode: 200, data: payload),
+            .init(statusCode: 200, data: payload),
+        ])
+        let client = ProtectedModelControlClient(transport: transport)
+
+        let capability = try await client.controlSnapshot(using: discovery())
+        _ = try await client.warm(modelID: "target", using: discovery())
+        try await client.retire(modelID: "warm", using: discovery())
+
+        #expect(client.loadSafety == .preservesResidents)
+        #expect(capability == ModelControlSnapshot(
+            apiVersion: 1,
+            protectedLoad: true,
+            idleRetire: true,
+            maxModelSlots: 2,
+            loadedModels: ["warm"],
+            advertisedModels: ["warm", "target", "prefetched"],
+            launchModels: ["warm", "target"],
+            configuredMaxModelSlots: 2,
+            configuredEnabledModels: ["family"],
+            configuredPreloadModels: ["warm"]
+        ))
+        let requests = await transport.requests
+        #expect(requests.map(\.url?.absoluteString) == [
+            "http://127.0.0.1:8100/v1/provider/model-control",
+            "http://127.0.0.1:8100/v1/provider/model-control/load",
+            "http://127.0.0.1:8100/v1/provider/model-control/retire",
+        ])
+        #expect(requests.map(\.httpMethod) == ["GET", "POST", "POST"])
+        #expect(requests.allSatisfy {
+            $0.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-secret"
+        })
+    }
+
+    @Test("warmup launch evidence is emitted by the transport dispatch boundary")
+    func reportsTransportLaunch() async throws {
+        let transport = RecordingWarmupTransport(responses: [
+            .init(statusCode: 200, data: Data())
+        ])
+        let client = ModelWarmupClient(transport: transport)
+        let evidence = LaunchEvidence()
+
+        _ = try await client.warm(
+            modelID: "target",
+            using: discovery(),
+            onLaunch: { evidence.mark() }
+        )
+
+        #expect(evidence.didLaunch)
+        #expect((await transport.requests).count == 1)
+    }
+
+    @Test("protected control distinguishes an older response with no advertised-model proof")
+    func protectedControlAllowsMissingAdvertisedProof() async throws {
+        let payload = Data(#"{"api_version":1,"protected_load":true,"idle_retire":true,"max_model_slots":1,"loaded_models":[]}"#.utf8)
+        let client = ProtectedModelControlClient(transport: StubWarmupTransport(
+            response: .init(statusCode: 200, data: payload)
+        ))
+
+        let capability = try #require(await client.controlSnapshot(using: discovery()))
+
+        #expect(capability.advertisedModels == nil)
+    }
+
+    @Test("protected control treats a missing capability route as unsupported")
+    func protectedControlRequiresCapabilityRoute() async throws {
+        let client = ProtectedModelControlClient(transport: StubWarmupTransport(
+            response: .init(statusCode: 404, data: Data())
+        ))
+
+        #expect(try await client.controlSnapshot(using: discovery()) == nil)
+        await #expect(throws: ModelWarmupClientError.unsupported) {
+            _ = try await client.warm(modelID: "target", using: discovery())
+        }
+    }
+
     private func discovery() -> LocalEndpointDiscovery {
         LocalEndpointDiscovery(
             baseURL: URL(string: "http://127.0.0.1:8100/v1")!,
             apiKey: "fixture-secret",
             evidenceAt: Date(timeIntervalSince1970: 1)
         )
+    }
+}
+
+private actor RecordingWarmupTransport: ModelWarmupTransporting {
+    private var responses: [ModelWarmupTransportResponse]
+    private(set) var requests: [URLRequest] = []
+
+    init(responses: [ModelWarmupTransportResponse]) {
+        self.responses = responses
+    }
+
+    func send(
+        _ request: URLRequest,
+        maximumResponseBytes: Int
+    ) async throws -> ModelWarmupTransportResponse {
+        try await send(
+            request,
+            maximumResponseBytes: maximumResponseBytes,
+            onLaunch: nil
+        )
+    }
+
+    func send(
+        _ request: URLRequest,
+        maximumResponseBytes: Int,
+        onLaunch: ModelWarmupRequestLaunchObserver?
+    ) async throws -> ModelWarmupTransportResponse {
+        onLaunch?()
+        requests.append(request)
+        guard !responses.isEmpty else { throw ModelWarmupTransportError.invalidResponse }
+        return responses.removeFirst()
     }
 }
 
@@ -132,5 +251,22 @@ private actor StubWarmupTransport: ModelWarmupTransporting {
         maximumResponseBytes: Int
     ) async throws -> ModelWarmupTransportResponse {
         try result.get()
+    }
+}
+
+private final class LaunchEvidence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var launched = false
+
+    func mark() {
+        lock.lock()
+        launched = true
+        lock.unlock()
+    }
+
+    var didLaunch: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return launched
     }
 }

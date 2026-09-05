@@ -80,7 +80,12 @@ struct TelemetryServiceTests {
             thermal: .nominal,
             earnings: .available(microUSD: 2_900_000),
             mode: .automatic
-        ).metricText == "$2.90/24h")
+        ).metricText == "Working")
+        #expect(MenuBarPresentation.make(
+            snapshot: heartbeat, thermal: .nominal,
+            earnings: .available(microUSD: 2_900_000), mode: .automatic,
+            activeModelAverage: 27.2
+        ).metricText == "27t/s avg")
     }
 
     @Test("completed work uses the full observed active window")
@@ -166,8 +171,8 @@ struct TelemetryServiceTests {
         #expect(await source.maximumConcurrentReads == 1)
     }
 
-    @Test("structured and loaded freshness use embedded Darkbloom timestamps")
-    func usesCanonicalFreshnessTimestamps() async {
+    @Test("unchanged loaded-model state remains fresh after a successful read")
+    func loadedModelsUseAcquisitionFreshness() async {
         let source = ScriptedTelemetrySource.successful(
             state: sample(tokens: 10, writtenAt: 990),
             loadedModels: loadedModels(updatedAt: 989)
@@ -183,12 +188,32 @@ struct TelemetryServiceTests {
             Issue.record("Expected state exactly 10 seconds old to remain fresh")
             return
         }
-        guard case .stale(_, let capturedAt, _) = snapshot.loadedModels else {
-            Issue.record("Expected loaded models older than 10 seconds to be stale")
+        guard case .available(_, let capturedAt) = snapshot.loadedModels else {
+            Issue.record("Expected unchanged loaded models from the current provider run")
             return
         }
         #expect(capturedAt == Date(timeIntervalSince1970: 1_000))
         #expect(snapshot.menuStatus == .online)
+    }
+
+    @Test("loaded-model state from before the current provider run is stale")
+    func rejectsLoadedModelsFromPreviousProviderRun() async {
+        let source = ScriptedTelemetrySource.successful(
+            state: sample(tokens: 10, writtenAt: 1_000),
+            loadedModels: loadedModels(updatedAt: 899)
+        )
+        let service = TelemetryService(
+            source: source,
+            now: { Date(timeIntervalSince1970: 1_001) }
+        )
+
+        let snapshot = await service.refreshNow()
+
+        guard case .stale(_, _, let reason) = snapshot.loadedModels else {
+            Issue.record("Expected loaded models from before provider startup to be stale")
+            return
+        }
+        #expect(reason == "Loaded model state predates the current provider run")
     }
 
     @Test("stale structured state cannot appear fresh from local capture time")
@@ -316,7 +341,7 @@ struct TelemetryServiceTests {
         #expect(loadedModelsStarted)
     }
 
-    @Test("freshness heartbeat publishes canonical timestamp transitions")
+    @Test("freshness heartbeat ages daemon and loaded-model acquisition evidence")
     func publishesFreshnessOnlyTransition() async {
         let clock = LockedNow(1_000)
         let source = ScriptedTelemetrySource.successful(

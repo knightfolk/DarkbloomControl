@@ -687,19 +687,44 @@ public actor TelemetryService {
             )
         }
 
-        let age = now.timeIntervalSince1970 - lastLoadedModels.value.updatedAt
-        if age < 0 {
+        let updatedAt = lastLoadedModels.value.updatedAt
+        guard updatedAt.isFinite, now.timeIntervalSince1970.isFinite else {
+            return .stale(
+                value: lastLoadedModels.value,
+                capturedAt: lastLoadedModels.capturedAt,
+                reason: "Loaded-model update time is invalid"
+            )
+        }
+        if updatedAt > now.timeIntervalSince1970 {
             return .stale(
                 value: lastLoadedModels.value,
                 capturedAt: lastLoadedModels.capturedAt,
                 reason: "Loaded-model update time is in the future"
             )
         }
-        if age > 10 {
+        if let daemon = lastState?.value,
+           daemon.startedAt.isFinite,
+           updatedAt < daemon.startedAt {
             return .stale(
                 value: lastLoadedModels.value,
                 capturedAt: lastLoadedModels.capturedAt,
-                reason: "Loaded models are older than 10 seconds"
+                reason: "Loaded model state predates the current provider run"
+            )
+        }
+
+        let acquisitionAge = now.timeIntervalSince(lastLoadedModels.capturedAt)
+        if !acquisitionAge.isFinite || acquisitionAge < 0 {
+            return .stale(
+                value: lastLoadedModels.value,
+                capturedAt: lastLoadedModels.capturedAt,
+                reason: "Loaded-model read time is invalid"
+            )
+        }
+        if acquisitionAge > 10 {
+            return .stale(
+                value: lastLoadedModels.value,
+                capturedAt: lastLoadedModels.capturedAt,
+                reason: "Loaded-model read is older than 10 seconds"
             )
         }
         return .available(

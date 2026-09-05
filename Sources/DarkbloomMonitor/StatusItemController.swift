@@ -8,35 +8,19 @@ final class StatusItemController: NSObject {
 
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
-    private let settingsWindowController: NSWindowController
+    private(set) var dashboardWindowController: DashboardWindowController?
+    private let store: MonitorStore
+    private let defaults: UserDefaults
     private(set) var controlStore: ProviderControlStore?
 
     var statusItemLength: CGFloat { statusItem.length }
-    var settingsWindowTitle: String? { settingsWindowController.window?.title }
-    var settingsWindowIsReleasedWhenClosed: Bool? {
-        settingsWindowController.window?.isReleasedWhenClosed
-    }
-    var settingsWindowIsResizable: Bool {
-        settingsWindowController.window?.styleMask.contains(.resizable) == true
-    }
-    var settingsWindowContentSize: NSSize? {
-        settingsWindowController.window?.contentView?.frame.size
-    }
     var popoverContentSize: NSSize { popover.contentSize }
 
-    init(store: MonitorStore, controlStore: ProviderControlStore? = nil) {
+    init(store: MonitorStore, controlStore: ProviderControlStore? = nil, defaults: UserDefaults = .standard) {
+        self.store = store
+        self.defaults = defaults
         statusItem = NSStatusBar.system.statusItem(withLength: Self.itemWidth)
         self.controlStore = controlStore
-        let settingsViewController = NSHostingController(
-            rootView: AppSettingsSceneRoot(controlStore: controlStore)
-        )
-        let settingsWindow = NSWindow(contentViewController: settingsViewController)
-        settingsWindow.title = "Darkbloom Monitor Settings"
-        settingsWindow.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        settingsWindow.isReleasedWhenClosed = false
-        settingsWindow.setContentSize(NSSize(width: 720, height: 620))
-        settingsWindow.center()
-        settingsWindowController = NSWindowController(window: settingsWindow)
         super.init()
 
         guard let button = statusItem.button else { return }
@@ -55,19 +39,20 @@ final class StatusItemController: NSObject {
         ])
 
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 400, height: 600)
+        popover.contentSize = NSSize(width: 420, height: 430)
         popover.contentViewController = NSHostingController(
             rootView: PopoverRootView(
                 store: store,
                 controlStore: controlStore,
-                openSettings: { [weak self] in self?.showSettings() }
+                openSettings: { [weak self] in self?.showSettings() },
+                openDashboard: { [weak self] in self?.showDashboard() }
             )
         )
     }
 
     func invalidate() {
         popover.performClose(nil)
-        settingsWindowController.close()
+        dashboardWindowController?.close()
         NSStatusBar.system.removeStatusItem(statusItem)
     }
 
@@ -75,16 +60,26 @@ final class StatusItemController: NSObject {
         if popover.isShown {
             popover.performClose(sender)
         } else {
+            let controlStore = self.controlStore
+            Task { @MainActor [weak controlStore] in
+                await controlStore?.refreshPreservingDraft()
+            }
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         }
     }
 
-    private func showSettings() {
+    func showDashboard(section: DashboardDestination? = nil, activate: Bool = true) {
         popover.performClose(nil)
-        settingsWindowController.showWindow(nil)
-        NSApplication.shared.activate()
-        settingsWindowController.window?.orderFrontRegardless()
-        settingsWindowController.window?.makeKeyAndOrderFront(nil)
+        if dashboardWindowController == nil {
+            dashboardWindowController = DashboardWindowController(
+                store: store, controlStore: controlStore, defaults: defaults
+            )
+        }
+        dashboardWindowController?.present(section: section, activate: activate)
+    }
+
+    func showSettings(activate: Bool = true) {
+        showDashboard(section: .settings, activate: activate)
     }
 }
 
@@ -97,11 +92,14 @@ private struct StatusItemRootView: View {
     @AppStorage("menuBarDisplayMode") private var displayModeRaw = MenuBarDisplayMode.automatic.rawValue
 
     var body: some View {
-        MenuBarLabel(
-            presentation: store.menuPresentation(mode: displayMode),
-            uptime: store.observedUptime
-        )
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            MenuBarLabel(
+                presentation: store.menuPresentation(mode: displayMode),
+                uptime: store.observedUptime,
+                family: ModelFamilyIcon.select(snapshot: store.snapshot, now: Date())
+            )
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var displayMode: MenuBarDisplayMode {
@@ -113,14 +111,15 @@ private struct PopoverRootView: View {
     @ObservedObject var store: MonitorStore
     let controlStore: ProviderControlStore?
     let openSettings: () -> Void
+    let openDashboard: () -> Void
 
     @ViewBuilder
     var body: some View {
         if let controlStore {
-            MonitorPopover(store: store, openSettings: openSettings)
+            MonitorPopover(store: store, openSettings: openSettings, openDashboard: openDashboard)
                 .environmentObject(controlStore)
         } else {
-            MonitorPopover(store: store, openSettings: openSettings)
+            MonitorPopover(store: store, openSettings: openSettings, openDashboard: openDashboard)
         }
     }
 }

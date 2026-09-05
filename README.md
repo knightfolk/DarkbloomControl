@@ -32,8 +32,11 @@ keeps model and lifecycle controls behind explicit safety checks.
 - Opt-in estimated adapter power, a saved USD/kWh electricity rate, and earnings
   after electricity for matching measurement periods
 
-The status item favors current `tok/s` while inference is active and recent
-earnings while idle. Unavailable values are omitted or shown with a compact
+The status item favors measured `tok/s` when available. During inference without
+fresh token telemetry, it shows the model's daily rate labeled `avg`, or
+`Working` when no average exists. These are not realtime measurements. The popup
+also labels this working/average fallback. Earnings remain the idle fallback.
+Unavailable values are omitted or shown with a compact
 neutral state; the monitor does not manufacture values from unrelated counters.
 
 ## Screenshots

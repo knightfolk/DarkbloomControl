@@ -4,9 +4,13 @@ import Foundation
 public enum ProviderConfigError: Error, Equatable, Sendable {
     case invalidUTF8
     case missingArray(String)
+    case missingInteger(String)
     case duplicateArray(String)
+    case duplicateInteger(String)
     case malformedArray(String)
+    case malformedInteger(String)
     case nonStringValue(String)
+    case unsupportedInteger(String, Int)
     case duplicateModel(String)
     case preloadRequiresEnabled(String)
     case changedExternally
@@ -16,10 +20,12 @@ public enum ProviderConfigError: Error, Equatable, Sendable {
 public struct ProviderConfigDocument: Equatable, Sendable {
     public let data: Data
     public let selection: ProviderModelSelection
+    public let maxModelSlots: Int?
     public let revision: String
 
     private let enabledRange: Range<Int>
     private let preloadRange: Range<Int>
+    private let maxModelSlotsRange: Range<Int>?
     private let lineEnding: String
 
     public init(data: Data) throws {
@@ -28,27 +34,59 @@ public struct ProviderConfigDocument: Equatable, Sendable {
         }
 
         var scanner = ProviderConfigScanner(data: data)
-        let arrays = try scanner.scan()
-        let enabled = try Self.require("enabled_models", in: arrays)
-        let preloaded = try Self.require("preload_models", in: arrays)
+        let scan = try scanner.scan()
+        let enabled = try Self.require("enabled_models", in: scan.arrays)
+        let preloaded = try Self.require("preload_models", in: scan.arrays)
         let selection = ProviderModelSelection(enabled: enabled.values, preloaded: preloaded.values)
         try Self.validate(selection)
 
         self.data = data
         self.selection = selection
+        self.maxModelSlots = scan.integers["max_model_slots"]?.value
         self.revision = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         self.enabledRange = enabled.range
         self.preloadRange = preloaded.range
+        self.maxModelSlotsRange = scan.integers["max_model_slots"]?.range
         self.lineEnding = Self.detectLineEnding(in: data)
     }
 
-    public func rendering(_ selection: ProviderModelSelection) throws -> Data {
+    public func rendering(
+        _ selection: ProviderModelSelection,
+        maxModelSlots requestedMaxModelSlots: Int? = nil
+    ) throws -> Data {
         try Self.validate(selection)
 
-        let replacements = [
+        if let requestedMaxModelSlots, !(1...2).contains(requestedMaxModelSlots) {
+            throw ProviderConfigError.unsupportedInteger(
+                "max_model_slots",
+                requestedMaxModelSlots
+            )
+        }
+        var replacements = [
             (range: enabledRange, value: Self.renderArray(selection.enabled, lineEnding: lineEnding)),
             (range: preloadRange, value: Self.renderArray(selection.preloaded, lineEnding: lineEnding)),
-        ].sorted { $0.range.lowerBound > $1.range.lowerBound }
+        ]
+        if let requestedMaxModelSlots {
+            if let maxModelSlotsRange {
+                replacements.append((
+                    range: maxModelSlotsRange,
+                    value: Data(String(requestedMaxModelSlots).utf8)
+                ))
+            } else {
+                let insertion = Self.missingIntegerInsertion(
+                    key: "max_model_slots",
+                    value: requestedMaxModelSlots,
+                    after: enabledRange,
+                    in: data,
+                    lineEnding: lineEnding
+                )
+                replacements.append((
+                    range: insertion.index..<insertion.index,
+                    value: insertion.value
+                ))
+            }
+        }
+        replacements.sort { $0.range.lowerBound > $1.range.lowerBound }
 
         var rendered = data
         for replacement in replacements {
@@ -103,6 +141,57 @@ public struct ProviderConfigDocument: Equatable, Sendable {
         return Data(result.utf8)
     }
 
+    private static func missingIntegerInsertion(
+        key: String,
+        value: Int,
+        after valueRange: Range<Int>,
+        in data: Data,
+        lineEnding: String
+    ) -> (index: Int, value: Data) {
+        let bytes = [UInt8](data)
+        var lineStart = valueRange.lowerBound
+        while lineStart > 0,
+              bytes[lineStart - 1] != 0x0A,
+              bytes[lineStart - 1] != 0x0D {
+            lineStart -= 1
+        }
+
+        var indentationEnd = lineStart
+        while indentationEnd < bytes.count,
+              bytes[indentationEnd] == 0x20 || bytes[indentationEnd] == 0x09 {
+            indentationEnd += 1
+        }
+        let indentation = String(
+            decoding: bytes[lineStart..<indentationEnd],
+            as: UTF8.self
+        )
+
+        var insertionIndex = valueRange.upperBound
+        while insertionIndex < bytes.count,
+              bytes[insertionIndex] != 0x0A,
+              bytes[insertionIndex] != 0x0D {
+            insertionIndex += 1
+        }
+
+        var prefix = ""
+        if insertionIndex < bytes.count {
+            if bytes[insertionIndex] == 0x0D,
+               insertionIndex + 1 < bytes.count,
+               bytes[insertionIndex + 1] == 0x0A {
+                insertionIndex += 2
+            } else {
+                insertionIndex += 1
+            }
+        } else {
+            prefix = lineEnding
+        }
+
+        return (
+            insertionIndex,
+            Data((prefix + indentation + key + " = \(value)" + lineEnding).utf8)
+        )
+    }
+
     private static func escape(_ value: String) -> String {
         var result = ""
         for scalar in value.unicodeScalars {
@@ -129,6 +218,16 @@ private struct ProviderConfigArray: Equatable {
     let values: [String]
 }
 
+private struct ProviderConfigInteger: Equatable {
+    let range: Range<Int>
+    let value: Int
+}
+
+private struct ProviderConfigScan {
+    var arrays: [String: ProviderConfigArray] = [:]
+    var integers: [String: ProviderConfigInteger] = [:]
+}
+
 private struct ProviderConfigScanner {
     private enum QuoteState {
         case none
@@ -145,8 +244,8 @@ private struct ProviderConfigScanner {
         self.bytes = [UInt8](data)
     }
 
-    mutating func scan() throws -> [String: ProviderConfigArray] {
-        var arrays: [String: ProviderConfigArray] = [:]
+    mutating func scan() throws -> ProviderConfigScan {
+        var result = ProviderConfigScan()
         var isModelSelectionScope = true
 
         while true {
@@ -171,26 +270,48 @@ private struct ProviderConfigScanner {
             }
             index += 1
 
-            guard isModelSelectionScope,
-                  key == "enabled_models" || key == "preload_models"
-            else {
+            guard isModelSelectionScope else {
                 index = skipStatement(from: index)
                 continue
             }
-            guard arrays[key] == nil else {
-                throw ProviderConfigError.duplicateArray(key)
-            }
+            if key == "enabled_models" || key == "preload_models" {
+                guard result.arrays[key] == nil else {
+                    throw ProviderConfigError.duplicateArray(key)
+                }
 
-            skipHorizontalWhitespace()
-            guard index < bytes.count, bytes[index] == Self.openBracket else {
-                throw ProviderConfigError.nonStringValue(key)
+                skipHorizontalWhitespace()
+                guard index < bytes.count, bytes[index] == Self.openBracket else {
+                    throw ProviderConfigError.nonStringValue(key)
+                }
+                let array = try parseStringArray(key: key)
+                result.arrays[key] = array
+                try consumeTargetStatementRemainder(arrayKey: key)
+            } else if key == "max_model_slots" {
+                guard result.integers[key] == nil else {
+                    throw ProviderConfigError.duplicateInteger(key)
+                }
+                skipHorizontalWhitespace()
+                result.integers[key] = try parseInteger(key: key)
+                try consumeTargetStatementRemainder(integerKey: key)
+            } else {
+                index = skipStatement(from: index)
             }
-            let array = try parseStringArray(key: key)
-            arrays[key] = array
-            try consumeTargetStatementRemainder(key: key)
         }
 
-        return arrays
+        return result
+    }
+
+    private mutating func parseInteger(key: String) throws -> ProviderConfigInteger {
+        let start = index
+        while index < bytes.count, bytes[index] >= 0x30, bytes[index] <= 0x39 {
+            index += 1
+        }
+        guard start < index,
+              let value = Int(String(decoding: bytes[start..<index], as: UTF8.self))
+        else {
+            throw ProviderConfigError.malformedInteger(key)
+        }
+        return ProviderConfigInteger(range: start..<index, value: value)
     }
 
     private func isBackendTableHeader(at start: Int) -> Bool {
@@ -324,13 +445,24 @@ private struct ProviderConfigScanner {
         index += digits
     }
 
-    private mutating func consumeTargetStatementRemainder(key: String) throws {
+    private mutating func consumeTargetStatementRemainder(arrayKey key: String) throws {
         skipHorizontalWhitespace()
         if index < bytes.count, bytes[index] == Self.comment {
             skipComment()
         }
         guard index == bytes.count || isNewline(at: index) else {
             throw ProviderConfigError.malformedArray(key)
+        }
+        consumeNewline()
+    }
+
+    private mutating func consumeTargetStatementRemainder(integerKey key: String) throws {
+        skipHorizontalWhitespace()
+        if index < bytes.count, bytes[index] == Self.comment {
+            skipComment()
+        }
+        guard index == bytes.count || isNewline(at: index) else {
+            throw ProviderConfigError.malformedInteger(key)
         }
         consumeNewline()
     }

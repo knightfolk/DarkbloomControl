@@ -1,6 +1,46 @@
 import DarkbloomTelemetry
 import SwiftUI
 
+enum HealthPresentation {
+    static func daemonWarning(_ source: SourceAvailability<DaemonState>, at now: Date) -> String? {
+        switch source {
+        case .unavailable(let reason):
+            return "Daemon details unavailable — \(reason)"
+        case .stale(_, _, let reason):
+            return "Last-known daemon details — \(reason)"
+        case .available(let state, _):
+            let age = now.timeIntervalSince1970 - state.writtenAt
+            guard age.isFinite, age >= 0, age <= 10 else {
+                return "Last-known daemon details — state timestamp is not current."
+            }
+            return nil
+        }
+    }
+
+    static func daemonRows(_ state: DaemonState?) -> [DisplayRow] {
+        guard let state else { return [] }
+        return [
+            DisplayRow(label: "Process PID", value: String(state.processIdentity.pid)),
+            DisplayRow(label: "Process start identity (µs)", value: String(state.processIdentity.startTimeMicros)),
+            DisplayRow(label: "CLI version · daemon", value: state.version),
+            DisplayRow(label: "Trust", value: "\(state.trust.status) · \(state.trust.level)"),
+            DisplayRow(label: "Inference", value: state.inferenceActive ? "Active" : "Idle"),
+            DisplayRow(label: "Reported slots", value: String(state.slots.count)),
+            DisplayRow(label: "GPU active memory", value: "\(state.capacity.gpuMemoryActiveGB.formatted(.number.precision(.fractionLength(1)))) GB"),
+            DisplayRow(label: "GPU cache memory", value: "\(state.capacity.gpuMemoryCacheGB.formatted(.number.precision(.fractionLength(1)))) GB"),
+        ]
+    }
+
+    static func statusRows(_ status: SourceAvailability<StatusSnapshot>) -> [DisplayRow] {
+        switch status {
+        case .available(let value, _), .stale(let value, _, _):
+            value.advancedRows
+        case .unavailable(let reason):
+            [DisplayRow(label: "CLI status", value: TelemetryFormatting.unavailable(reason))]
+        }
+    }
+}
+
 struct AdvancedSection: View {
     let snapshot: TelemetrySnapshot
     @Binding var isExpanded: Bool
@@ -40,14 +80,7 @@ struct AdvancedSection: View {
     }
 
     private var statusRows: [DisplayRow] {
-        switch snapshot.status {
-        case .available(let status, _), .stale(let status, _, _):
-            status.advancedRows
-        case .unavailable(let reason):
-            StatusSnapshot().advancedRows.map {
-                DisplayRow(label: $0.label, value: TelemetryFormatting.unavailable(reason))
-            }
-        }
+        HealthPresentation.statusRows(snapshot.status)
     }
 
     private var sourcePathRows: [DisplayRow] {

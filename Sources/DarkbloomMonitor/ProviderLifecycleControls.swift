@@ -9,26 +9,33 @@ struct ProviderLifecycleSourceInput: Equatable {
     let currentTime: Date
 
     var providerKnownRunning: Bool? {
-        if case .available(let status, _) = status,
+        let runningEvidenceAt = newestRunningEvidenceAt
+        if case .available(let status, let statusCapturedAt) = status,
            let statusValue = Self.runningState(from: status.daemon) {
+            if !statusValue,
+               let runningEvidenceAt,
+               runningEvidenceAt > statusCapturedAt {
+                return true
+            }
             return statusValue
         }
-        if case .available = daemonState {
-            return true
-        }
-        if hasCurrentControlDaemonEvidence {
-            return true
-        }
-        return nil
+        return runningEvidenceAt == nil ? nil : true
     }
 
-    private var hasCurrentControlDaemonEvidence: Bool {
-        controlDaemonState?.evaluated(
+    private var newestRunningEvidenceAt: Date? {
+        var evidence: [Date] = []
+        if case .available(_, let capturedAt) = daemonState {
+            evidence.append(capturedAt)
+        }
+        if case .fresh(let evidenceAt) = controlDaemonState?.evaluated(
             at: currentTime,
             invalidReason: "Provider activity timestamp is invalid",
             staleReason: "Provider activity is stale",
             futureReason: "Provider activity timestamp is in the future"
-        ).isMarkedFresh == true
+        ) {
+            evidence.append(evidenceAt)
+        }
+        return evidence.max()
     }
 
     private static func runningState(from daemonStatus: String?) -> Bool? {
@@ -80,6 +87,14 @@ struct ProviderLifecyclePresentation: Equatable {
             )
         }
         if providerKnownRunning {
+            guard !enabledModels.isEmpty else {
+                return Self(
+                    canStart: false,
+                    canStop: true,
+                    canRestart: false,
+                    unavailableReason: "Start requires at least one saved enabled model"
+                )
+            }
             return Self(
                 canStart: false,
                 canStop: true,
@@ -103,6 +118,73 @@ struct ProviderLifecyclePresentation: Equatable {
         )
     }
 
+}
+
+struct ProviderLifecycleUnavailableReasonPresentation: Equatable {
+    static let systemImage = "exclamationmark.triangle"
+    static let accessibilityIdentifier = "provider.lifecycle.unavailable-reason"
+    static let maxWidth: CGFloat = 220
+
+    let message: String
+    let systemImage: String
+    let accessibilityIdentifier: String
+
+    init(
+        message: String,
+        systemImage: String = Self.systemImage,
+        accessibilityIdentifier: String = Self.accessibilityIdentifier
+    ) {
+        self.message = message
+        self.systemImage = systemImage
+        self.accessibilityIdentifier = accessibilityIdentifier
+    }
+
+    static func make(
+        from presentation: ProviderLifecyclePresentation
+    ) -> Self? {
+        guard let message = presentation.unavailableReason else { return nil }
+        return Self(message: message)
+    }
+}
+
+struct ProviderLifecycleFeedbackPresentation: Equatable {
+    let message: String
+    let isError: Bool
+
+    static func make(
+        operation: ProviderOperation,
+        operationPhase: ProviderMutationPhase?,
+        maxModelSlots: Int?,
+        errorMessage: String?
+    ) -> Self? {
+        if case .lifecycle(let action) = operation {
+            let message = switch action {
+            case .start: "Starting provider…"
+            case .stop: "Stopping provider…"
+            case .restart: "Restarting provider…"
+            }
+            return Self(message: message, isError: false)
+        }
+        if case .warming(let modelID) = operation {
+            let message = switch operationPhase {
+            case .loadingModel:
+                maxModelSlots == 2
+                    ? "Staging \(modelID) in the free slot…"
+                    : "Loading \(modelID) into the active slot…"
+            case .retiringPreviousModels:
+                maxModelSlots == 2
+                    ? "Target warm; retiring the previous idle model…"
+                    : "Retiring the previous idle model before switching…"
+            case .reconciling:
+                "Confirming model state…"
+            case .mutating, nil:
+                "Preparing \(modelID)…"
+            }
+            return Self(message: message, isError: false)
+        }
+        guard let errorMessage else { return nil }
+        return Self(message: errorMessage, isError: true)
+    }
 }
 
 enum ProviderLifecycleControl: CaseIterable {
@@ -281,36 +363,53 @@ struct ProviderLifecycleControls: View {
 
     private func controls(currentTime: Date) -> some View {
         let presentation = presentation(currentTime: currentTime)
-        return HStack(spacing: 6) {
-            if let unavailableReason = presentation.unavailableReason {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.secondary)
-                    .help(unavailableReason)
-                    .accessibilityLabel(unavailableReason)
+        return VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: 6) {
+                ForEach(ProviderLifecycleControl.allCases, id: \.self) { control in
+                    Button {
+                        Task { await store.request(control.action) }
+                    } label: {
+                        Group {
+                            if control.isActive(in: store.operation) {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: control.systemImage)
+                            }
+                        }
+                        .frame(width: 14, height: 14)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!control.isEnabled(in: presentation))
+                    .help(control.accessibilityLabel)
+                    .accessibilityLabel(control.accessibilityLabel)
+                    .accessibilityIdentifier(control.accessibilityIdentifier)
+                }
             }
 
-            ForEach(ProviderLifecycleControl.allCases, id: \.self) { control in
-                Button {
-                    Task { await store.request(control.action) }
-                } label: {
-                    Group {
-                        if control.isActive(in: store.operation) {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: control.systemImage)
-                        }
-                    }
-                    .frame(width: 14, height: 14)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!control.isEnabled(in: presentation))
-                .help(control.accessibilityLabel)
-                .accessibilityLabel(control.accessibilityLabel)
-                .accessibilityIdentifier(control.accessibilityIdentifier)
+            if let reason = ProviderLifecycleUnavailableReasonPresentation.make(
+                from: presentation
+            ) {
+                Label(reason.message, systemImage: reason.systemImage)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(0.8)
+                    .frame(
+                        maxWidth: ProviderLifecycleUnavailableReasonPresentation.maxWidth,
+                        alignment: .trailing
+                    )
+                    .help(reason.message)
+                    .accessibilityLabel(reason.message)
+                    .accessibilityIdentifier(reason.accessibilityIdentifier)
             }
         }
+        .frame(
+            maxWidth: ProviderLifecycleUnavailableReasonPresentation.maxWidth,
+            alignment: .trailing
+        )
     }
 
     private var confirmation: Binding<LifecycleConfirmation?> {

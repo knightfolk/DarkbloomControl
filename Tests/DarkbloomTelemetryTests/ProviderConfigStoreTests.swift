@@ -14,8 +14,69 @@ struct ProviderConfigStoreTests {
 
         #expect(draft.original == ProviderModelSelection(enabled: ["old-model"], preloaded: []))
         #expect(draft.selection == draft.original)
+        #expect(draft.originalMaxModelSlots == 1)
+        #expect(draft.maxModelSlots == 1)
         #expect(!draft.hasChanges)
         #expect(draft.sourceRevision == (try ProviderConfigDocument(data: harness.originalData)).revision)
+    }
+
+    @Test("save stages a one or two model capacity change with the model selection")
+    func savesMaxModelSlots() async throws {
+        let harness = try ConfigStoreHarness.make(mode: 0o600)
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+
+        let saved = try await harness.store.save(draft.withMaxModelSlots(2))
+
+        #expect(saved.restartRequired)
+        #expect(saved.draft.originalMaxModelSlots == 2)
+        #expect(saved.draft.maxModelSlots == 2)
+        #expect(!saved.draft.hasChanges)
+        let document = try ProviderConfigDocument(data: Data(contentsOf: harness.configURL))
+        #expect(document.maxModelSlots == 2)
+        #expect(document.selection == draft.selection)
+    }
+
+    @Test("save repairs a missing capacity key through the validated metadata-preserving transaction")
+    func repairsMissingMaxModelSlots() async throws {
+        let source = Data("""
+        private_token = "never-display-this"
+
+        [backend]
+        enabled_models = ["old-model"]
+        preload_models = []
+
+        [unrelated]
+        keep = true
+
+        """.utf8)
+        let metadataRecorder = MetadataRecorder()
+        let harness = try ConfigStoreHarness.make(
+            mode: 0o640,
+            sourceData: source,
+            metadataRecorder: metadataRecorder
+        )
+        defer { harness.cleanup() }
+        let originalOwner = try fileOwner(harness.configURL)
+        let originalGroup = try fileGroup(harness.configURL)
+        let draft = try await harness.store.load()
+
+        #expect(draft.maxModelSlots == nil)
+        let saved = try await harness.store.save(draft.withMaxModelSlots(2))
+
+        #expect(saved.restartRequired)
+        #expect(saved.draft.originalMaxModelSlots == 2)
+        #expect(!saved.draft.hasChanges)
+        #expect(try Data(contentsOf: harness.backupURL) == source)
+        #expect(try fileMode(harness.configURL) == 0o640)
+        #expect(try fileOwner(harness.configURL) == originalOwner)
+        #expect(try fileGroup(harness.configURL) == originalGroup)
+        #expect(metadataRecorder.application != nil)
+        let published = try ProviderConfigDocument(
+            data: Data(contentsOf: harness.configURL)
+        )
+        #expect(published.maxModelSlots == 2)
+        #expect(published.selection == draft.selection)
     }
 
     @Test("save validates, replaces the backup, preserves permissions, and atomically replaces the config")
@@ -512,6 +573,7 @@ private struct ConfigStoreHarness: Sendable {
 
     static func make(
         mode: Int,
+        sourceData: Data? = nil,
         backupData: Data? = nil,
         behavior: FakeConfigExecutor.Behavior = .succeed,
         externalWriteDuringValidation: Data? = nil,
@@ -532,10 +594,11 @@ private struct ConfigStoreHarness: Sendable {
         let backupURL = directory.appendingPathComponent("provider.toml.darkbloom-monitor-backup")
         let movedPublishedConfigURL = directory.appendingPathComponent("published-provider.toml")
         let executableURL = directory.appendingPathComponent("darkbloom-fake")
-        let originalData = Data("""
+        let originalData = sourceData ?? Data("""
         # provider fixture
         private_token = "never-display-this"
         enabled_models = ["old-model"]
+        max_model_slots = 1
         preload_models = []
         [beta]
         unrelated = true

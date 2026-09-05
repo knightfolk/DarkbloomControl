@@ -19,6 +19,20 @@ struct ProviderLifecyclePresentationTests {
         #expect(value.unavailableReason == nil)
     }
 
+    @Test("running provider disables restart when no saved enabled model exists")
+    func runningActionsRequireSavedModelForRestart() {
+        let value = ProviderLifecyclePresentation.make(
+            providerKnownRunning: true,
+            operation: .idle,
+            enabledModels: []
+        )
+
+        #expect(!value.canStart)
+        #expect(value.canStop)
+        #expect(!value.canRestart)
+        #expect(value.unavailableReason == "Start requires at least one saved enabled model")
+    }
+
     @Test("stopped provider needs a saved enabled model")
     func startRequirements() {
         let missingModel = ProviderLifecyclePresentation.make(
@@ -54,6 +68,34 @@ struct ProviderLifecyclePresentationTests {
         #expect(!value.canStop)
         #expect(!value.canRestart)
         #expect(value.unavailableReason == "Provider state is unavailable")
+    }
+
+    @Test("disabled lifecycle controls expose compact inline reason copy")
+    func disabledControlsExposeInlineReason() {
+        let unavailable = ProviderLifecyclePresentation.make(
+            providerKnownRunning: nil,
+            operation: .idle,
+            enabledModels: ["gpt-oss"]
+        )
+        let available = ProviderLifecyclePresentation.make(
+            providerKnownRunning: false,
+            operation: .idle,
+            enabledModels: ["gpt-oss"]
+        )
+
+        #expect(
+            ProviderLifecycleUnavailableReasonPresentation.make(from: unavailable)
+                == .init(message: "Provider state is unavailable")
+        )
+        #expect(
+            ProviderLifecycleUnavailableReasonPresentation.make(from: unavailable)?.systemImage
+                == "exclamationmark.triangle"
+        )
+        #expect(
+            ProviderLifecycleUnavailableReasonPresentation.make(from: unavailable)?.accessibilityIdentifier
+                == "provider.lifecycle.unavailable-reason"
+        )
+        #expect(ProviderLifecycleUnavailableReasonPresentation.make(from: available) == nil)
     }
 
     @Test("fresh stopped status overrides stale last-good daemon state")
@@ -108,6 +150,129 @@ struct ProviderLifecyclePresentationTests {
         )
 
         #expect(input.providerKnownRunning == true)
+    }
+
+    @Test("fresh daemon evidence wins while the slower status command still says stopped")
+    func freshDaemonWinsOverFreshStoppedStatus() {
+        let input = lifecycleInput(
+            daemon: .available(value: daemonState(), capturedAt: now),
+            daemonStatus: .available(
+                value: status(daemon: "not running"),
+                capturedAt: now.addingTimeInterval(-1)
+            ),
+            controlDaemon: .fresh(evidenceAt: now)
+        )
+
+        #expect(input.providerKnownRunning == true)
+        let value = ProviderLifecyclePresentation.make(
+            sourceInput: input,
+            operation: .idle,
+            enabledModels: ["gpt-oss"]
+        )
+        #expect(!value.canStart)
+        #expect(value.canStop)
+        #expect(value.canRestart)
+    }
+
+    @Test("a newer stopped status wins over prior running evidence after shutdown")
+    func newerStoppedStatusWinsAfterShutdown() {
+        let input = lifecycleInput(
+            daemon: .available(
+                value: daemonState(),
+                capturedAt: now.addingTimeInterval(-1)
+            ),
+            daemonStatus: .available(
+                value: status(daemon: "not running"),
+                capturedAt: now
+            ),
+            controlDaemon: .fresh(evidenceAt: now.addingTimeInterval(-1))
+        )
+
+        #expect(input.providerKnownRunning == false)
+        let value = ProviderLifecyclePresentation.make(
+            sourceInput: input,
+            operation: .idle,
+            enabledModels: ["gpt-oss"]
+        )
+        #expect(value.canStart)
+        #expect(!value.canStop)
+        #expect(!value.canRestart)
+    }
+
+    @Test("lifecycle feedback explains work and failures in the popup")
+    func lifecycleFeedback() {
+        #expect(
+            ProviderLifecycleFeedbackPresentation.make(
+                operation: .lifecycle(.start),
+                operationPhase: .mutating,
+                maxModelSlots: 1,
+                errorMessage: nil
+            ) == .init(message: "Starting provider…", isError: false)
+        )
+        #expect(
+            ProviderLifecycleFeedbackPresentation.make(
+                operation: .warming("gpt-oss-20b"),
+                operationPhase: .mutating,
+                maxModelSlots: 2,
+                errorMessage: nil
+            ) == .init(message: "Preparing gpt-oss-20b…", isError: false)
+        )
+        #expect(
+            ProviderLifecycleFeedbackPresentation.make(
+                operation: .warming("gpt-oss-20b"),
+                operationPhase: .loadingModel,
+                maxModelSlots: 2,
+                errorMessage: nil
+            ) == .init(message: "Staging gpt-oss-20b in the free slot…", isError: false)
+        )
+        #expect(
+            ProviderLifecycleFeedbackPresentation.make(
+                operation: .warming("gpt-oss-20b"),
+                operationPhase: .retiringPreviousModels,
+                maxModelSlots: 2,
+                errorMessage: nil
+            ) == .init(message: "Target warm; retiring the previous idle model…", isError: false)
+        )
+        #expect(
+            ProviderLifecycleFeedbackPresentation.make(
+                operation: .warming("gpt-oss-20b"),
+                operationPhase: .retiringPreviousModels,
+                maxModelSlots: 1,
+                errorMessage: nil
+            ) == .init(message: "Retiring the previous idle model before switching…", isError: false)
+        )
+        #expect(
+            ProviderLifecycleFeedbackPresentation.make(
+                operation: .warming("gpt-oss-20b"),
+                operationPhase: .loadingModel,
+                maxModelSlots: 1,
+                errorMessage: nil
+            ) == .init(message: "Loading gpt-oss-20b into the active slot…", isError: false)
+        )
+        #expect(
+            ProviderLifecycleFeedbackPresentation.make(
+                operation: .warming("gpt-oss-20b"),
+                operationPhase: .reconciling,
+                maxModelSlots: 2,
+                errorMessage: nil
+            ) == .init(message: "Confirming model state…", isError: false)
+        )
+        #expect(
+            ProviderLifecycleFeedbackPresentation.make(
+                operation: .idle,
+                operationPhase: nil,
+                maxModelSlots: 1,
+                errorMessage: "Could not stop the provider."
+            ) == .init(message: "Could not stop the provider.", isError: true)
+        )
+        #expect(
+            ProviderLifecycleFeedbackPresentation.make(
+                operation: .idle,
+                operationPhase: nil,
+                maxModelSlots: 1,
+                errorMessage: nil
+            ) == nil
+        )
     }
 
     @Test("future and unavailable observations remain unverifiable")
@@ -221,8 +386,8 @@ struct ProviderLifecyclePresentationTests {
         expectUnknownLifecycle(input)
     }
 
-    @Test("popup model pills retain configured models when residency evidence is stale")
-    func modelPillsRetainConfiguredModelsWithoutFreshResidency() {
+    @Test("popup model pills require fresh residency evidence")
+    func modelPillsRequireFreshResidencyEvidence() {
         let fresh = PopupModelSourceInput(
             daemonState: .available(value: daemonState(), capturedAt: now),
             loadedModels: .available(
@@ -246,20 +411,15 @@ struct ProviderLifecyclePresentationTests {
             status: fresh.status
         )
 
-        #expect(PopupModelPresentation.make(input: fresh) == .models([
+        #expect(PopupModelPresentation.make(input: fresh, currentTime: now) == .models([
             DashboardModel(name: "gpt-oss", state: .availableUnloaded),
         ]))
-        #expect(PopupModelPresentation.make(input: staleDaemon) == .models([
-            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
-        ]))
-        let daemonOnly = PopupModelPresentation.models([
-            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
-        ])
-        #expect(PopupModelPresentation.make(input: futureLoaded) == daemonOnly)
+        #expect(PopupModelPresentation.make(input: staleDaemon, currentTime: now) == .unavailable)
+        #expect(PopupModelPresentation.make(input: futureLoaded, currentTime: now) == .unavailable)
     }
 
-    @Test("fresh daemon model state remains visible when the loaded-model file is stale")
-    func freshDaemonModelsSurviveStaleLoadedModels() {
+    @Test("fresh daemon model state is withheld when the loaded-model file is stale")
+    func freshDaemonModelsAreWithheldWhenLoadedModelsAreStale() {
         let daemon = DaemonState(
             schema: 1,
             version: "test",
@@ -298,9 +458,44 @@ struct ProviderLifecyclePresentationTests {
                 capturedAt: now
             )
         )
-        #expect(PopupModelPresentation.make(input: input) == .models([
-            DashboardModel(name: "gemma-4-26b-qat-4bit", state: .active),
-            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == .unavailable)
+    }
+
+    @Test("popup keeps unchanged current-run loaded models visible")
+    func unchangedCurrentRunLoadedModelsRemainVisible() {
+        let daemon = DaemonState(
+            schema: 1,
+            version: "test",
+            currentModel: "gemma",
+            warmModels: ["gemma"],
+            stats: ProviderStats(tokensGenerated: 10, requestsServed: 1, usageGaps: 0),
+            trust: TrustState(level: "local", status: "online", reason: "test", receivedAt: 0),
+            capacity: MemoryCapacity(totalMemoryGB: 64, gpuMemoryActiveGB: 24, gpuMemoryCacheGB: 0),
+            slots: [],
+            inferenceActive: false,
+            startedAt: now.addingTimeInterval(-86_500).timeIntervalSince1970,
+            writtenAt: now.timeIntervalSince1970,
+            pid: 123,
+            processIdentity: ProcessIdentity(pid: 123, startTimeMicros: 1)
+        )
+        let input = PopupModelSourceInput(
+            daemonState: .available(value: daemon, capturedAt: now),
+            loadedModels: .available(
+                value: LoadedModelsState(
+                    schema: 1,
+                    models: ["gemma"],
+                    updatedAt: now.addingTimeInterval(-86_400).timeIntervalSince1970
+                ),
+                capturedAt: now
+            ),
+            status: .available(
+                value: status(daemon: "running", enabled: "gemma"),
+                capturedAt: now
+            )
+        )
+
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == .models([
+            DashboardModel(name: "gemma", state: .loadedIdle),
         ]))
     }
 
@@ -316,16 +511,24 @@ struct ProviderLifecyclePresentationTests {
                 ),
                 capturedAt: now
             ),
-            status: .available(value: status(daemon: "running", enabled: "gpt-oss"), capturedAt: now)
+            status: .available(value: status(daemon: "running", enabled: "gpt-oss"), capturedAt: now),
+            controlSnapshot: popupControlSnapshot(
+                daemonState: daemonState(),
+                residentModelIDs: ["gpt-oss"],
+                sources: popupControlSources(
+                    daemon: .stale("Provider activity is stale"),
+                    loadedModels: .stale("Loaded model state is stale")
+                )
+            )
         )
         let expected = PopupModelPresentation.models([
             DashboardModel(name: "gemma", state: .loadedIdle),
             DashboardModel(name: "gpt-oss", state: .availableUnloaded),
         ])
-        #expect(PopupModelPresentation.make(input: input) == expected)
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == expected)
     }
 
-    @Test("stale active daemon state is demoted to loaded idle while status says running")
+    @Test("stale active daemon state is not rendered as authoritative")
     func staleDaemonStateNeverShowsActive() {
         let input = PopupModelSourceInput(
             daemonState: .stale(
@@ -348,10 +551,7 @@ struct ProviderLifecyclePresentationTests {
             )
         )
 
-        #expect(PopupModelPresentation.make(input: input) == .models([
-            DashboardModel(name: "gemma", state: .loadedIdle),
-            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
-        ]))
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == .unavailable)
     }
 
     @Test("stopped provider shows configured models as available instead of stale residency")
@@ -372,14 +572,149 @@ struct ProviderLifecyclePresentationTests {
             )
         )
 
-        #expect(PopupModelPresentation.make(input: input) == .models([
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == .models([
             DashboardModel(name: "gemma", state: .availableUnloaded),
             DashboardModel(name: "gpt-oss", state: .availableUnloaded),
         ]))
     }
 
-    @Test("configured models remain visible when daemon residency is unavailable")
-    func unavailableDaemonShowsConfiguredModels() {
+    @Test("popup ignores a slower stopped status when fresh residency says provider is running")
+    func popupFreshResidencyWinsOverSlowerStoppedStatus() {
+        let input = PopupModelSourceInput(
+            daemonState: .available(value: daemonState(), capturedAt: now),
+            loadedModels: .available(
+                value: LoadedModelsState(
+                    schema: 1,
+                    models: ["gpt-oss"],
+                    updatedAt: now.timeIntervalSince1970
+                ),
+                capturedAt: now
+            ),
+            status: .available(
+                value: status(daemon: "not running", enabled: "gemma,gpt-oss"),
+                capturedAt: now.addingTimeInterval(-1)
+            ),
+            controlSnapshot: popupControlSnapshot(
+                daemonState: daemonState(),
+                residentModelIDs: ["gpt-oss"],
+                sources: popupControlSources(
+                    daemon: .fresh(evidenceAt: now),
+                    loadedModels: .fresh(evidenceAt: now)
+                )
+            )
+        )
+
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == .models([
+            DashboardModel(name: "gpt-oss", state: .loadedIdle),
+            DashboardModel(name: "gemma", state: .availableUnloaded),
+        ]))
+    }
+
+    @Test("popup respects a newer stopped status over older resident evidence")
+    func popupNewerStoppedStatusWinsOverOlderResidency() {
+        let input = PopupModelSourceInput(
+            daemonState: .available(
+                value: activeDaemonState(),
+                capturedAt: now.addingTimeInterval(-1)
+            ),
+            loadedModels: .available(
+                value: LoadedModelsState(
+                    schema: 1,
+                    models: ["gemma"],
+                    updatedAt: now.addingTimeInterval(-1).timeIntervalSince1970
+                ),
+                capturedAt: now.addingTimeInterval(-1)
+            ),
+            status: .available(
+                value: status(daemon: "not running", enabled: "gemma,gpt-oss"),
+                capturedAt: now
+            ),
+            controlSnapshot: popupControlSnapshot(
+                daemonState: activeDaemonState(),
+                residentModelIDs: ["gemma"],
+                sources: popupControlSources(
+                    daemon: .fresh(evidenceAt: now.addingTimeInterval(-1)),
+                    loadedModels: .fresh(evidenceAt: now.addingTimeInterval(-1))
+                )
+            )
+        )
+
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == .models([
+            DashboardModel(name: "gemma", state: .availableUnloaded),
+            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        ]))
+    }
+
+    @Test("stopped provider falls back to saved enabled models when status omits its filter")
+    func stoppedProviderUsesSavedConfigurationWhenStatusOmitsFilter() {
+        let input = PopupModelSourceInput(
+            daemonState: .unavailable(reason: "Provider activity unavailable"),
+            loadedModels: .unavailable(reason: "Loaded model state unavailable"),
+            status: .available(
+                value: status(daemon: "not running"),
+                capturedAt: now
+            ),
+            controlSnapshot: popupControlSnapshot(
+                daemonState: nil,
+                residentModelIDs: [],
+                sources: popupControlSources(
+                    daemon: .unavailable("Provider activity unavailable"),
+                    loadedModels: .unavailable("Loaded model state unavailable")
+                )
+            )
+        )
+
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == .models([
+            DashboardModel(name: "gemma", state: .availableUnloaded),
+            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
+        ]))
+    }
+
+    @Test("stopped provider resolves a saved enabled alias to its catalog model")
+    func stoppedProviderResolvesSavedEnabledAlias() {
+        let selection = ProviderModelSelection(enabled: ["gpt-oss"], preloaded: [])
+        let catalogModel = CatalogModel(
+            id: "gpt-oss-20b",
+            displayName: "GPT OSS 20B",
+            family: "gpt-oss",
+            modelType: "llm",
+            capabilities: ["text"],
+            sizeGB: 12.1,
+            minimumRAMGB: 24,
+            active: true
+        )
+        let input = PopupModelSourceInput(
+            daemonState: .unavailable(reason: "Provider activity unavailable"),
+            loadedModels: .unavailable(reason: "Loaded model state unavailable"),
+            status: .available(
+                value: status(daemon: "not running"),
+                capturedAt: now
+            ),
+            controlSnapshot: popupControlSnapshot(
+                daemonState: nil,
+                residentModelIDs: [],
+                sources: popupControlSources(
+                    daemon: .unavailable("Provider activity unavailable"),
+                    loadedModels: .unavailable("Loaded model state unavailable")
+                ),
+                selection: selection,
+                catalog: [catalogModel],
+                local: [LocalModel(
+                    id: catalogModel.id,
+                    modelType: catalogModel.modelType,
+                    sizeBytes: 12_100_000_000,
+                    estimatedMemoryGB: 16
+                )]
+            )
+        )
+
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == .models([
+            DashboardModel(name: "gpt-oss-20b", state: .availableUnloaded),
+        ]))
+    }
+
+    @Test("running provider with unavailable residency does not show configured models as loaded")
+    func unavailableDaemonDoesNotShowConfiguredModels() {
         let input = PopupModelSourceInput(
             daemonState: .unavailable(reason: "Waiting for daemon state"),
             loadedModels: .unavailable(reason: "Waiting for loaded models"),
@@ -389,9 +724,43 @@ struct ProviderLifecyclePresentationTests {
             )
         )
 
-        #expect(PopupModelPresentation.make(input: input) == .models([
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == .unavailable)
+    }
+
+    @Test("fresh control residency replaces stale telemetry residency")
+    func freshControlResidencyIsAuthoritativeWhenTelemetryIsStale() {
+        let input = PopupModelSourceInput(
+            daemonState: .stale(
+                value: activeDaemonState(),
+                capturedAt: now,
+                reason: "Provider activity is stale"
+            ),
+            loadedModels: .stale(
+                value: LoadedModelsState(
+                    schema: 1,
+                    models: ["gemma"],
+                    updatedAt: now.addingTimeInterval(-60).timeIntervalSince1970
+                ),
+                capturedAt: now,
+                reason: "Loaded models are stale"
+            ),
+            status: .available(
+                value: status(daemon: "running", enabled: "gemma,gpt-oss"),
+                capturedAt: now
+            ),
+            controlSnapshot: popupControlSnapshot(
+                daemonState: daemonState(),
+                residentModelIDs: ["gpt-oss"],
+                sources: popupControlSources(
+                    daemon: .fresh(evidenceAt: now),
+                    loadedModels: .fresh(evidenceAt: now)
+                )
+            )
+        )
+
+        #expect(PopupModelPresentation.make(input: input, currentTime: now) == .models([
+            DashboardModel(name: "gpt-oss", state: .loadedIdle),
             DashboardModel(name: "gemma", state: .availableUnloaded),
-            DashboardModel(name: "gpt-oss", state: .availableUnloaded),
         ]))
     }
 
@@ -444,6 +813,7 @@ struct ProviderLifecyclePresentationTests {
             .saving,
             .downloading("gpt-oss"),
             .deleting("gpt-oss"),
+            .warming("gpt-oss"),
             .lifecycle(.start),
             .lifecycle(.stop),
             .lifecycle(.restart),
@@ -738,6 +1108,39 @@ private func popupControlSources(
         localModels: .fresh(evidenceAt: now),
         daemon: daemon,
         loadedModels: loadedModels
+    )
+}
+
+private func popupControlSnapshot(
+    daemonState: DaemonState?,
+    residentModelIDs: Set<String>,
+    sources: ProviderControlSourceStates,
+    selection: ProviderModelSelection = ProviderModelSelection(
+        enabled: ["gemma", "gpt-oss"],
+        preloaded: []
+    ),
+    catalog: [CatalogModel] = [],
+    local: [LocalModel] = []
+) -> ProviderControlSnapshot {
+    let draft = ProviderConfigDraft(
+        sourceRevision: "popup-control",
+        original: selection,
+        selection: selection
+    )
+    let inventory = ModelInventoryBuilder.build(
+        catalog: catalog,
+        local: local,
+        selection: selection,
+        daemon: daemonState,
+        loadedModels: Array(residentModelIDs)
+    )
+    return ProviderControlSnapshot(
+        inventory: inventory,
+        draft: draft,
+        daemonState: daemonState,
+        residentModelIDs: residentModelIDs,
+        capturedAt: now,
+        sources: sources
     )
 }
 

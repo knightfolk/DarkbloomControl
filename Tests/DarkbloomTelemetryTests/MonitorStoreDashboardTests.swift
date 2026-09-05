@@ -6,6 +6,125 @@ import Testing
 @Suite("Monitor dashboard state")
 @MainActor
 struct MonitorStoreDashboardTests {
+    @Test("network demand refresh publishes fresh data and preserves the last good sample as stale")
+    func refreshesNetworkDemand() async throws {
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let capacity = try NetworkCapacityParser.parse(
+            Data(#"{"models":[{"id":"gemma","ready":true,"can_accept":true,"routable_providers":10,"warm_providers":4,"running_providers":2,"cold_providers":6,"active_requests":5,"queued_requests":1,"queue_limit":8,"aggregate_tps":120.5,"estimated_ttft_ms":300,"token_budget_remaining":900,"token_budget_total":1000}]}"#.utf8),
+            capturedAt: now.addingTimeInterval(-1)
+        )
+        let client = DashboardCapacityClient(result: .success(capacity))
+        let store = MonitorStore(
+            service: TelemetryService(source: AdvancingDashboardSource()),
+            initial: .unavailable(now: Date(timeIntervalSince1970: 2_000_000)),
+            earningsClient: EmptyDashboardEarningsClient(),
+            networkCapacityClient: client,
+            now: { now }
+        )
+
+        await store.refreshNetworkCapacity()
+        guard case .available(let fresh, _) = store.networkCapacity else {
+            Issue.record("Expected fresh network demand")
+            return
+        }
+        #expect(fresh.models.first?.id == "gemma")
+
+        await client.setResult(.failure(DashboardCapacityError()))
+        await store.refreshNetworkCapacity()
+        guard case .stale(let stale, _, _) = store.networkCapacity else {
+            Issue.record("Expected the last good network demand to become stale")
+            return
+        }
+        #expect(stale.models.first?.activeRequests == 5)
+    }
+
+    @Test("expired network demand preserves the last good sample as stale")
+    func expiresNetworkDemand() async throws {
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let fresh = try NetworkCapacityParser.parse(
+            Data(#"{"models":[{"id":"fresh","ready":true,"can_accept":true,"routable_providers":1,"warm_providers":1,"running_providers":1,"cold_providers":0,"active_requests":1,"queued_requests":0,"queue_limit":8,"aggregate_tps":10,"estimated_ttft_ms":100,"token_budget_remaining":9,"token_budget_total":10}]}"#.utf8),
+            capturedAt: now.addingTimeInterval(-1)
+        )
+        let expired = NetworkCapacitySnapshot(
+            models: fresh.models,
+            capturedAt: now.addingTimeInterval(-NetworkCapacitySnapshot.maximumAge - 1)
+        )
+        let client = DashboardCapacityClient(result: .success(fresh))
+        let store = MonitorStore(
+            service: TelemetryService(source: AdvancingDashboardSource()),
+            initial: .unavailable(now: now),
+            earningsClient: EmptyDashboardEarningsClient(),
+            networkCapacityClient: client,
+            now: { now }
+        )
+
+        await store.refreshNetworkCapacity()
+        await client.setResult(.success(expired))
+        await store.refreshNetworkCapacity()
+
+        guard case .stale(let stale, let capturedAt, _) = store.networkCapacity else {
+            Issue.record("Expected an expired sample to preserve the last good sample as stale")
+            return
+        }
+        #expect(stale == fresh)
+        #expect(capturedAt == fresh.capturedAt)
+    }
+
+    @Test("future-dated network demand is rejected")
+    func rejectsFutureNetworkDemand() async throws {
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let future = try NetworkCapacityParser.parse(
+            Data(#"{"models":[{"id":"future","ready":true,"can_accept":true,"routable_providers":1,"warm_providers":1,"running_providers":1,"cold_providers":0,"active_requests":1,"queued_requests":0,"queue_limit":8,"aggregate_tps":10,"estimated_ttft_ms":100,"token_budget_remaining":9,"token_budget_total":10}]}"#.utf8),
+            capturedAt: now.addingTimeInterval(NetworkCapacitySnapshot.maximumFutureSkew + 1)
+        )
+        let client = DashboardCapacityClient(result: .success(future))
+        let store = MonitorStore(
+            service: TelemetryService(source: AdvancingDashboardSource()),
+            initial: .unavailable(now: now),
+            earningsClient: EmptyDashboardEarningsClient(),
+            networkCapacityClient: client,
+            now: { now }
+        )
+
+        await store.refreshNetworkCapacity()
+
+        #expect(store.networkCapacity == .unavailable(reason: "Network demand is unavailable"))
+    }
+
+    @Test("an older overlapping refresh cannot replace a newer network sample")
+    func ignoresOutOfOrderNetworkRefresh() async throws {
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let older = try NetworkCapacityParser.parse(
+            Data(#"{"models":[{"id":"older","ready":true,"can_accept":true,"routable_providers":1,"warm_providers":1,"running_providers":1,"cold_providers":0,"active_requests":1,"queued_requests":0,"queue_limit":8,"aggregate_tps":10,"estimated_ttft_ms":100,"token_budget_remaining":9,"token_budget_total":10}]}"#.utf8),
+            capturedAt: now.addingTimeInterval(-1)
+        )
+        let newer = try NetworkCapacityParser.parse(
+            Data(#"{"models":[{"id":"newer","ready":true,"can_accept":true,"routable_providers":1,"warm_providers":1,"running_providers":1,"cold_providers":0,"active_requests":2,"queued_requests":0,"queue_limit":8,"aggregate_tps":20,"estimated_ttft_ms":90,"token_budget_remaining":8,"token_budget_total":10}]}"#.utf8),
+            capturedAt: now.addingTimeInterval(-1)
+        )
+        let client = OverlappingDashboardCapacityClient(older: older, newer: newer)
+        let store = MonitorStore(
+            service: TelemetryService(source: AdvancingDashboardSource()),
+            initial: .unavailable(now: now),
+            earningsClient: EmptyDashboardEarningsClient(),
+            networkCapacityClient: client,
+            now: { now }
+        )
+
+        let first = Task { await store.refreshNetworkCapacity() }
+        await client.waitForFirstRequest()
+        await store.refreshNetworkCapacity()
+        await client.releaseOlderRequest()
+        await first.value
+
+        guard case .available(let value, let capturedAt) = store.networkCapacity else {
+            Issue.record("Expected the newer network sample to remain available")
+            return
+        }
+        #expect(value == newer)
+        #expect(capturedAt == newer.capturedAt)
+    }
+
     @Test("observed token progress updates the active-session average")
     func updatesAverageTokenRate() async {
         let source = AdvancingDashboardSource()
@@ -27,6 +146,8 @@ struct MonitorStoreDashboardTests {
             ModelTokenRateAverage(model: "gemma", tokensPerSecond: 10, sampleCount: 1),
         ])
         #expect(await recorder.recordedModels == ["gemma"])
+        #expect(store.currentModelTokenRateAverages.isEmpty)
+        #expect(store.currentDayAverageTokenRate == nil)
     }
 
     @Test("immediate telemetry refresh awaits a new post-command read")
@@ -75,6 +196,63 @@ struct MonitorStoreDashboardTests {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return false
+    }
+}
+
+private struct DashboardCapacityError: Error {}
+
+private actor DashboardCapacityClient: NetworkCapacityFetching {
+    private var result: Result<NetworkCapacitySnapshot, any Error>
+
+    init(result: Result<NetworkCapacitySnapshot, any Error>) {
+        self.result = result
+    }
+
+    func setResult(_ result: Result<NetworkCapacitySnapshot, any Error>) {
+        self.result = result
+    }
+
+    func fetch(at capturedAt: Date) async throws -> NetworkCapacitySnapshot {
+        try result.get()
+    }
+}
+
+private actor OverlappingDashboardCapacityClient: NetworkCapacityFetching {
+    private let older: NetworkCapacitySnapshot
+    private let newer: NetworkCapacitySnapshot
+    private var callCount = 0
+    private var firstRequestStarted = false
+    private var firstRequestWaiters: [CheckedContinuation<Void, Never>] = []
+    private var olderRequestContinuation: CheckedContinuation<NetworkCapacitySnapshot, Never>?
+
+    init(older: NetworkCapacitySnapshot, newer: NetworkCapacitySnapshot) {
+        self.older = older
+        self.newer = newer
+    }
+
+    func waitForFirstRequest() async {
+        if firstRequestStarted { return }
+        await withCheckedContinuation { continuation in
+            firstRequestWaiters.append(continuation)
+        }
+    }
+
+    func releaseOlderRequest() {
+        olderRequestContinuation?.resume(returning: older)
+        olderRequestContinuation = nil
+    }
+
+    func fetch(at capturedAt: Date) async throws -> NetworkCapacitySnapshot {
+        callCount += 1
+        if callCount == 1 {
+            firstRequestStarted = true
+            firstRequestWaiters.forEach { $0.resume() }
+            firstRequestWaiters.removeAll()
+            return await withCheckedContinuation { continuation in
+                olderRequestContinuation = continuation
+            }
+        }
+        return newer
     }
 }
 

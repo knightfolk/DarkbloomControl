@@ -7,7 +7,7 @@ public enum DaemonStateParser {
         return DaemonState(
             schema: raw.schema,
             version: raw.version,
-            currentModel: raw.currentModel,
+            currentModel: raw.currentModel ?? "",
             warmModels: raw.warmModels,
             stats: .init(
                 tokensGenerated: raw.stats.tokensGenerated,
@@ -25,7 +25,7 @@ public enum DaemonStateParser {
                 gpuMemoryActiveGB: raw.capacity.gpuMemoryActiveGB,
                 gpuMemoryCacheGB: raw.capacity.gpuMemoryCacheGB
             ),
-            slots: raw.slots.map {
+            slots: raw.slots.filter { $0.loadError == nil }.map {
                 ModelSlot(
                     model: $0.model,
                     mtpEnabled: $0.mtpEnabled,
@@ -76,7 +76,7 @@ private struct RawDaemonState: Decodable {
     let schema: Int
     let stats: RawStats
     let version: String
-    let currentModel: String
+    let currentModel: String?
     let trust: RawTrust
     let warmModels: [String]
     let pid: Int32
@@ -136,6 +136,7 @@ private struct RawCapacity: Decodable {
 }
 
 private struct RawSlot: Decodable {
+    let loadError: String?
     let model: String
     let mtpActive: Bool
     let kvBackend: String
@@ -143,11 +144,26 @@ private struct RawSlot: Decodable {
     let mtpEnabled: Bool
 
     enum CodingKeys: String, CodingKey {
+        case loadError = "load_error"
         case model
         case mtpActive = "mtp_active"
         case kvBackend = "kv_backend"
         case requestedKVBackend = "kv_backend_requested"
         case mtpEnabled = "mtp_enabled"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        model = try values.decode(String.self, forKey: .model)
+        loadError = try values.decodeIfPresent(String.self, forKey: .loadError)
+        mtpActive = try values.decode(Bool.self, forKey: .mtpActive)
+        mtpEnabled = try values.decode(Bool.self, forKey: .mtpEnabled)
+        requestedKVBackend = try values.decode(String.self, forKey: .requestedKVBackend)
+        if loadError != nil {
+            kvBackend = try values.decodeIfPresent(String.self, forKey: .kvBackend) ?? ""
+        } else {
+            kvBackend = try values.decode(String.self, forKey: .kvBackend)
+        }
     }
 }
 

@@ -22,6 +22,27 @@ restart-required rather than restarting automatically. Detailed diagnostics
 stay in the telemetry layer rather than becoming popover prose. Trade-off:
 operators still use the CLI or logs for low-level diagnostics.
 
+The Models settings also expose one-model **Memory Saver** and coordinator-
+visible two-model capacity, plus an 8-24 GiB staging reserve for two-model
+mode (default 16 GiB). The second slot is shared with coordinator work, so a
+prefetched or unknown resident can make Warm wait; it is not reserved for the
+monitor. Automatic demand-aware switching is opt-in and default-off.
+
+The popup shows compact demand rows for enabled local models only, ranked by
+urgent/high/moderate/low pressure, and labels the last-good sample when it is
+stale. Unloaded model rows expose a target-specific flame Warm action. The
+action presents `preparing`, loading or staging, idle retirement, and
+reconciliation phases. Memory Saver explains that the idle resident unloads
+before the replacement and may cause a cold-load gap; two-model mode explains
+that the target loads first and the previous model retires only if it remains
+idle. Active customer work is never stopped or unloaded by Warm.
+
+Warm is disabled when catalog, residency, endpoint, capability, or applied
+capacity evidence is not fresh, when both slots are occupied, or when the
+lower provider/system memory check cannot satisfy the padded target plus the
+configured reserve. The UI says it is waiting rather than implying that the
+monitor will evict another model.
+
 The presentation uses typed source freshness to gate Save and Download, while
 the service repeats fresh validation before those commands. Model pills fail
 closed to `Model state unavailable` when the required residency sources are not

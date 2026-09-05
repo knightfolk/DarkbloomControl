@@ -2,6 +2,146 @@ import DarkbloomTelemetry
 import Foundation
 import SwiftUI
 
+enum ModelWarmupPreferences {
+    static let headroomKey = "modelWarmupHeadroomGB"
+    static let automaticSwitchingKey = "automaticDemandSwitching"
+    static let automaticSwitchLastAttemptKey = "automaticDemandSwitchLastAttemptAt"
+    static let defaultHeadroomGB = 16.0
+    static let headroomChoices = [8.0, 12.0, 16.0, 20.0, 24.0]
+
+    static var selectedHeadroomGB: Double {
+        let value = UserDefaults.standard.double(forKey: headroomKey)
+        return headroomChoices.contains(value) ? value : defaultHeadroomGB
+    }
+
+    static var automaticSwitchingEnabled: Bool {
+        UserDefaults.standard.bool(forKey: automaticSwitchingKey)
+    }
+
+    static func automaticSwitchLastAttemptAt(
+        in defaults: UserDefaults = .standard
+    ) -> Date? {
+        guard defaults.object(forKey: automaticSwitchLastAttemptKey) != nil else {
+            return nil
+        }
+        let seconds = defaults.double(forKey: automaticSwitchLastAttemptKey)
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    static func recordAutomaticSwitchAttempt(
+        at date: Date,
+        in defaults: UserDefaults = .standard
+    ) {
+        guard date.timeIntervalSince1970.isFinite,
+              date.timeIntervalSince1970 > 0
+        else { return }
+        defaults.set(
+            date.timeIntervalSince1970,
+            forKey: automaticSwitchLastAttemptKey
+        )
+    }
+}
+
+@MainActor
+enum ModelWarmupPresentation {
+    static func blockReason(
+        operation: ProviderOperation,
+        draftHasChanges: Bool,
+        restartRequired: Bool,
+        pendingConfirmation: LifecycleConfirmation?,
+        item: ModelInventoryItem,
+        snapshot: ProviderControlSnapshot,
+        currentTime: Date,
+        minimumHeadroomGB: Double,
+        availableSystemMemoryGB: Double?
+    ) -> String? {
+        guard operation == .idle else {
+            return "Another provider action is in progress"
+        }
+        guard pendingConfirmation == nil else {
+            return "Another provider action is awaiting confirmation"
+        }
+        guard !draftHasChanges else {
+            return "Save or reload model settings before warming a model"
+        }
+        guard !restartRequired else {
+            return "Restart the provider to apply saved model settings"
+        }
+        return ProviderWarmupPolicy.blockReason(
+            for: item,
+            in: snapshot,
+            currentTime: currentTime,
+            minimumHeadroomGB: minimumHeadroomGB,
+            availableSystemMemoryGB: availableSystemMemoryGB
+        )
+    }
+}
+
+enum ProviderCapacityMode: Int, CaseIterable, Identifiable {
+    case memorySaver = 1
+    case twoModelCapacity = 2
+
+    var id: Int { rawValue }
+    var maxModelSlots: Int { rawValue }
+
+    init?(maxModelSlots: Int) {
+        self.init(rawValue: maxModelSlots)
+    }
+
+    var title: String {
+        switch self {
+        case .memorySaver: "1 · Memory Saver"
+        case .twoModelCapacity: "2 · Two Models"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .memorySaver:
+            "Uses the least memory. An idle model unloads before another model can load. Customer jobs are allowed to finish first."
+        case .twoModelCapacity:
+            "Allows the coordinator to load and serve as many as two models. A free second slot can also make a manual switch faster."
+        }
+    }
+}
+
+struct ModelWarmupFeaturePresentation: Equatable {
+    let isAvailable: Bool
+    let badgeText: String?
+    let accessibilityHint: String?
+
+    static func make(supportsProtectedWarmup: Bool) -> Self {
+        guard supportsProtectedWarmup else {
+            return Self(
+                isAvailable: false,
+                badgeText: "Coming Soon",
+                accessibilityHint: "Live model switching requires a future signed Darkbloom update."
+            )
+        }
+        return Self(
+            isAvailable: true,
+            badgeText: nil,
+            accessibilityHint: nil
+        )
+    }
+}
+
+struct ComingSoonBadge: View {
+    var body: some View {
+        Text("Coming Soon")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(Color.secondary.opacity(0.14))
+            )
+            .accessibilityLabel("Coming Soon")
+    }
+}
+
 struct ModelActionPresentation: Equatable {
     let accessibilityLabel: String
     let accessibilityHint: String
@@ -79,10 +219,18 @@ struct ModelRowPresentation: Equatable {
             )
             : nil
         let isEnabled = draft.map {
-            contains(item, in: $0.selection.enabled)
+            contains(
+                item,
+                in: $0.selection.enabled,
+                selector: item.enabledSelector
+            )
         } ?? item.isEnabled
         let isPreloaded = draft.map {
-            contains(item, in: $0.selection.preloaded)
+            contains(
+                item,
+                in: $0.selection.preloaded,
+                selector: item.preloadSelector
+            )
         } ?? item.isPreloaded
         return Self(
             showsDownload: !isDownloaded,
@@ -160,10 +308,18 @@ struct ModelRowPresentation: Equatable {
         }
         if let displayedIssue { return displayedIssue }
         guard let draft else { return "Provider configuration is unavailable" }
-        if contains(item, in: draft.original.preloaded) {
+        if contains(
+            item,
+            in: draft.original.preloaded,
+            selector: item.preloadSelector
+        ) {
             return "Remove preload and save before deleting this model"
         }
-        if contains(item, in: draft.original.enabled) {
+        if contains(
+            item,
+            in: draft.original.enabled,
+            selector: item.enabledSelector
+        ) {
             return "Disable and save this model before deleting it"
         }
         guard !draft.hasChanges else {
@@ -207,14 +363,15 @@ struct ModelRowPresentation: Equatable {
                 "Refresh loaded model state before deleting this model."
             ),
         ]
-        for (state, invalid, stale, future, recovery) in checks {
-            switch state.evaluated(
-                at: currentTime,
-                invalidReason: invalid,
-                staleReason: stale,
-                futureReason: future
-            ) {
-            case .fresh:
+        for (state, invalid, _, future, recovery) in checks {
+            switch state {
+            case .fresh(let evidenceAt):
+                guard evidenceAt.timeIntervalSince1970.isFinite,
+                      currentTime.timeIntervalSince1970.isFinite
+                else { return sanitize("\(invalid); \(recovery)") }
+                if evidenceAt > currentTime {
+                    return sanitize("\(future); \(recovery)")
+                }
                 continue
             case .stale(let issue), .unavailable(let issue):
                 return sanitize("\(issue); \(recovery)")
@@ -285,9 +442,13 @@ struct ModelRowPresentation: Equatable {
         )
     }
 
-    fileprivate static func contains(_ item: ModelInventoryItem, in selectors: [String]) -> Bool {
+    fileprivate static func contains(
+        _ item: ModelInventoryItem,
+        in selectors: [String],
+        selector: String?
+    ) -> Bool {
         selectors.contains(item.catalogID)
-            || item.configuredSelector.map(selectors.contains) == true
+            || selector.map(selectors.contains) == true
     }
 
     func requestDeletion(
@@ -302,7 +463,11 @@ struct ModelRowPresentation: Equatable {
 @MainActor
 struct ModelManagerView: View {
     @ObservedObject var store: ProviderControlStore
+    var networkContext: (String, Date) -> [String] = { _, _ in [] }
     @State private var deletion: ModelDeletionConfirmation?
+    @AppStorage(ModelWarmupPreferences.headroomKey) private var warmupHeadroomGB =
+        ModelWarmupPreferences.defaultHeadroomGB
+    @AppStorage(ModelWarmupPreferences.automaticSwitchingKey) private var automaticSwitching = false
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -326,11 +491,28 @@ struct ModelManagerView: View {
         }
     }
 
+    private func contextBadges(for modelID: String, at date: Date) -> some View {
+        ForEach(networkContext(modelID, date), id: \.self) { label in
+            Text(label).font(.callout).foregroundStyle(.secondary)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private func modelList(currentTime: Date) -> some View {
         List {
             Section {
+                capacityControls
+            } header: {
+                Text("Serving Capacity")
+                    .accessibilityIdentifier("models.capacity")
+            }
+
+            Section {
                 if let snapshot = store.snapshot, !snapshot.inventory.myCatalog.isEmpty {
                     ForEach(snapshot.inventory.myCatalog) { item in
+                        VStack(alignment: .leading, spacing: 4) {
                         DownloadedModelRow(
                             item: item,
                             draft: store.draft,
@@ -353,6 +535,8 @@ struct ModelManagerView: View {
                                 )
                             }
                         )
+                        modelDetails(item, at: currentTime)
+                        }
                     }
                 } else {
                     Text(store.snapshot == nil ? "Model catalog is unavailable." : "No downloaded models.")
@@ -366,7 +550,10 @@ struct ModelManagerView: View {
             Section {
                 if let items = store.snapshot?.inventory.available, !items.isEmpty {
                     ForEach(items) { item in
+                        VStack(alignment: .leading, spacing: 4) {
                         AvailableModelRow(item: item, store: store)
+                        modelDetails(item, at: currentTime)
+                        }
                     }
                 } else {
                     Text(store.snapshot == nil ? "Reload to discover available models." : "No additional models available.")
@@ -395,6 +582,169 @@ struct ModelManagerView: View {
         }
         .listStyle(.inset)
     }
+
+    @ViewBuilder
+    private var capacityControls: some View {
+        if store.draft != nil {
+            let liveSwitching = ModelWarmupFeaturePresentation.make(
+                supportsProtectedWarmup: store.snapshot?.supportsProtectedWarmup == true
+            )
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Maximum resident models", selection: capacityBinding) {
+                    ForEach(ProviderCapacityMode.allCases) { option in
+                        Text(option.title).tag(Optional(option))
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(store.operation != .idle)
+                .accessibilityIdentifier("models.capacity.mode")
+
+                if let mode = selectedCapacityMode {
+                    Text(mode.detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Label(
+                        "Choose one or two resident models to add the missing provider setting, then save and restart.",
+                        systemImage: "wrench.and.screwdriver"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if selectedCapacityMode == .twoModelCapacity {
+                    Label(
+                        "The second slot is shared with network work; it is not reserved for manual staging.",
+                        systemImage: "network"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 8) {
+                        Picker("Staging memory reserve", selection: $warmupHeadroomGB) {
+                            ForEach(ModelWarmupPreferences.headroomChoices, id: \.self) { value in
+                                Text("\(Int(value)) GB").tag(value)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .disabled(
+                            store.operation != .idle || !liveSwitching.isAvailable
+                        )
+                        .help(
+                            liveSwitching.accessibilityHint
+                                ?? "A manual warmup waits unless this much memory should remain after loading the requested model."
+                        )
+                        .accessibilityIdentifier("models.capacity.headroom")
+
+                        if liveSwitching.badgeText != nil {
+                            ComingSoonBadge()
+                                .help(liveSwitching.accessibilityHint ?? "")
+                                .accessibilityIdentifier(
+                                    "models.capacity.headroom.coming-soon"
+                                )
+                        }
+                    }
+                }
+
+                if selectedCapacityMode != nil {
+                    HStack(spacing: 8) {
+                        Toggle(
+                            "Automatic demand switching",
+                            isOn: $automaticSwitching
+                        )
+                        .disabled(!liveSwitching.isAvailable)
+                        .accessibilityIdentifier(
+                            "models.capacity.automatic-switching"
+                        )
+
+                        if liveSwitching.badgeText != nil {
+                            ComingSoonBadge()
+                                .help(liveSwitching.accessibilityHint ?? "")
+                                .accessibilityIdentifier(
+                                    "models.capacity.automatic-switching.coming-soon"
+                                )
+                        }
+                    }
+                    Text(
+                        liveSwitching.accessibilityHint
+                            ?? "After three high-demand samples, warm the recommended enabled model. Attempts are limited to once every 30 minutes and use the same no-interruption safety checks."
+                    )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.vertical, 3)
+        } else {
+            Label(
+                "Provider configuration is unavailable.",
+                systemImage: "exclamationmark.triangle"
+            )
+            .font(.callout)
+            .foregroundStyle(.orange)
+        }
+    }
+
+    private func modelDetails(_ item: ModelInventoryItem, at date: Date) -> some View {
+        DisclosureGroup("Details") {
+            VStack(alignment: .leading, spacing: 4) {
+                ModelIdentityDetails(item: item)
+                Text("\(ModelFormatting.size(item.sizeGB)) catalog estimate · \(item.minimumRAMGB) GB minimum RAM")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let bytes = item.downloadedSizeBytes {
+                    Text("Downloaded · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) reported locally")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                contextBadges(for: item.catalogID, at: date)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.caption)
+        .disclosureGroupStyle(ModelDetailsDisclosureStyle())
+        .accessibilityIdentifier("model.\(item.catalogID).details")
+    }
+
+    private var selectedCapacityMode: ProviderCapacityMode? {
+        guard let slots = store.draft?.maxModelSlots else { return nil }
+        return ProviderCapacityMode(maxModelSlots: slots)
+    }
+
+    private var capacityBinding: Binding<ProviderCapacityMode?> {
+        Binding(
+            get: { selectedCapacityMode },
+            set: { mode in
+                guard let mode else { return }
+                store.setMaxModelSlots(mode.maxModelSlots)
+            }
+        )
+    }
+}
+
+private struct ModelDetailsDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Button {
+                configuration.isExpanded.toggle()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                    configuration.label
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+            if configuration.isExpanded {
+                configuration.content.padding(.leading, 14)
+            }
+        }
+    }
 }
 
 private struct DownloadedModelRow: View {
@@ -422,7 +772,7 @@ private struct DownloadedModelRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(item.displayName)
                     .font(.headline)
@@ -432,8 +782,7 @@ private struct DownloadedModelRow: View {
 
             HStack(spacing: ModelOptionToggle.groupSpacing) {
                 Text(ModelFormatting.size(item.sizeGB))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .font(.callout).foregroundStyle(.secondary)
                 Spacer(minLength: 8)
 
                 if presentation.showsEnableToggle {
@@ -487,36 +836,55 @@ private struct DownloadedModelRow: View {
     }
 
     private var enabledBinding: Binding<Bool> {
-        selectionBinding(\.enabled, setter: setEnabled)
+        selectionBinding(
+            \.enabled,
+            selector: item.enabledSelector,
+            setter: setEnabled
+        )
     }
 
     private var preloadedBinding: Binding<Bool> {
-        selectionBinding(\.preloaded, setter: setPreloaded)
+        selectionBinding(
+            \.preloaded,
+            selector: item.preloadSelector,
+            setter: setPreloaded
+        )
     }
 
     private func selectionBinding(
         _ keyPath: KeyPath<ProviderModelSelection, [String]>,
+        selector: String?,
         setter: @escaping (Bool, String) -> Void
     ) -> Binding<Bool> {
         Binding(
             get: {
                 guard let selectors = draft?.selection[keyPath: keyPath] else { return false }
-                return ModelRowPresentation.contains(item, in: selectors)
+                return ModelRowPresentation.contains(
+                    item,
+                    in: selectors,
+                    selector: selector
+                )
             },
             set: { enabled in
                 let selectors = draft?.selection[keyPath: keyPath] ?? []
-                setter(enabled, selectionID(in: selectors))
+                setter(enabled, selectionID(
+                    in: selectors,
+                    selector: selector
+                ))
             }
         )
     }
 
-    private func selectionID(in selectors: [String]) -> String {
+    private func selectionID(
+        in selectors: [String],
+        selector: String?
+    ) -> String {
         if selectors.contains(item.catalogID) { return item.catalogID }
-        if let configuredSelector = item.configuredSelector,
-           selectors.contains(configuredSelector) {
-            return configuredSelector
+        if let selector,
+           selectors.contains(selector) {
+            return selector
         }
-        return item.configuredSelector ?? item.catalogID
+        return selector ?? item.catalogID
     }
 }
 
@@ -743,5 +1111,19 @@ private enum ModelFormatting {
             ? "Capabilities unavailable"
             : item.capabilities.map { $0.capitalized }.joined(separator: ", ")
         return "\(item.modelType.uppercased()) · \(capabilities) · \(size(item.sizeGB)) · \(item.minimumRAMGB) GB minimum RAM"
+    }
+}
+
+private struct ModelIdentityDetails: View {
+    let item: ModelInventoryItem
+
+    var body: some View {
+        Text(item.catalogID)
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .textSelection(.enabled)
+            .help(item.catalogID)
+            .accessibilityLabel("Canonical model ID: \(item.catalogID)")
     }
 }

@@ -111,8 +111,8 @@ struct MonitorPresentationTests {
             "Darkbloom routable, thermal nominal. 1.10 dollars observed over 12 hours.")
     }
 
-    @Test("missing measured rate falls back to real earnings")
-    func unavailableRateUsesEarnings() {
+    @Test("active inference without a live rate shows Working rather than earnings")
+    func unavailableActiveRateShowsWorking() {
         let presentation = MenuBarPresentation.make(
             snapshot: snapshot(menuStatus: .online, active: true),
             thermal: .nominal,
@@ -120,8 +120,8 @@ struct MonitorPresentationTests {
             mode: .automatic
         )
 
-        #expect(presentation.metricText == "$2.90/24h")
-        #expect(presentation.metricUnavailableReason == nil)
+        #expect(presentation.metricText == "Working")
+        #expect(presentation.metricUnavailableReason != nil)
     }
 
     @Test("missing rate and earnings omit metric text")

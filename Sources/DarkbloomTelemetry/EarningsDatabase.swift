@@ -26,20 +26,40 @@ public struct AccountBalanceSample: Equatable, Sendable {
 public struct ObservedEarningsWindow: Equatable, Sendable {
     public let microUSD: Int64
     public let observedSeconds: TimeInterval
+    public let calendarDayStart: Date?
+    public let capturedAt: Date?
+    public let coversDayToDate: Bool
 
-    public init(microUSD: Int64, observedSeconds: TimeInterval) {
+    public init(microUSD: Int64, observedSeconds: TimeInterval,
+                calendarDayStart: Date? = nil, capturedAt: Date? = nil,
+                coversDayToDate: Bool = false) {
         self.microUSD = microUSD
         self.observedSeconds = observedSeconds
+        self.calendarDayStart = calendarDayStart
+        self.capturedAt = capturedAt
+        self.coversDayToDate = coversDayToDate
     }
 }
 
 public struct CalendarWeekEarningsSummary: Equatable, Sendable {
     public let microUSD: Int64
     public let isComplete: Bool
+    public let weekStart: Date?
+    public let capturedAt: Date?
 
-    public init(microUSD: Int64, isComplete: Bool) {
+    public init(microUSD: Int64, isComplete: Bool, weekStart: Date? = nil, capturedAt: Date? = nil) {
         self.microUSD = microUSD
         self.isComplete = isComplete
+        self.weekStart = weekStart
+        self.capturedAt = capturedAt
+    }
+
+    public func isCurrent(at now: Date, calendar: Calendar) -> Bool {
+        guard now.timeIntervalSince1970.isFinite, microUSD >= 0,
+              let weekStart, let capturedAt, capturedAt >= weekStart,
+              weekStart == calendar.dateInterval(of: .weekOfYear, for: now)?.start else { return false }
+        let age = now.timeIntervalSince(capturedAt)
+        return age.isFinite && (0...600).contains(age)
     }
 }
 
@@ -69,11 +89,24 @@ public struct JobCompletionSummary: Equatable, Sendable {
     public let completedToday: Int64
     public let averagePerDay: Double?
     public let averagingDays: Int
+    public let dayStart: Date?
+    public let capturedAt: Date?
 
-    public init(completedToday: Int64, averagePerDay: Double?, averagingDays: Int) {
+    public init(completedToday: Int64, averagePerDay: Double?, averagingDays: Int,
+                dayStart: Date? = nil, capturedAt: Date? = nil) {
         self.completedToday = completedToday
         self.averagePerDay = averagePerDay
         self.averagingDays = averagingDays
+        self.dayStart = dayStart
+        self.capturedAt = capturedAt
+    }
+
+    public func isCurrent(at now: Date, calendar: Calendar) -> Bool {
+        guard now.timeIntervalSince1970.isFinite, completedToday >= 0,
+              let dayStart, let capturedAt, capturedAt >= dayStart,
+              dayStart == calendar.startOfDay(for: now) else { return false }
+        let age = now.timeIntervalSince(capturedAt)
+        return age.isFinite && (0...600).contains(age)
     }
 }
 
@@ -339,7 +372,8 @@ public actor EarningsDatabase {
             guard sqlite3_step(statement) == SQLITE_ROW else { throw lastError() }
             return ObservedEarningsWindow(
                 microUSD: sqlite3_column_int64(statement, 0),
-                observedSeconds: end - start
+                observedSeconds: end - start,
+                calendarDayStart: startDate, capturedAt: now, coversDayToDate: true
             )
         }
 
@@ -374,7 +408,8 @@ public actor EarningsDatabase {
 
         return ObservedEarningsWindow(
             microUSD: latestTotal - earliestTotal,
-            observedSeconds: latestAt - earliestAt
+            observedSeconds: latestAt - earliestAt,
+            calendarDayStart: startDate, capturedAt: now, coversDayToDate: false
         )
     }
 
@@ -411,8 +446,113 @@ public actor EarningsDatabase {
         guard isComplete || bucketCount > 0 else { return nil }
         return CalendarWeekEarningsSummary(
             microUSD: sqlite3_column_int64(statement, 0),
-            isComplete: isComplete
+            isComplete: isComplete,
+            weekStart: weekStart,
+            capturedAt: now
         )
+    }
+
+    /// Reads existing ledger aggregates only; never fetches network data.
+    /// Missing rows remain unknown because historical coverage metadata cannot
+    /// prove that every intervening refresh succeeded.
+    public func activity(
+        in range: DateInterval,
+        unit: ActivityCalendarUnit,
+        calendar: Calendar,
+        model: String? = nil
+    ) throws -> [ActivityBucket] {
+        let intervals = try ActivityCalendar.intervals(in: range, unit: unit, calendar: calendar)
+        let statement = try prepare("""
+            SELECT COALESCE(SUM(work), 0), COALESCE(SUM(reward), 0),
+                   COALESCE(SUM(jobs), 0), COALESCE(SUM(prompt), 0),
+                   COALESCE(SUM(completion), 0), COUNT(*)
+            FROM (
+                SELECT hour_start, amount_micro_usd AS work, 0 AS reward,
+                       jobs, prompt_tokens AS prompt, completion_tokens AS completion
+                FROM earnings_hourly
+                WHERE (? IS NULL OR model = ?)
+                UNION ALL
+                SELECT hour_start, 0 AS work, amount_micro_usd AS reward,
+                       0 AS jobs, 0 AS prompt, 0 AS completion
+                FROM rewards_hourly
+                WHERE ? IS NULL
+            )
+            WHERE hour_start >= ? AND hour_start < ?
+            """)
+        defer { sqlite3_finalize(statement) }
+        return try intervals.map { interval in
+            let start = interval.start.timeIntervalSince1970
+            let end = interval.end.timeIntervalSince1970
+            guard start.truncatingRemainder(dividingBy: 3600) == 0,
+                  end.truncatingRemainder(dividingBy: 3600) == 0 else {
+                return ActivityBucket(interval: interval, totals: nil, coverage: .boundaryUncertain)
+            }
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+            if let model {
+                sqlite3_bind_text(statement, 1, model, -1, sqliteTransient)
+                sqlite3_bind_text(statement, 2, model, -1, sqliteTransient)
+                sqlite3_bind_text(statement, 3, model, -1, sqliteTransient)
+            }
+            sqlite3_bind_double(statement, 4, start)
+            sqlite3_bind_double(statement, 5, end)
+            guard sqlite3_step(statement) == SQLITE_ROW else { throw lastError() }
+            guard sqlite3_column_int64(statement, 5) > 0 else {
+                return ActivityBucket(interval: interval, totals: nil, coverage: .unavailable)
+            }
+            return ActivityBucket(interval: interval, totals: ActivityTotals(
+                workMicroUSD: sqlite3_column_int64(statement, 0),
+                rewardMicroUSD: sqlite3_column_int64(statement, 1),
+                jobs: sqlite3_column_int64(statement, 2),
+                promptTokens: sqlite3_column_int64(statement, 3),
+                completionTokens: sqlite3_column_int64(statement, 4)
+            ), coverage: .recorded)
+        }
+    }
+
+    public func modelWorkEarnings(
+        model: String, in range: DateInterval, calendar: Calendar
+    ) throws -> ModelWorkEarnings {
+        let buckets = try activity(in: range, unit: .hour, calendar: calendar, model: model)
+        let recorded = buckets.filter { $0.coverage == .recorded }.compactMap(\.totals)
+        var amount: Int64 = 0
+        var jobs: Int64 = 0
+        for value in recorded {
+            let nextAmount = amount.addingReportingOverflow(value.workMicroUSD)
+            let nextJobs = jobs.addingReportingOverflow(value.jobs)
+            guard !nextAmount.overflow, !nextJobs.overflow else {
+                throw ActivityCalendarError.invalidInterval
+            }
+            amount = nextAmount.partialValue
+            jobs = nextJobs.partialValue
+        }
+        return ModelWorkEarnings(model: model, queryPeriod: range,
+            sourceCapturedAt: try latestAccountSample()?.capturedAt,
+            workMicroUSD: recorded.isEmpty ? nil : amount,
+            jobs: recorded.isEmpty ? nil : jobs,
+            recordedHours: recorded.count,
+            unknownHours: buckets.filter { $0.coverage == .unavailable }.count,
+            uncertainBoundaryHours: buckets.filter { $0.coverage == .boundaryUncertain }.count)
+    }
+
+    public func activityModels(in range: DateInterval) throws -> [String] {
+        let statement = try prepare("""
+            SELECT DISTINCT model FROM earnings_hourly
+            WHERE hour_start >= ? AND hour_start < ?
+            ORDER BY model LIMIT 129
+            """)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, floor(range.start.timeIntervalSince1970 / 3600) * 3600)
+        sqlite3_bind_double(statement, 2, range.end.timeIntervalSince1970)
+        var models: [String] = []
+        var result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            if let value = sqlite3_column_text(statement, 0) { models.append(String(cString: value)) }
+            guard models.count <= 128 else { throw ActivityCalendarError.tooManyBuckets }
+            result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else { throw lastError() }
+        return models
     }
 
     public func earningsByModel(since: Date) throws -> [ModelEarnings] {
@@ -479,7 +619,9 @@ public actor EarningsDatabase {
         return JobCompletionSummary(
             completedToday: completedToday,
             averagePerDay: averagePerDay,
-            averagingDays: averageDayCount
+            averagingDays: averageDayCount,
+            dayStart: todayStart,
+            capturedAt: now
         )
     }
 

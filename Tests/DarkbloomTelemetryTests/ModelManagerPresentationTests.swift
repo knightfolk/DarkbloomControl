@@ -6,6 +6,208 @@ import Testing
 @Suite("Model manager presentation")
 @MainActor
 struct ModelManagerPresentationTests {
+    @Test("live switching is marked coming soon only when protected control is unavailable")
+    func liveSwitchingAvailability() {
+        #expect(ModelWarmupFeaturePresentation.make(
+            supportsProtectedWarmup: false
+        ) == ModelWarmupFeaturePresentation(
+            isAvailable: false,
+            badgeText: "Coming Soon",
+            accessibilityHint: "Live model switching requires a future signed Darkbloom update."
+        ))
+        #expect(ModelWarmupFeaturePresentation.make(
+            supportsProtectedWarmup: true
+        ) == ModelWarmupFeaturePresentation(
+            isAvailable: true,
+            badgeText: nil,
+            accessibilityHint: nil
+        ))
+    }
+
+    @Test("capacity modes describe coordinator-visible one and two model limits honestly")
+    func capacityModes() {
+        #expect(ProviderCapacityMode(maxModelSlots: 1) == .memorySaver)
+        #expect(ProviderCapacityMode(maxModelSlots: 2) == .twoModelCapacity)
+        #expect(ProviderCapacityMode(maxModelSlots: 3) == nil)
+        #expect(ProviderCapacityMode.memorySaver.detail.contains("unloads"))
+        #expect(ProviderCapacityMode.twoModelCapacity.detail.contains("coordinator"))
+        #expect(ProviderCapacityMode.twoModelCapacity.detail.contains("two"))
+    }
+
+    @Test("automatic switch cooldown timestamp round trips outside app memory")
+    func persistsAutomaticSwitchAttempt() throws {
+        let suiteName = "ModelWarmupPreferencesTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let attemptedAt = Date(timeIntervalSince1970: 1_788_465_600.25)
+
+        #expect(ModelWarmupPreferences.automaticSwitchLastAttemptAt(in: defaults) == nil)
+        ModelWarmupPreferences.recordAutomaticSwitchAttempt(
+            at: attemptedAt,
+            in: defaults
+        )
+
+        #expect(
+            ModelWarmupPreferences.automaticSwitchLastAttemptAt(in: defaults)
+                == attemptedAt
+        )
+        defaults.set(Double.nan, forKey: ModelWarmupPreferences.automaticSwitchLastAttemptKey)
+        #expect(ModelWarmupPreferences.automaticSwitchLastAttemptAt(in: defaults) == nil)
+    }
+
+    @Test("warmup presentation blocks unapplied slot settings before offering a switch")
+    func warmupBlocksPendingRestart() throws {
+        let fixture = try warmupFixture()
+
+        #expect(ModelWarmupPresentation.blockReason(
+            operation: .idle,
+            draftHasChanges: false,
+            restartRequired: true,
+            pendingConfirmation: nil,
+            item: fixture.item,
+            snapshot: fixture.snapshot,
+            currentTime: presentationNow,
+            minimumHeadroomGB: 16,
+            availableSystemMemoryGB: 64
+        ) == "Restart the provider to apply saved model settings")
+    }
+
+    @Test("warmup presentation uses the same staging headroom gate as execution")
+    func warmupBlocksInsufficientHeadroom() throws {
+        let fixture = try warmupFixture(
+            capacity: MemoryCapacity(
+                totalMemoryGB: 32,
+                gpuMemoryActiveGB: 10,
+                gpuMemoryCacheGB: 5
+            )
+        )
+
+        #expect(ModelWarmupPresentation.blockReason(
+            operation: .idle,
+            draftHasChanges: false,
+            restartRequired: false,
+            pendingConfirmation: nil,
+            item: fixture.item,
+            snapshot: fixture.snapshot,
+            currentTime: presentationNow,
+            minimumHeadroomGB: 16,
+            availableSystemMemoryGB: 17
+        ) == "Waiting for enough memory to stage this model without eviction")
+    }
+
+    @Test("warmup presentation blocks expired daemon evidence even when marked fresh")
+    func warmupBlocksExpiredDaemonEvidence() throws {
+        let fixture = try warmupFixture()
+        let expired = presentationNow.addingTimeInterval(
+            -(ProviderControlSourceState.maximumEvidenceAge + 1)
+        )
+        let snapshot = ProviderControlSnapshot(
+            inventory: fixture.snapshot.inventory,
+            draft: fixture.snapshot.draft,
+            daemonState: fixture.snapshot.daemonState,
+            supportsProtectedWarmup: fixture.snapshot.supportsProtectedWarmup,
+            protectedWarmupMaxModelSlots: fixture.snapshot.protectedWarmupMaxModelSlots,
+            residentModelIDs: fixture.snapshot.residentModelIDs,
+            capturedAt: fixture.snapshot.capturedAt,
+            sources: sources(
+                daemon: .fresh(evidenceAt: expired)
+            )
+        )
+
+        #expect(ModelWarmupPresentation.blockReason(
+            operation: .idle,
+            draftHasChanges: false,
+            restartRequired: false,
+            pendingConfirmation: nil,
+            item: fixture.item,
+            snapshot: snapshot,
+            currentTime: presentationNow,
+            minimumHeadroomGB: 16,
+            availableSystemMemoryGB: 64
+        ) == "Waiting for fresh provider and loaded-model state")
+    }
+
+    @Test("warmup presentation blocks expired loaded-model evidence even when marked fresh")
+    func warmupBlocksExpiredLoadedModelEvidence() throws {
+        let fixture = try warmupFixture()
+        let expired = presentationNow.addingTimeInterval(
+            -(ProviderControlSourceState.maximumEvidenceAge + 1)
+        )
+        let snapshot = ProviderControlSnapshot(
+            inventory: fixture.snapshot.inventory,
+            draft: fixture.snapshot.draft,
+            daemonState: fixture.snapshot.daemonState,
+            supportsProtectedWarmup: fixture.snapshot.supportsProtectedWarmup,
+            protectedWarmupMaxModelSlots: fixture.snapshot.protectedWarmupMaxModelSlots,
+            residentModelIDs: fixture.snapshot.residentModelIDs,
+            capturedAt: fixture.snapshot.capturedAt,
+            sources: sources(
+                loadedModels: .fresh(evidenceAt: expired)
+            )
+        )
+
+        #expect(ModelWarmupPresentation.blockReason(
+            operation: .idle,
+            draftHasChanges: false,
+            restartRequired: false,
+            pendingConfirmation: nil,
+            item: fixture.item,
+            snapshot: snapshot,
+            currentTime: presentationNow,
+            minimumHeadroomGB: 16,
+            availableSystemMemoryGB: 64
+        ) == "Waiting for fresh provider and loaded-model state")
+    }
+
+    @Test("warmup presentation blocks stale catalog and local-model evidence")
+    func warmupBlocksStaleInventoryEvidence() throws {
+        let fixture = try warmupFixture()
+        for staleSources in [
+            sources(catalog: .stale("Model catalog is stale")),
+            sources(localModels: .stale("Local model list is stale")),
+        ] {
+            let snapshot = ProviderControlSnapshot(
+                inventory: fixture.snapshot.inventory,
+                draft: fixture.snapshot.draft,
+                daemonState: fixture.snapshot.daemonState,
+                supportsProtectedWarmup: fixture.snapshot.supportsProtectedWarmup,
+                protectedWarmupMaxModelSlots: fixture.snapshot.protectedWarmupMaxModelSlots,
+                residentModelIDs: fixture.snapshot.residentModelIDs,
+                capturedAt: fixture.snapshot.capturedAt,
+                sources: staleSources
+            )
+
+            #expect(ModelWarmupPresentation.blockReason(
+                operation: .idle,
+                draftHasChanges: false,
+                restartRequired: false,
+                pendingConfirmation: nil,
+                item: fixture.item,
+                snapshot: snapshot,
+                currentTime: presentationNow,
+                minimumHeadroomGB: 16,
+                availableSystemMemoryGB: 64
+            ) == "Waiting for fresh model catalog and local-model state")
+        }
+    }
+
+    @Test("warmup presentation blocks while lifecycle confirmation is pending")
+    func warmupBlocksPendingConfirmation() throws {
+        let fixture = try warmupFixture()
+
+        #expect(ModelWarmupPresentation.blockReason(
+            operation: .idle,
+            draftHasChanges: false,
+            restartRequired: false,
+            pendingConfirmation: .restart(.active),
+            item: fixture.item,
+            snapshot: fixture.snapshot,
+            currentTime: presentationNow,
+            minimumHeadroomGB: 16,
+            availableSystemMemoryGB: 64
+        ) == "Another provider action is awaiting confirmation")
+    }
+
     @Test("download enable preload and delete stay independent")
     func separatesActions() {
         let row = ModelRowPresentation.make(
@@ -33,6 +235,64 @@ struct ModelManagerPresentationTests {
             confirmationRequests += 1
         }
         #expect(confirmationRequests == 1)
+    }
+
+    @Test("enable and preload presentation use their own configured selectors")
+    func independentSelectorPresentation() throws {
+        let catalog = [CatalogModel(
+            id: "gpt-oss-20b",
+            displayName: "GPT OSS 20B",
+            family: "gpt-oss",
+            modelType: "llm",
+            capabilities: ["text"],
+            sizeGB: 12,
+            minimumRAMGB: 16,
+            active: true
+        )]
+        let local = [LocalModel(
+            id: "gpt-oss-20b",
+            modelType: "llm",
+            sizeBytes: 12_000_000_000,
+            estimatedMemoryGB: nil
+        )]
+
+        for selection in [
+            ProviderModelSelection(
+                enabled: ["gpt-oss"],
+                preloaded: ["gpt-oss-20b"]
+            ),
+            ProviderModelSelection(
+                enabled: ["gpt-oss-20b"],
+                preloaded: ["gpt-oss"]
+            ),
+        ] {
+            let inventory = ModelInventoryBuilder.build(
+                catalog: catalog,
+                local: local,
+                selection: selection,
+                daemon: nil,
+                loadedModels: []
+            )
+            let item = try #require(inventory.myCatalog.first)
+            let draft = ProviderConfigDraft(
+                sourceRevision: "fixture-revision",
+                original: selection,
+                selection: selection
+            )
+            let row = ModelRowPresentation.make(
+                item: item,
+                draft: draft,
+                operation: .idle,
+                sources: sources(),
+                currentTime: presentationNow,
+                canDownload: false,
+                downloadUnavailableReason: nil,
+                sanitize: { $0 }
+            )
+
+            #expect(row.enableAction?.accessibilityLabel == "Disable GPT OSS 20B")
+            #expect(row.preloadAction?.accessibilityLabel == "Remove preload GPT OSS 20B")
+        }
     }
 
     @Test("available models offer only download")
@@ -202,8 +462,8 @@ struct ModelManagerPresentationTests {
         }
     }
 
-    @Test("delete evidence ages while Settings remains open and never requests stale confirmation")
-    func deleteEvidenceExpiresWithoutStoreRefresh() {
+    @Test("Settings does not manufacture stale model errors from an unchanged snapshot")
+    func unchangedSnapshotDoesNotBecomeAFalseStaleError() {
         let evidenceAt = presentationNow.addingTimeInterval(-9)
         let sourceCases: [(ProviderControlSourceStates, String)] = [
             (
@@ -216,7 +476,7 @@ struct ModelManagerPresentationTests {
             ),
         ]
 
-        for (sourceStates, expiredReason) in sourceCases {
+        for (sourceStates, _) in sourceCases {
             let initial = ModelRowPresentation.make(
                 item: item(isDownloaded: true),
                 draft: draft(),
@@ -250,13 +510,13 @@ struct ModelManagerPresentationTests {
 
             #expect(initial.deleteAction?.isEnabled == true)
             #expect(boundary.deleteAction?.isEnabled == true)
-            #expect(expired.deleteAction?.isEnabled == false)
-            #expect(expired.deleteBlockReason == expiredReason)
+            #expect(expired.deleteAction?.isEnabled == true)
+            #expect(expired.deleteBlockReason == nil)
             var confirmationRequests = 0
             expired.requestDeletion(of: item(isDownloaded: true)) { _ in
                 confirmationRequests += 1
             }
-            #expect(confirmationRequests == 0)
+            #expect(confirmationRequests == 1)
         }
     }
 
@@ -504,6 +764,78 @@ struct ModelManagerPresentationTests {
             pid: 1,
             processIdentity: ProcessIdentity(pid: 1, startTimeMicros: 1)
         )
+    }
+
+    private func warmupFixture(
+        capacity: MemoryCapacity = MemoryCapacity(
+            totalMemoryGB: 64,
+            gpuMemoryActiveGB: 10,
+            gpuMemoryCacheGB: 5
+        )
+    ) throws -> (item: ModelInventoryItem, snapshot: ProviderControlSnapshot) {
+        let selection = ProviderModelSelection(
+            enabled: ["model-id"],
+            preloaded: []
+        )
+        let daemon = DaemonState(
+            schema: 1,
+            version: "fixture",
+            currentModel: "resident-model",
+            warmModels: ["resident-model"],
+            stats: ProviderStats(tokensGenerated: 0, requestsServed: 1, usageGaps: 0),
+            trust: TrustState(level: "trusted", status: "online", reason: "", receivedAt: 1),
+            capacity: capacity,
+            slots: [],
+            inferenceActive: false,
+            startedAt: 1,
+            writtenAt: 1,
+            pid: 1,
+            processIdentity: ProcessIdentity(pid: 1, startTimeMicros: 1)
+        )
+        let inventory = ModelInventoryBuilder.build(
+            catalog: [CatalogModel(
+                id: "model-id",
+                displayName: "Model Name",
+                family: "model-family",
+                modelType: "llm",
+                capabilities: ["text"],
+                sizeGB: 4.5,
+                minimumRAMGB: 8,
+                active: true
+            )],
+            local: [LocalModel(
+                id: "model-id",
+                modelType: "llm",
+                sizeBytes: 4_500_000_000,
+                estimatedMemoryGB: nil
+            )],
+            selection: selection,
+            daemon: daemon,
+            loadedModels: ["resident-model"]
+        )
+        let item = try #require(inventory.myCatalog.first)
+        let draft = ProviderConfigDraft(
+            sourceRevision: "fixture-revision",
+            original: selection,
+            selection: selection,
+            originalMaxModelSlots: 2,
+            maxModelSlots: 2
+        )
+        let snapshot = ProviderControlSnapshot(
+            inventory: inventory,
+            draft: draft,
+            daemonState: daemon,
+            supportsProtectedWarmup: true,
+            protectedWarmupMaxModelSlots: 2,
+            protectedWarmupLaunchModelIDs: ["model-id"],
+            protectedWarmupConfiguredMaxModelSlots: 2,
+            protectedWarmupConfiguredEnabledModels: ["model-id"],
+            protectedWarmupConfiguredPreloadModels: [],
+            residentModelIDs: ["resident-model"],
+            capturedAt: presentationNow,
+            sources: sources()
+        )
+        return (item, snapshot)
     }
 }
 

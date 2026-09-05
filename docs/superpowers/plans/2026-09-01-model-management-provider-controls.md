@@ -10,6 +10,11 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-01-model-management-provider-controls-design.md`
 
+> Historical implementation plan retained for its earlier control-surface
+> work. Superseded for current live model switching by
+> [`2026-09-03-live-model-warming-design.md`](../specs/2026-09-03-live-model-warming-design.md)
+> and [`2026-09-03-live-model-warming.md`](2026-09-03-live-model-warming.md).
+
 ## Global Constraints
 
 - Target macOS 14 or newer and preserve the package's existing dependency-free SwiftPM structure.

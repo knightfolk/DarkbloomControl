@@ -1,6 +1,15 @@
 import Foundation
 import SQLite3
 
+public struct ModelRateBucket: Equatable, Sendable, Identifiable {
+    public let interval: DateInterval
+    public let average: Double?
+    public let minimum: Double?
+    public let maximum: Double?
+    public let sampleCount: Int
+    public var id: Date { interval.start }
+}
+
 public protocol ModelTokenRateRecording: Sendable {
     func record(
         model: String,
@@ -14,6 +23,12 @@ public protocol ModelTokenRateRecording: Sendable {
         from start: Date,
         through end: Date
     ) async throws -> [ModelTokenRateAverage]
+
+    func history(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar, model: String) async throws -> [ModelRateBucket]?
+}
+
+public extension ModelTokenRateRecording {
+    func history(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar, model: String) async throws -> [ModelRateBucket]? { nil }
 }
 
 public enum ModelTokenRateDatabaseError: Error, LocalizedError, Sendable {
@@ -28,6 +43,30 @@ public enum ModelTokenRateDatabaseError: Error, LocalizedError, Sendable {
 
 public actor ModelTokenRateDatabase: ModelTokenRateRecording {
     private var connection: ModelRateSQLiteConnection?
+
+    public func history(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar, model: String) async throws -> [ModelRateBucket]? {
+        let intervals = try ActivityCalendar.intervals(in: range, unit: unit, calendar: calendar)
+        let statement = try prepare("""
+            SELECT AVG(tokens_per_second), MIN(tokens_per_second), MAX(tokens_per_second), COUNT(*)
+            FROM token_rate_samples
+            WHERE model = ? AND captured_at >= ? AND captured_at < ?
+            """)
+        defer { sqlite3_finalize(statement) }
+        return try intervals.map { interval in
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+            sqlite3_bind_text(statement, 1, model, -1, modelRateSQLiteTransient)
+            sqlite3_bind_double(statement, 2, interval.start.timeIntervalSince1970)
+            sqlite3_bind_double(statement, 3, interval.end.timeIntervalSince1970)
+            guard sqlite3_step(statement) == SQLITE_ROW else { throw lastError() }
+            let count = Int(sqlite3_column_int64(statement, 3))
+            return ModelRateBucket(interval: interval,
+                average: count > 0 ? sqlite3_column_double(statement, 0) : nil,
+                minimum: count > 0 ? sqlite3_column_double(statement, 1) : nil,
+                maximum: count > 0 ? sqlite3_column_double(statement, 2) : nil,
+                sampleCount: count)
+        }
+    }
 
     public init(url: URL) throws {
         try FileManager.default.createDirectory(
@@ -105,6 +144,16 @@ public actor ModelTokenRateDatabase: ModelTokenRateRecording {
         sqlite3_bind_int64(statement, 5, processIdentity.startTimeMicros)
         sqlite3_bind_double(statement, 6, writtenAt)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError() }
+
+        // Retention is independent of the range a user happens to view. Use
+        // the newest persisted observation so late samples cannot move the
+        // retention boundary backwards. Reads never delete history.
+        let prune = try prepare("""
+            DELETE FROM token_rate_samples
+            WHERE captured_at < (SELECT MAX(captured_at) - 2678400 FROM token_rate_samples)
+            """)
+        defer { sqlite3_finalize(prune) }
+        guard sqlite3_step(prune) == SQLITE_DONE else { throw lastError() }
     }
 
     public func averages(
@@ -115,11 +164,6 @@ public actor ModelTokenRateDatabase: ModelTokenRateRecording {
               end.timeIntervalSince1970.isFinite,
               end >= start
         else { return [] }
-
-        let prune = try prepare("DELETE FROM token_rate_samples WHERE captured_at < ?")
-        sqlite3_bind_double(prune, 1, start.timeIntervalSince1970)
-        defer { sqlite3_finalize(prune) }
-        guard sqlite3_step(prune) == SQLITE_DONE else { throw lastError() }
 
         let statement = try prepare("""
             SELECT model, AVG(tokens_per_second), COUNT(*)
@@ -138,7 +182,8 @@ public actor ModelTokenRateDatabase: ModelTokenRateRecording {
             values.append(ModelTokenRateAverage(
                 model: String(cString: modelCString),
                 tokensPerSecond: sqlite3_column_double(statement, 1),
-                sampleCount: Int(sqlite3_column_int64(statement, 2))
+                sampleCount: Int(sqlite3_column_int64(statement, 2)),
+                queryPeriod: DateInterval(start: start, end: end)
             ))
         }
         return values

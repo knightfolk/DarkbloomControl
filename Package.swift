@@ -20,6 +20,10 @@ let package = Package(
             resources: [
                 .copy("Resources/darkbloom-mark.svg"),
                 .copy("Resources/darkbloom-menubar.svg"),
+                .copy("Resources/model-qwen.svg"),
+                .copy("Resources/model-openai.svg"),
+                .copy("Resources/model-google.svg"),
+                .copy("Resources/MODEL-ICONS-LICENSE.txt"),
             ]
         ),
         .testTarget(

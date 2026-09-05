@@ -4,6 +4,21 @@ import Testing
 
 @Suite("Observed Darkbloom telemetry contract")
 struct TelemetryTests {
+    @Test("failed load slots do not invalidate daemon telemetry or count as resident")
+    func failedLoadSlot() throws {
+        var json = try #require(JSONSerialization.jsonObject(with: fixture("daemon-state-online", extension: "json")) as? [String: Any])
+        json["slots"] = [["model": "gemma-4-26b-qat-4bit", "mtp_active": false,
+                          "mtp_enabled": false, "kv_backend_requested": "auto",
+                          "load_error": "Insufficient memory"]]
+        json["warm_models"] = []
+        json.removeValue(forKey: "current_model")
+        let state = try DaemonStateParser.parse(JSONSerialization.data(withJSONObject: json))
+        #expect(state.slots.isEmpty)
+        #expect(state.warmModels.isEmpty)
+        #expect(state.pid == 10004)
+        #expect(state.currentModel.isEmpty)
+    }
+
     @Test("daemon-state schema maps every observed monitor field")
     func parsesDaemonState() throws {
         let data = try fixture("daemon-state-online", extension: "json")

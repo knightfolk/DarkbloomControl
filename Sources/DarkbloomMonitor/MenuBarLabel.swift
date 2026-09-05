@@ -5,9 +5,16 @@ import SwiftUI
 enum DarkbloomLogoAsset {
     static let sourceImage = load(named: "darkbloom-mark")
     private static let menuBarMask = load(named: "darkbloom-menubar")
+    private static let modelMasks: [ModelFamilyIcon: NSImage] = {
+        var masks: [ModelFamilyIcon: NSImage] = [:]
+        for family in [ModelFamilyIcon.qwen, .openai, .google] {
+            masks[family] = load(named: "model-\(family.rawValue)")
+        }
+        return masks
+    }()
 
-    static func menuBarImage(tint: NSColor) -> NSImage? {
-        guard let mask = menuBarMask else { return nil }
+    static func menuBarImage(tint: NSColor, family: ModelFamilyIcon = .darkbloom) -> NSImage? {
+        guard let mask = modelMasks[family] ?? menuBarMask else { return nil }
 
         let image = NSImage(size: mask.size, flipped: false) { rect in
             mask.draw(in: rect)
@@ -21,7 +28,7 @@ enum DarkbloomLogoAsset {
 
     private static func load(named name: String) -> NSImage? {
         guard
-            let url = Bundle.module.url(forResource: name, withExtension: "svg"),
+            let url = AppResources.url(named: name, extension: "svg"),
             let image = NSImage(contentsOf: url)
         else {
             return nil
@@ -68,11 +75,12 @@ struct MenuBarMetric: View {
 struct MenuBarLabel: View {
     let presentation: MenuBarPresentation
     let uptime: ObservedUptimeValue
+    var family: ModelFamilyIcon = .darkbloom
 
     var body: some View {
         HStack(spacing: 8) {
             DarkbloomLogo(
-                image: DarkbloomLogoAsset.menuBarImage(tint: statusNSColor),
+                image: DarkbloomLogoAsset.menuBarImage(tint: statusNSColor, family: family),
                 tint: statusColor
             )
             .frame(width: 16, height: 18)
