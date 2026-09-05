@@ -27,18 +27,24 @@ def assemble(executable, resources, output, version, build_number):
         mode = entry.lstat().st_mode
         if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
             raise ValueError('resources cannot contain symlinks or special files')
+    if not (resources / 'AppIcon.icns').is_file():
+        raise ValueError('resources must contain the Darkbloom Control app icon')
     if output.is_relative_to(resources) or resources.is_relative_to(output):
         raise ValueError('output and resource paths must not overlap')
     # Exclusive creation protects existing outputs, including empty directories.
     # Failures after this point deliberately leave the new partial output intact.
     output.mkdir()
-    app = output / 'DarkbloomMonitor.app'
+    app = output / 'Darkbloom Control.app'
     contents = app / 'Contents'
     (contents / 'MacOS').mkdir(parents=True)
     (contents / 'Resources').mkdir()
     shutil.copy2(executable, contents / 'MacOS/DarkbloomMonitor')
     shutil.copytree(resources, contents / 'Resources/DarkbloomMonitor_DarkbloomMonitor.bundle', symlinks=True)
-    info = dict(CFBundleIdentifier='dev.darkbloom.monitor', CFBundleName='DarkbloomMonitor',
+    shutil.copy2(resources / 'AppIcon.icns', contents / 'Resources/AppIcon.icns')
+    # Preserve identity and executable/resource names for upgrade compatibility.
+    info = dict(CFBundleIdentifier='dev.darkbloom.monitor', CFBundleName='Darkbloom Control',
+                CFBundleDisplayName='Darkbloom Control',
+                CFBundleIconFile='AppIcon',
                 CFBundleExecutable='DarkbloomMonitor', CFBundlePackageType='APPL',
                 CFBundleShortVersionString=version, CFBundleVersion=build_number,
                 LSMinimumSystemVersion='14.0', LSUIElement=True)

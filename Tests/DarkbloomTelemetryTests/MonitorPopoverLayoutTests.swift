@@ -160,7 +160,7 @@ struct MonitorPopoverLayoutTests {
         #expect(models.filter { $0.state == .availableUnloaded }.count == 4)
     }
 
-    @Test("official Darkbloom logo loads as a tintable vector asset")
+    @Test("DC monogram loads as a tintable vector asset")
     func officialLogoAsset() throws {
         let sourceImage = try #require(DarkbloomLogoAsset.sourceImage)
         let greenImage = try #require(DarkbloomLogoAsset.menuBarImage(tint: .systemGreen))
@@ -168,9 +168,9 @@ struct MonitorPopoverLayoutTests {
         let green = try #require(sampledMarkColor(in: greenImage))
         let red = try #require(sampledMarkColor(in: redImage))
 
-        #expect(sourceImage.size == NSSize(width: 221, height: 253))
+        #expect(sourceImage.size == NSSize(width: 32, height: 24))
         #expect(!greenImage.isTemplate)
-        #expect(greenImage.size == NSSize(width: 12.25, height: 14))
+        #expect(greenImage.size == NSSize(width: 16, height: 14))
         #expect(green.greenComponent > green.redComponent)
         #expect(green.greenComponent > green.blueComponent)
         #expect(red.redComponent > red.greenComponent)

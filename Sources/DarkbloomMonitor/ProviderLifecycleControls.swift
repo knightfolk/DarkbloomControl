@@ -228,7 +228,7 @@ struct LifecycleConfirmationPresentation: Equatable {
         case .active:
             "A customer job is currently running. Continuing will interrupt it."
         case .unknown:
-            "Darkbloom Monitor cannot confirm whether a customer job is running. Continuing may interrupt customer work."
+            "Darkbloom Control cannot confirm whether a customer job is running. Continuing may interrupt customer work."
         case .idle:
             "Darkbloom reports no active customer job."
         }

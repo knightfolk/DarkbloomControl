@@ -1,12 +1,15 @@
-# Darkbloom Monitor
+# Darkbloom Control
 
-Darkbloom Monitor is a native macOS menu-bar companion for a local Darkbloom
+<img src="assets/brand/dc-app-icon.svg" width="96" alt="Darkbloom Control DC icon">
+
+Darkbloom Control is a native macOS menu-bar companion for a local Darkbloom
 provider. It turns provider telemetry into a compact infographic popup and
 keeps model and lifecycle controls behind explicit safety checks.
 
-> **Alpha software:** See [Releases](https://github.com/knightfolk/DarkbloomCLIMenuBarMonitor/releases)
-> for downloadable builds and their signing status. Alpha 2 provides a
-> Developer ID–signed Apple Silicon build; it is not notarized. Alpha 1 is source-only.
+> **Alpha software:** This project was previously named Darkbloom Monitor.
+> This repository contains the rebranded source; older releases retain their
+> original name. See [Releases](https://github.com/knightfolk/DarkbloomControl/releases)
+> for published builds and their signing status.
 
 ## Highlights
 
@@ -57,8 +60,8 @@ affected live values and actions will be unavailable.
 ## Build and run
 
 ```bash
-git clone https://github.com/knightfolk/DarkbloomCLIMenuBarMonitor.git
-cd DarkbloomCLIMenuBarMonitor
+git clone https://github.com/knightfolk/DarkbloomControl.git
+cd DarkbloomControl
 swift test
 swift run DarkbloomMonitor
 ```
@@ -179,8 +182,23 @@ python3 tools/package_app.py \
   --version 0.1.0 --build-number 1
 ```
 
-The new directory contains `DarkbloomMonitor.app` and a SHA-256 file manifest.
+The new directory contains `Darkbloom Control.app` and a SHA-256 file manifest.
 Version/build values are labels, not release provenance. This tool does not
 launch, register, install, distribution-sign, notarize, or publish the app.
 The manifest is not an SBOM or reproducible-build proof. Keep live relaunch,
 unsaved-settings safety, upgrade testing and distribution approval separate.
+
+## Upgrade from Darkbloom Monitor
+
+Quit the old monitor before opening Darkbloom Control. Quitting the monitor
+does not stop the official provider CLI. Keep only one installed app copy in
+your chosen Applications folder; do not leave the old app as a second login item.
+
+The bundle identifier, internal executable/resource names, settings keys,
+history folder (`Library/Application Support/Darkbloom Monitor`), and
+single-instance lock are intentionally unchanged. Existing settings and
+history carry over without a migration. Swift package commands still use the
+internal `DarkbloomMonitor` target name. The Git history and old release notes
+retain the original project name for traceability.
+
+See [Branding](docs/BRANDING.md) for editable icon sources and packaging details.

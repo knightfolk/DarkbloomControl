@@ -147,7 +147,7 @@ struct AppSettingsSceneRoot: View {
         if let controlStore {
             ProviderSettingsRoot(controlStore: controlStore)
         } else {
-            ProgressView("Starting Darkbloom Monitor…")
+            ProgressView("Starting Darkbloom Control…")
                 .frame(width: 420, height: 180)
         }
     }

@@ -16,10 +16,11 @@ let package = Package(
         .executableTarget(
             name: "DarkbloomMonitor",
             dependencies: ["DarkbloomTelemetry"],
-            exclude: ["Resources/DarkbloomLogo.svg"],
+            exclude: ["Resources/DarkbloomLogo.svg", "Resources/darkbloom-mark.svg", "Resources/darkbloom-menubar.svg"],
             resources: [
-                .copy("Resources/darkbloom-mark.svg"),
-                .copy("Resources/darkbloom-menubar.svg"),
+                .copy("Resources/dc-mark.svg"),
+                .copy("Resources/dc-menubar.svg"),
+                .copy("Resources/AppIcon.icns"),
                 .copy("Resources/model-qwen.svg"),
                 .copy("Resources/model-openai.svg"),
                 .copy("Resources/model-google.svg"),

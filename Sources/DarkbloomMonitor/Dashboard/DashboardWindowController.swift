@@ -17,7 +17,7 @@ final class DashboardWindowController: NSWindowController, NSWindowDelegate {
             store: store, controlStore: controlStore, navigation: navigation
         ))
         let window = NSWindow(contentViewController: content)
-        window.title = "Darkbloom Dashboard"
+        window.title = "Darkbloom Control"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
         window.setContentSize(NSSize(width: 1000, height: 700))

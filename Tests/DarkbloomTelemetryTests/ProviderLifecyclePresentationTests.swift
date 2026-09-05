@@ -817,7 +817,7 @@ struct ProviderLifecyclePresentationTests {
         )
 
         #expect(value.title == "Customer work may be interrupted")
-        #expect(value.body == "Darkbloom Monitor cannot confirm whether a customer job is running. Continuing may interrupt customer work.")
+        #expect(value.body == "Darkbloom Control cannot confirm whether a customer job is running. Continuing may interrupt customer work.")
         #expect(value.confirmLabel == "Continue Anyway")
         #expect(!value.body.contains("private provider detail"))
     }

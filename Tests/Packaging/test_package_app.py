@@ -21,6 +21,7 @@ class PackagingTests(unittest.TestCase):
         self.resources = self.root / 'Resources.bundle'
         self.resources.mkdir()
         (self.resources / 'mark.svg').write_text('<svg/>')
+        (self.resources / 'AppIcon.icns').write_bytes(b'fixture-icon')
         self.output = self.root / 'output'
 
     def run_packager(self, *extra):
@@ -31,13 +32,17 @@ class PackagingTests(unittest.TestCase):
     def test_bundle_and_manifest(self):
         result = self.run_packager()
         self.assertEqual(result.returncode, 0, result.stderr)
-        app = self.output / 'DarkbloomMonitor.app'
+        app = self.output / 'Darkbloom Control.app'
         binary = app / 'Contents/MacOS/DarkbloomMonitor'
         self.assertEqual(binary.read_bytes(), self.exe.read_bytes())
         self.assertTrue(binary.stat().st_mode & 0o111)
         self.assertFalse(binary.is_symlink())
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         self.assertEqual(info['CFBundleIdentifier'], 'dev.darkbloom.monitor')
+        self.assertEqual(info['CFBundleName'], 'Darkbloom Control')
+        self.assertEqual(info['CFBundleDisplayName'], 'Darkbloom Control')
+        self.assertEqual(info['CFBundleIconFile'], 'AppIcon')
+        self.assertEqual((app / 'Contents/Resources/AppIcon.icns').read_bytes(), b'fixture-icon')
         self.assertEqual(info['CFBundleExecutable'], 'DarkbloomMonitor')
         self.assertEqual(info['CFBundleShortVersionString'], '0.1.0')
         self.assertEqual(info['CFBundleVersion'], '1')
