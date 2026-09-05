@@ -20,42 +20,6 @@ struct ProviderControlServiceTests {
         #expect(snapshot.inventory.myCatalog.first { $0.catalogID == "gemma-4-26b-qat-4bit" }?.liveState == .loadedIdle)
     }
 
-    @Test("protected endpoint residency participates in the model inventory")
-    func protectedEndpointResidencyMarksModelLoaded() async throws {
-        let harness = try ServiceHarness.make(
-            loadedModels: [],
-            protectedWarmupLoadedModels: ["gemma-4-26b-qat-4bit"],
-            protectedWarmupAdvertisedModels: [
-                "gemma-4-26b-qat-4bit",
-                "gpt-oss-20b",
-            ],
-            protectedWarmupLaunchModels: ["gemma-4-26b-qat-4bit"],
-            protectedWarmupConfiguredMaxModelSlots: 2,
-            protectedWarmupConfiguredEnabledModels: ["gemma"],
-            protectedWarmupConfiguredPreloadModels: ["gemma-4-26b-qat-4bit"]
-        )
-        defer { harness.cleanup() }
-
-        let snapshot = try await harness.service.refresh()
-
-        #expect(snapshot.residentModelIDs == ["gemma-4-26b-qat-4bit"])
-        #expect(snapshot.protectedWarmupAdvertisedModelIDs == [
-            "gemma-4-26b-qat-4bit",
-            "gpt-oss-20b",
-        ])
-        #expect(snapshot.protectedWarmupLaunchModelIDs == [
-            "gemma-4-26b-qat-4bit"
-        ])
-        #expect(snapshot.protectedWarmupConfiguredMaxModelSlots == 2)
-        #expect(snapshot.protectedWarmupConfiguredEnabledModels == ["gemma"])
-        #expect(snapshot.protectedWarmupConfiguredPreloadModels == [
-            "gemma-4-26b-qat-4bit"
-        ])
-        #expect(snapshot.inventory.myCatalog.first {
-            $0.catalogID == "gemma-4-26b-qat-4bit"
-        }?.liveState == .loadedIdle)
-    }
-
     @Test("download and delete never change configuration")
     func mutationsStaySeparate() async throws {
         let harness = try ServiceHarness.make()
@@ -414,9 +378,9 @@ struct ProviderControlServiceTests {
 
         let invocations = await harness.runner.lifecycleInvocations
         #expect(invocations.map(\.command.arguments) == [
-            ["start", "--config", harness.configURL.path, "--model", "gemma-4-26b-qat-4bit", "--model", "gpt-oss-20b", "--local-endpoint"],
+            ["start", "--config", harness.configURL.path, "--model", "gemma-4-26b-qat-4bit", "--model", "gpt-oss-20b"],
             ["stop"],
-            ["start", "--config", harness.configURL.path, "--model", "gemma-4-26b-qat-4bit", "--model", "gpt-oss-20b", "--local-endpoint"],
+            ["start", "--config", harness.configURL.path, "--model", "gemma-4-26b-qat-4bit", "--model", "gpt-oss-20b"],
         ])
         #expect(invocations.allSatisfy { $0.timeout == DarkbloomSourcePolicy.lifecycleTimeout })
         #expect(invocations.allSatisfy { $0.outputLimit == DarkbloomSourcePolicy.mutationOutputByteLimit })
@@ -455,11 +419,10 @@ struct ProviderControlServiceTests {
         #expect(invocation.command.arguments == [
             "start", "--config", harness.configURL.path,
             "--model", "gemma-4-26b-qat-4bit",
-            "--local-endpoint",
         ])
     }
 
-    @Test("app restart reapplies the fresh saved selection and protected endpoint")
+    @Test("app restart reapplies the fresh saved selection")
     func restartUsesFreshSavedSelection() async throws {
         let harness = try ServiceHarness.make(selection: ProviderModelSelection(
             enabled: ["gemma-4-26b-qat-4bit", "gpt-oss"],
@@ -477,7 +440,6 @@ struct ProviderControlServiceTests {
             "start", "--config", harness.configURL.path,
             "--model", "gemma-4-26b-qat-4bit",
             "--model", "gpt-oss-20b",
-            "--local-endpoint",
         ])
     }
 
@@ -1164,575 +1126,6 @@ struct ProviderControlServiceTests {
         #expect(await harness.runner.lifecycleInvocations.map(\.command.arguments) == [["stop"]])
     }
 
-    @Test("two-slot warmup loads the target before retiring the prior idle model")
-    func warmupStagesThenRetiresPriorModelWithoutEditingConfiguration() async throws {
-        let selection = ProviderModelSelection(
-            enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            preloaded: ["gemma-4-26b-qat-4bit"]
-        )
-        let harness = try ServiceHarness.make(selection: selection, maxModelSlots: 2)
-        defer { harness.cleanup() }
-        await harness.warmup.succeedAndLoad(
-            ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            in: harness.telemetry
-        )
-        let phases = ServicePhaseRecorder()
-
-        let completion = try await harness.service.performWarmup(
-            "gpt-oss-20b",
-            onPhase: { phase in await phases.record(phase) }
-        )
-
-        let refreshed = try #require(completion.snapshot)
-        #expect(refreshed.inventory.myCatalog.first {
-            $0.catalogID == "gemma-4-26b-qat-4bit"
-        }?.liveState == .unloaded)
-        #expect(refreshed.inventory.myCatalog.first {
-            $0.catalogID == "gpt-oss-20b"
-        }?.liveState == .loadedIdle)
-        #expect(await harness.warmup.requestedModels == ["gpt-oss-20b"])
-        #expect(await harness.warmup.retiredModels == ["gemma-4-26b-qat-4bit"])
-        #expect(await harness.warmup.events == [
-            "load:gpt-oss-20b",
-            "retire:gemma-4-26b-qat-4bit",
-        ])
-        #expect(await phases.values == [
-            .loadingModel,
-            .retiringPreviousModels,
-            .reconciling,
-        ])
-        #expect(await harness.discovery.readCount == 3)
-        #expect(await harness.configStore.saveCount == 0)
-        #expect(refreshed.draft.original == selection)
-    }
-
-    @Test("warmup resolves enabled and preload aliases independently")
-    func warmupUsesEnabledSelectorWhenPreloadUsesAnotherSelector() async throws {
-        let selection = ProviderModelSelection(
-            enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            preloaded: ["gpt-oss"]
-        )
-        let harness = try ServiceHarness.make(selection: selection, maxModelSlots: 2)
-        defer { harness.cleanup() }
-        await harness.warmup.succeedAndLoad(
-            ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            in: harness.telemetry
-        )
-
-        let completion = try await harness.service.performWarmup(
-            "gpt-oss-20b",
-            onPhase: nil
-        )
-
-        #expect(completion.snapshot != nil)
-        #expect(await harness.warmup.requestedModels == ["gpt-oss-20b"])
-    }
-
-    @Test("two-slot warmup reports a safe partial state when retirement fails after loading")
-    func warmupReportsRetirementFailureAfterTargetWarms() async throws {
-        let selection = ProviderModelSelection(
-            enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            preloaded: ["gemma-4-26b-qat-4bit"]
-        )
-        let harness = try ServiceHarness.make(selection: selection, maxModelSlots: 2)
-        defer { harness.cleanup() }
-        await harness.warmup.succeedAndLoad(
-            ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            in: harness.telemetry
-        )
-        await harness.warmup.failRetirement(
-            of: "gemma-4-26b-qat-4bit",
-            with: .httpStatus(503)
-        )
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Target warmed, but the previous model could not be retired safely"
-        )) {
-            try await harness.service.performWarmup(
-                "gpt-oss-20b",
-                onPhase: nil
-            )
-        }
-
-        #expect(await harness.warmup.requestedModels == ["gpt-oss-20b"])
-        #expect(await harness.warmup.retiredModels == ["gemma-4-26b-qat-4bit"])
-    }
-
-    @Test("one-slot warmup retires an idle model before loading its replacement")
-    func oneSlotWarmupRetiresThenLoads() async throws {
-        let selection = ProviderModelSelection(
-            enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            preloaded: []
-        )
-        let harness = try ServiceHarness.make(selection: selection, maxModelSlots: 1)
-        defer { harness.cleanup() }
-        await harness.warmup.succeedAndLoad(
-            ["gpt-oss-20b"],
-            in: harness.telemetry
-        )
-        let phases = ServicePhaseRecorder()
-
-        let completion = try await harness.service.performWarmup(
-            "gpt-oss-20b",
-            onPhase: { phase in await phases.record(phase) }
-        )
-
-        let refreshed = try #require(completion.snapshot)
-        #expect(refreshed.inventory.myCatalog.first {
-            $0.catalogID == "gemma-4-26b-qat-4bit"
-        }?.liveState == .unloaded)
-        #expect(refreshed.inventory.myCatalog.first {
-            $0.catalogID == "gpt-oss-20b"
-        }?.liveState == .loadedIdle)
-        #expect(await harness.warmup.events == [
-            "retire:gemma-4-26b-qat-4bit",
-            "load:gpt-oss-20b",
-        ])
-        #expect(await phases.values == [
-            .retiringPreviousModels,
-            .loadingModel,
-            .reconciling,
-        ])
-    }
-
-    @Test("one-slot partial switch reconciles after retiring the old model")
-    func oneSlotWarmupReconcilesPartialFailure() async throws {
-        let selection = ProviderModelSelection(
-            enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            preloaded: []
-        )
-        let harness = try ServiceHarness.make(selection: selection, maxModelSlots: 1)
-        defer { harness.cleanup() }
-        await harness.warmup.failAfterLoading(
-            .httpStatus(503),
-            models: [],
-            in: harness.telemetry
-        )
-        let phases = ServicePhaseRecorder()
-
-        await #expect(throws: ModelWarmupClientError.httpStatus(503)) {
-            try await harness.service.performWarmup(
-                "gpt-oss-20b",
-                onPhase: { phase in await phases.record(phase) }
-            )
-        }
-
-        #expect(await harness.warmup.events == [
-            "retire:gemma-4-26b-qat-4bit",
-            "load:gpt-oss-20b",
-        ])
-        #expect(await phases.values == [
-            .retiringPreviousModels,
-            .loadingModel,
-            .reconciling,
-        ])
-    }
-
-    @Test("two-model warmup waits when both coordinator-visible slots are occupied")
-    func warmupRejectsOccupiedTwoModelCapacity() async throws {
-        let harness = try ServiceHarness.make(
-            local: localWithQwenJSON,
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "qwen3-8b", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            loadedModels: ["gemma-4-26b-qat-4bit", "qwen3-8b"],
-            maxModelSlots: 2
-        )
-        defer { harness.cleanup() }
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Both model slots are occupied; waiting avoids evicting another model"
-        )) {
-            try await harness.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-    }
-
-    @Test("warmup freshness failures use warmup-specific diagnostics")
-    func warmupFreshnessFailuresAreCategorizedCorrectly() async throws {
-        let selection = ProviderModelSelection(
-            enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            preloaded: []
-        )
-        let daemonFailure = try ServiceHarness.make(selection: selection)
-        defer { daemonFailure.cleanup() }
-        await daemonFailure.telemetry.failNextDaemonRead()
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Provider activity is unavailable; warmup was not attempted"
-        )) {
-            try await daemonFailure.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        let loadedFailure = try ServiceHarness.make(selection: selection)
-        defer { loadedFailure.cleanup() }
-        await loadedFailure.telemetry.failNextLoadedModelsRead()
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Loaded model state is unavailable; warmup was not attempted"
-        )) {
-            try await loadedFailure.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-    }
-
-    @Test("warmup is a no-op when the protected endpoint already reports the target resident")
-    func warmupAcceptsProtectedEndpointResidentTarget() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            loadedModels: [],
-            maxModelSlots: 1,
-            protectedWarmupLoadedModels: ["gpt-oss-20b"]
-        )
-        defer { harness.cleanup() }
-
-        let completion = try await harness.service.performWarmup(
-            "gpt-oss-20b",
-            onPhase: nil
-        )
-
-        #expect(completion.snapshot?.residentModelIDs.contains("gpt-oss-20b") == true)
-        #expect(await harness.warmup.requestedModels.isEmpty)
-        #expect(await harness.warmup.retiredModels.isEmpty)
-    }
-
-    @Test("unknown resident models still occupy protected staging capacity")
-    func warmupCountsUnknownResidents() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            loadedModels: ["gemma-4-26b-qat-4bit", "external-model"],
-            maxModelSlots: 2
-        )
-        defer { harness.cleanup() }
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Both model slots are occupied; waiting avoids evicting another model"
-        )) {
-            try await harness.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-    }
-
-    @Test("saved and live slot capacity must match before switching")
-    func warmupRequiresAppliedCapacity() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            maxModelSlots: 2,
-            protectedWarmupMaxModelSlots: 1
-        )
-        defer { harness.cleanup() }
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Restart the provider to apply the saved model capacity"
-        )) {
-            try await harness.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-    }
-
-    @Test("warmup requires complete protected runtime configuration proof")
-    func warmupRequiresCompleteProtectedRuntimeProof() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            maxModelSlots: 2,
-            protectedWarmupMaxModelSlots: 2,
-            completeProtectedWarmupProof: false
-        )
-        defer { harness.cleanup() }
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Protected warmup requires complete applied provider runtime proof"
-        )) {
-            try await harness.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-        #expect(await harness.warmup.retiredModels.isEmpty)
-    }
-
-    @Test("warmup rejects a protected runtime configuration mismatch")
-    func warmupRejectsProtectedRuntimeConfigurationMismatch() async throws {
-        let selection = ProviderModelSelection(
-            enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            preloaded: []
-        )
-        let harness = try ServiceHarness.make(
-            selection: selection,
-            maxModelSlots: 2,
-            protectedWarmupMaxModelSlots: 2,
-            protectedWarmupLaunchModels: ["gemma-4-26b-qat-4bit"],
-            protectedWarmupConfiguredMaxModelSlots: 2,
-            protectedWarmupConfiguredEnabledModels: selection.enabled,
-            protectedWarmupConfiguredPreloadModels: selection.preloaded
-        )
-        defer { harness.cleanup() }
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Protected warmup requires complete applied provider runtime proof"
-        )) {
-            try await harness.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-        #expect(await harness.warmup.retiredModels.isEmpty)
-    }
-
-    @Test("one-model capacity refuses inconsistent multiple residents without retiring either")
-    func oneSlotWarmupRejectsMultipleResidents() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            loadedModels: ["gemma-4-26b-qat-4bit", "external-model"],
-            maxModelSlots: 1
-        )
-        defer { harness.cleanup() }
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Loaded model state conflicts with one-model capacity; waiting for a clean refresh"
-        )) {
-            try await harness.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-        #expect(await harness.warmup.retiredModels.isEmpty)
-    }
-
-    @Test("two-model warmup requires configured memory headroom before using a free slot")
-    func warmupRejectsInsufficientStagingHeadroom() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            daemonState: daemon(
-                currentModel: "gemma-4-26b-qat-4bit",
-                inferenceActive: false,
-                capacity: MemoryCapacity(
-                    totalMemoryGB: 32,
-                    gpuMemoryActiveGB: 10,
-                    gpuMemoryCacheGB: 5
-                )
-            ),
-            maxModelSlots: 2,
-            minimumHeadroomGB: 16
-        )
-        defer { harness.cleanup() }
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Waiting for enough memory to stage this model without eviction"
-        )) {
-            try await harness.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-    }
-
-    @Test("two-model warmup counts memory used by other applications")
-    func warmupUsesWholeSystemHeadroom() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            daemonState: daemon(
-                currentModel: "gemma-4-26b-qat-4bit",
-                inferenceActive: false,
-                capacity: MemoryCapacity(
-                    totalMemoryGB: 64,
-                    gpuMemoryActiveGB: 10,
-                    gpuMemoryCacheGB: 5
-                )
-            ),
-            maxModelSlots: 2,
-            minimumHeadroomGB: 8,
-            availableSystemMemoryGB: 12
-        )
-        defer { harness.cleanup() }
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Waiting for enough memory to stage this model without eviction"
-        )) {
-            try await harness.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-    }
-
-    @Test("two-model warmup refuses an endpoint that may evict a resident")
-    func warmupRequiresProtectedProviderCapability() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            maxModelSlots: 2,
-            protectedWarmupSupported: false
-        )
-        defer { harness.cleanup() }
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Protected two-model staging requires a provider update"
-        )) {
-            try await harness.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-    }
-
-    @Test("warmup fails closed while inference is active")
-    func warmupRejectsActiveInference() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            daemonState: daemon(
-                currentModel: "gemma-4-26b-qat-4bit",
-                inferenceActive: true
-            )
-        )
-        defer { harness.cleanup() }
-        let phases = ServicePhaseRecorder()
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Waiting for the current customer job to finish"
-        )) {
-            try await harness.service.performWarmup(
-                "gpt-oss-20b",
-                onPhase: { phase in await phases.record(phase) }
-            )
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-        #expect(await harness.discovery.readCount == 1)
-        #expect(await phases.values.isEmpty)
-    }
-
-    @Test("two-slot warmup may stage beside an active job and leaves its model resident")
-    func warmupStagesWithoutInterruptingActiveModel() async throws {
-        let selection = ProviderModelSelection(
-            enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            preloaded: []
-        )
-        let harness = try ServiceHarness.make(
-            selection: selection,
-            daemonState: daemon(
-                currentModel: "gemma-4-26b-qat-4bit",
-                inferenceActive: true,
-                capacity: MemoryCapacity(
-                    totalMemoryGB: 64,
-                    gpuMemoryActiveGB: 16,
-                    gpuMemoryCacheGB: 0
-                )
-            ),
-            maxModelSlots: 2
-        )
-        defer { harness.cleanup() }
-        await harness.warmup.succeedAndLoad(
-            ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            in: harness.telemetry
-        )
-        await harness.warmup.blockRetirement(of: "gemma-4-26b-qat-4bit")
-
-        let completion = try await harness.service.performWarmup(
-            "gpt-oss-20b", onPhase: nil)
-
-        let refreshed = try #require(completion.snapshot)
-        #expect(refreshed.inventory.myCatalog.first {
-            $0.catalogID == "gemma-4-26b-qat-4bit"
-        }?.liveState == .active)
-        #expect(refreshed.inventory.myCatalog.first {
-            $0.catalogID == "gpt-oss-20b"
-        }?.liveState == .loadedIdle)
-        #expect(await harness.warmup.requestedModels == ["gpt-oss-20b"])
-        #expect(await harness.warmup.retiredModels == ["gemma-4-26b-qat-4bit"])
-    }
-
-    @Test("warmup requires the target to be enabled in saved configuration")
-    func warmupRejectsUnsavedEnable() async throws {
-        let harness = try ServiceHarness.make(
-            originalSelection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit"],
-                preloaded: []
-            ),
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            )
-        )
-        defer { harness.cleanup() }
-
-        await #expect(throws: ProviderControlError.warmupBlocked(
-            "Enable and save this model first"
-        )) {
-            try await harness.service.performWarmup("gpt-oss-20b", onPhase: nil)
-        }
-
-        #expect(await harness.warmup.requestedModels.isEmpty)
-        #expect(await harness.discovery.readCount == 1)
-    }
-
-    @Test("warmup is a no-op when fresh state already reports the target resident")
-    func warmupSkipsAlreadyResidentTarget() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            ),
-            loadedModels: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"]
-        )
-        defer { harness.cleanup() }
-
-        let completion = try await harness.service.performWarmup(
-            "gpt-oss-20b",
-            onPhase: nil
-        )
-
-        #expect(completion.snapshot != nil)
-        #expect(await harness.warmup.requestedModels.isEmpty)
-        #expect(await harness.discovery.readCount == 1)
-    }
-
-    @Test("warmup reconciles an ambiguous request failure before reporting outcome")
-    func warmupReconcilesRequestFailure() async throws {
-        let harness = try ServiceHarness.make(
-            selection: ProviderModelSelection(
-                enabled: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-                preloaded: []
-            )
-        )
-        defer { harness.cleanup() }
-        await harness.warmup.failAfterLoading(
-            ModelWarmupClientError.busy,
-            models: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"],
-            in: harness.telemetry
-        )
-
-        let completion = try await harness.service.performWarmup(
-            "gpt-oss-20b",
-            onPhase: nil
-        )
-
-        #expect(completion.snapshot != nil)
-        #expect(await harness.warmup.requestedModels == ["gpt-oss-20b"])
-    }
 }
 
 enum PreLaunchProviderMutation: CaseIterable, Sendable {
@@ -1755,8 +1148,6 @@ private final class ServiceHarness: @unchecked Sendable {
     let runner: ServiceRunnerFake
     let telemetry: ServiceTelemetryFake
     let configStore: ServiceConfigStoreFake
-    let discovery: ServiceEndpointDiscoveryFake
-    let warmup: ServiceWarmupFake
     let service: ProviderControlService
     let now = serviceNow
 
@@ -1772,18 +1163,7 @@ private final class ServiceHarness: @unchecked Sendable {
         loadedModels: [String] = ["gemma-4-26b-qat-4bit"],
         loadedModelsUpdatedAt: TimeInterval = serviceNow.timeIntervalSince1970,
         useLegacyExecutor: Bool = false,
-        maxModelSlots: Int = 1,
-        minimumHeadroomGB: Double = 16,
-        availableSystemMemoryGB: Double? = nil,
-        protectedWarmupSupported: Bool = true,
-        protectedWarmupMaxModelSlots: Int? = nil,
-        protectedWarmupLoadedModels: [String]? = nil,
-        protectedWarmupAdvertisedModels: [String]? = nil,
-        protectedWarmupLaunchModels: [String]? = nil,
-        protectedWarmupConfiguredMaxModelSlots: Int? = nil,
-        protectedWarmupConfiguredEnabledModels: [String]? = nil,
-        protectedWarmupConfiguredPreloadModels: [String]? = nil,
-        completeProtectedWarmupProof: Bool = true
+        maxModelSlots: Int = 1
     ) throws -> ServiceHarness {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("darkbloom-provider-service-\(UUID().uuidString)", isDirectory: true)
@@ -1806,27 +1186,6 @@ private final class ServiceHarness: @unchecked Sendable {
             original: originalSelection ?? selection,
             maxModelSlots: maxModelSlots
         )
-        let discovery = ServiceEndpointDiscoveryFake()
-        let warmup = ServiceWarmupFake(
-            loadSafety: protectedWarmupSupported ? .preservesResidents : .mayEvictResident,
-            maxModelSlots: protectedWarmupMaxModelSlots ?? maxModelSlots,
-            loadedModels: protectedWarmupLoadedModels ?? loadedModels,
-            advertisedModels: protectedWarmupAdvertisedModels,
-            launchModels: completeProtectedWarmupProof
-                ? (protectedWarmupLaunchModels ?? selection.enabled.map {
-                    $0 == "gpt-oss" ? "gpt-oss-20b" : $0
-                })
-                : protectedWarmupLaunchModels,
-            configuredMaxModelSlots: completeProtectedWarmupProof
-                ? protectedWarmupConfiguredMaxModelSlots ?? maxModelSlots
-                : protectedWarmupConfiguredMaxModelSlots,
-            configuredEnabledModels: completeProtectedWarmupProof
-                ? protectedWarmupConfiguredEnabledModels ?? selection.enabled
-                : protectedWarmupConfiguredEnabledModels,
-            configuredPreloadModels: completeProtectedWarmupProof
-                ? protectedWarmupConfiguredPreloadModels ?? selection.preloaded
-                : protectedWarmupConfiguredPreloadModels
-        )
         let policy = DarkbloomSourcePolicy(homeDirectory: directory, environmentPath: directory.path)
         return ServiceHarness(
             directory: directory,
@@ -1835,18 +1194,8 @@ private final class ServiceHarness: @unchecked Sendable {
             runner: runner,
             telemetry: telemetry,
             configStore: configStore,
-            discovery: discovery,
-            warmup: warmup,
             policy: policy,
-            useLegacyExecutor: useLegacyExecutor,
-            minimumHeadroomGB: minimumHeadroomGB,
-            availableSystemMemoryGB: availableSystemMemoryGB
-                ?? max(
-                    0,
-                    daemonState.capacity.totalMemoryGB
-                        - daemonState.capacity.gpuMemoryActiveGB
-                        - daemonState.capacity.gpuMemoryCacheGB
-                )
+            useLegacyExecutor: useLegacyExecutor
         )
     }
 
@@ -1857,12 +1206,8 @@ private final class ServiceHarness: @unchecked Sendable {
         runner: ServiceRunnerFake,
         telemetry: ServiceTelemetryFake,
         configStore: ServiceConfigStoreFake,
-        discovery: ServiceEndpointDiscoveryFake,
-        warmup: ServiceWarmupFake,
         policy: DarkbloomSourcePolicy,
-        useLegacyExecutor: Bool,
-        minimumHeadroomGB: Double,
-        availableSystemMemoryGB: Double
+        useLegacyExecutor: Bool
     ) {
         self.directory = directory
         self.configURL = configURL
@@ -1870,8 +1215,6 @@ private final class ServiceHarness: @unchecked Sendable {
         self.runner = runner
         self.telemetry = telemetry
         self.configStore = configStore
-        self.discovery = discovery
-        self.warmup = warmup
         let executor: any ProcessExecuting = useLegacyExecutor
             ? LegacyServiceRunnerAdapter(base: runner)
             : runner
@@ -1880,10 +1223,6 @@ private final class ServiceHarness: @unchecked Sendable {
             telemetrySource: telemetry,
             configStore: configStore,
             runner: executor,
-            endpointReader: discovery,
-            warmupClient: warmup,
-            minimumWarmupHeadroomGB: { minimumHeadroomGB },
-            availableSystemMemoryGB: { availableSystemMemoryGB },
             now: { serviceNow }
         )
     }
@@ -2266,152 +1605,6 @@ private actor ServiceTelemetryFake: TelemetrySource {
     }
     func readStatus() async throws -> StatusSnapshot { StatusSnapshot() }
     func readLegacyEvents(limit: Int) async throws -> [LogEvent] { [] }
-}
-
-private actor ServiceEndpointDiscoveryFake: LocalEndpointDiscoveryReading {
-    private(set) var readCount = 0
-
-    func read(for provider: DaemonState) async throws -> LocalEndpointDiscovery {
-        readCount += 1
-        return LocalEndpointDiscovery(
-            baseURL: URL(string: "http://127.0.0.1:8100/v1")!,
-            apiKey: "fixture-secret",
-            evidenceAt: serviceNow
-        )
-    }
-}
-
-private actor ServiceWarmupFake: ModelWarmupRequesting {
-    nonisolated let loadSafety: ModelWarmupLoadSafety
-    nonisolated let maxModelSlots: Int
-    private(set) var requestedModels: [String] = []
-    private(set) var retiredModels: [String] = []
-    private(set) var events: [String] = []
-    private var loadedModels: [String]
-    private var loadResultModels: [String]?
-    private var telemetry: ServiceTelemetryFake?
-    private var failure: ModelWarmupClientError?
-    private var busyRetirements: Set<String> = []
-    private var retirementFailures: [String: ModelWarmupClientError] = [:]
-    private let advertisedModels: [String]?
-    private let launchModels: [String]?
-    private let configuredMaxModelSlots: Int?
-    private let configuredEnabledModels: [String]?
-    private let configuredPreloadModels: [String]?
-
-    init(
-        loadSafety: ModelWarmupLoadSafety = .preservesResidents,
-        maxModelSlots: Int = 2,
-        loadedModels: [String] = [],
-        advertisedModels: [String]? = nil,
-        launchModels: [String]? = nil,
-        configuredMaxModelSlots: Int? = nil,
-        configuredEnabledModels: [String]? = nil,
-        configuredPreloadModels: [String]? = nil
-    ) {
-        self.loadSafety = loadSafety
-        self.maxModelSlots = maxModelSlots
-        self.loadedModels = loadedModels
-        self.advertisedModels = advertisedModels
-        self.launchModels = launchModels
-        self.configuredMaxModelSlots = configuredMaxModelSlots
-        self.configuredEnabledModels = configuredEnabledModels
-        self.configuredPreloadModels = configuredPreloadModels
-    }
-
-    func succeedAndLoad(_ models: [String], in telemetry: ServiceTelemetryFake) {
-        loadResultModels = models
-        self.telemetry = telemetry
-        failure = nil
-    }
-
-    func failAfterLoading(
-        _ error: ModelWarmupClientError,
-        models: [String],
-        in telemetry: ServiceTelemetryFake
-    ) {
-        loadResultModels = models
-        self.telemetry = telemetry
-        failure = error
-    }
-
-    func blockRetirement(of modelID: String) {
-        busyRetirements.insert(modelID)
-    }
-
-    func failRetirement(of modelID: String, with error: ModelWarmupClientError) {
-        retirementFailures[modelID] = error
-    }
-
-    func warm(
-        modelID: String,
-        using discovery: LocalEndpointDiscovery
-    ) async throws -> ModelWarmupResponseUsage? {
-        try await warm(modelID: modelID, using: discovery, onLaunch: nil)
-    }
-
-    func warm(
-        modelID: String,
-        using discovery: LocalEndpointDiscovery,
-        onLaunch: ModelWarmupRequestLaunchObserver?
-    ) async throws -> ModelWarmupResponseUsage? {
-        onLaunch?()
-        requestedModels.append(modelID)
-        events.append("load:\(modelID)")
-        if let loadResultModels {
-            loadedModels = loadResultModels
-        }
-        if let telemetry {
-            await telemetry.setLoadedModels(loadedModels)
-        }
-        if let failure { throw failure }
-        return ModelWarmupResponseUsage(promptTokens: 4, completionTokens: 1)
-    }
-
-    func controlSnapshot(
-        using discovery: LocalEndpointDiscovery
-    ) async throws -> ModelControlSnapshot? {
-        guard loadSafety == .preservesResidents else { return nil }
-        return ModelControlSnapshot(
-            apiVersion: 1,
-            protectedLoad: true,
-            idleRetire: true,
-            maxModelSlots: maxModelSlots,
-            loadedModels: loadedModels,
-            advertisedModels: advertisedModels,
-            launchModels: launchModels,
-            configuredMaxModelSlots: configuredMaxModelSlots,
-            configuredEnabledModels: configuredEnabledModels,
-            configuredPreloadModels: configuredPreloadModels
-        )
-    }
-
-    func retire(
-        modelID: String,
-        using discovery: LocalEndpointDiscovery
-    ) async throws {
-        try await retire(modelID: modelID, using: discovery, onLaunch: nil)
-    }
-
-    func retire(
-        modelID: String,
-        using discovery: LocalEndpointDiscovery,
-        onLaunch: ModelWarmupRequestLaunchObserver?
-    ) async throws {
-        onLaunch?()
-        retiredModels.append(modelID)
-        events.append("retire:\(modelID)")
-        if busyRetirements.contains(modelID) {
-            throw ModelWarmupClientError.busy
-        }
-        if let error = retirementFailures[modelID] {
-            throw error
-        }
-        loadedModels.removeAll { $0 == modelID }
-        if let telemetry {
-            await telemetry.setLoadedModels(loadedModels)
-        }
-    }
 }
 
 private func daemon(

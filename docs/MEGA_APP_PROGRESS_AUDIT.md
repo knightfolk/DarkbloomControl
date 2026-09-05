@@ -6,6 +6,12 @@ early descriptions are superseded by later implementation evidence.
 
 Evidence checkpoint: 2026-09-04. This is a working-tree audit, not a release or full-goal completion claim.
 
+Provider boundary: this audit now follows the official vendor-released CLI
+only. Chronological entries that mention custom provider branches, private
+model-control endpoints, protected warm/live switching, or unsigned local
+provider builds are historical evidence and are superseded; they are not
+instructions to reproduce or launch those artifacts.
+
 ## Verified baseline
 
 - The native popup and retained Settings window exist in `StatusItemController.swift`.
@@ -21,13 +27,13 @@ Evidence checkpoint: 2026-09-04. This is a working-tree audit, not a release or 
 | Calendar Activity | Local ledger query and Activity chart/table now implemented; Today, This Week and single-date filters | Rendered chart verification, selected date ranges, per-model series, refresh-on-ingest and stronger coverage proof |
 | Network/Opportunity | NetworkCapacity source and tests exist | Dedicated dashboard presentation and complete planned source/contract coverage; no income guarantees from capacity |
 | Models/operations | Model manager and lifecycle controls exist | Dashboard integration and requirement-by-requirement operation reconciliation audit |
-| Live switching | UI includes a Coming Soon gate | Supported signed provider capability and safe runtime verification; do not bypass the gate or interrupt customer inference |
+| Live switching | UI includes a Coming Soon gate | Not supported by the official CLI. Keep the gate and do not add private endpoints, custom provider builds, or automatic residency changes. |
 | Fleet/Energy | No dedicated implementation established | Remain optional and gated by the plan's identity, permission and source contracts |
 | Packaging | SingleInstanceGuard and tests exist | Exact artifact signing/notarization, upgrade and Gatekeeper proof; no publication authorized by this audit |
 
 ## Next implementation checkpoint
 
-Continue Phase 1 verification, then implement calendar Activity from the existing database. The shell now uses the existing MonitorStore and provider-control store without independent polling. Do not change provider configuration, restart the provider, or duplicate model-control state. Sidebar sections other than Overview explicitly report unfinished development; Models links to the existing Settings window.
+Continue Phase 1 verification, then implement calendar Activity from the existing database. The shell now uses the existing MonitorStore and provider-control store without independent polling. Do not change provider configuration or restart the provider during monitor-only work. Sidebar sections other than Overview explicitly report unfinished development; Models links to the existing Settings window.
 
 Verify window reuse, close/reopen, minimum size, restoration, keyboard access, shared telemetry updates and normal-scale rendering. Retain the compact popup and existing Settings route. Preserve the current dirty worktree; this audit does not authorize a commit, push or release.
 

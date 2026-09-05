@@ -70,7 +70,7 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
     public var displayName: String {
         switch self {
         case .automatic: "Automatic"
-        case .throughput: "Throughput"
+        case .throughput: "Model average / activity"
         case .earnings: "Earnings"
         case .model: "Model"
         case .statusOnly: "Status only"
@@ -141,9 +141,7 @@ public struct MenuBarPresentation: Equatable, Sendable {
     ) -> Metric {
         switch mode {
         case .automatic, .throughput:
-            if let throughput = availableThroughput(snapshot.tokenRate) {
-                return throughput
-            }
+            // Official CLI counters are completion aggregates, not streaming telemetry.
             if snapshot.menuStatus == .online, snapshot.state.value?.inferenceActive == true {
                 if let average = activeModelAverage, average.isFinite, average > 0 {
                     return Metric(text: "\(decimal(average, fractionDigits: 0))t/s avg",
@@ -168,19 +166,6 @@ public struct MenuBarPresentation: Equatable, Sendable {
         case .statusOnly:
             return Metric(text: nil, accessibility: nil, unavailableReason: nil)
         }
-    }
-
-    private static func availableThroughput(_ rate: TokenRate) -> Metric? {
-        guard case .available(let tokensPerSecond, _) = rate,
-              tokensPerSecond.isFinite else {
-            return nil
-        }
-        let compact = decimal(tokensPerSecond, fractionDigits: 1)
-        return Metric(
-            text: "\(compact) tok/s",
-            accessibility: "\(compact) tokens per second.",
-            unavailableReason: nil
-        )
     }
 
     private static func availableEarnings(_ earnings: EarningsPresentationValue) -> Metric? {

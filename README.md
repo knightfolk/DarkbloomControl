@@ -5,13 +5,14 @@ provider. It turns provider telemetry into a compact infographic popup and
 keeps model and lifecycle controls behind explicit safety checks.
 
 > **Alpha software:** See [Releases](https://github.com/knightfolk/DarkbloomCLIMenuBarMonitor/releases)
-> for downloadable builds and their signing status. Alpha 1 is source-only.
+> for downloadable builds and their signing status. Alpha 2 provides a
+> Developer ID–signed Apple Silicon build; it is not notarized. Alpha 1 is source-only.
 
 ## Highlights
 
-- Live menu-bar status with current throughput while inference is active
+- Menu-bar activity status with clearly labeled model-average throughput
 - A compact, content-sized popup with short model pills and inline statistics
-- Current and calendar-day average token throughput, including a per-model
+- Calendar-day average token throughput, including a per-model
   breakdown once more than one model has measured samples
 - Calendar-day earnings, average earnings per observed hour, and a local
   calendar-week total
@@ -24,16 +25,13 @@ keeps model and lifecycle controls behind explicit safety checks.
 - Model catalog management with separate Download, Delete, Enable, and Preload
   actions
 - One-model Memory Saver and coordinator-visible two-model capacity modes
-- Current per-model network demand plus a manual protected Warm action
-- Optional demand-aware switching with three-sample hysteresis, a persistent
-  30-minute cooldown, and the same no-interruption checks as manual switching
+- Current per-model network demand for manual configuration decisions
 - One resizable dashboard and Settings window
 - Qwen, OpenAI/GPT-OSS and Google/Gemma menu-bar icons during observed activity
 - Opt-in estimated adapter power, a saved USD/kWh electricity rate, and earnings
   after electricity for matching measurement periods
 
-The status item favors measured `tok/s` when available. During inference without
-fresh token telemetry, it shows the model's daily rate labeled `avg`, or
+During inference, the status item shows the model's daily rate labeled `avg`, or
 `Working` when no average exists. These are not realtime measurements. The popup
 also labels this working/average fallback. Earnings remain the idle fallback.
 Unavailable values are omitted or shown with a compact
@@ -41,9 +39,7 @@ neutral state; the monitor does not manufacture values from unrelated counters.
 
 ## Screenshots
 
-Current local review build. Values and model availability vary by provider.
-
-![Model catalog and serving capacity](docs/screenshots/models.png)
+Settings from an earlier local review build. Values vary by provider.
 
 ![Electricity and menu-bar settings](docs/screenshots/settings.png)
 
@@ -51,7 +47,7 @@ Current local review build. Values and model availability vary by provider.
 
 - macOS 14 or newer
 - Swift 6 through Xcode or the Swift toolchain
-- A local Darkbloom installation for live provider data and controls
+- The official, unmodified Darkbloom CLI for provider data and controls
 - `darkbloom login` for authenticated earnings
 
 The telemetry and command contracts were last validated against Darkbloom
@@ -97,12 +93,8 @@ The monitor reads bounded local telemetry from:
 - authenticated Darkbloom account earnings and the public earnings leaderboard
 - the public per-model network-capacity endpoint
 
-`~/.darkbloom/local.json` is a separate control-discovery source, not telemetry.
-The monitor reads it only for protected-control discovery and Warm operations
-that need the current provider endpoint. The record must belong to the current
-user, have private permissions, stay within the bounded size limit, match the
-current provider run, and name an authenticated loopback endpoint; its API key
-is request-scoped and is never persisted by the monitor.
+The monitor does not use custom provider-control endpoints or require a patched
+CLI. Model configuration changes take effect through the official CLI lifecycle.
 
 It stores compact, user-only SQLite histories under:
 
@@ -114,30 +106,29 @@ Those databases contain hourly earnings aggregates, changed balance samples,
 observed uptime, and measured model token rates. They do not store the auth
 token, account ID, provider key, prompts, responses, or per-job content.
 
-Current throughput is derived only from positive token/time deltas belonging to
-the same provider process and model. Calendar earnings include both inference
+Historical throughput is derived from positive token/time deltas belonging to
+the same provider process and model. These completion counters are not a live
+streaming rate. Calendar earnings include both inference
 work and rewards. When retained data does not cover the entire current week,
 the popup says **Observed this week** instead of presenting a partial value as a
 complete weekly total.
 
 ## Provider controls and safety
 
-Download, Delete, Enable, Preload and Warm are separate operations. Saved model
+Download, Delete, Enable and Preload are separate operations. Saved model
 selection is passed explicitly at startup to bypass the CLI picker. Saving
 configuration does not silently restart the provider.
 
-Protected warming requires the companion provider API. It never evicts active
-customer work. One-slot mode retires an idle model before loading its replacement;
-two-slot mode checks memory before staging the replacement. The second slot is
-shared coordinator capacity, not private staging space. A failed one-slot load
-may leave no model warm.
+One- and two-slot settings use the official provider configuration. Both slots
+are coordinator-visible capacity. Manual live warming, staged replacement and
+automatic demand-based switching are not supported by this app.
 
 Stop and Restart require a customer-impact override when work is active or
 activity is unknown. Delete requires fresh residency evidence. Quitting the
 monitor stops its own work, not the provider.
 
-See the [control design](docs/superpowers/specs/2026-09-03-live-model-warming-design.md)
-for memory headroom, capability checks, reconciliation and failure handling.
+After saving model configuration, restart the provider to apply it. The monitor
+does not claim to verify the applied runtime configuration through private APIs.
 
 ## Limitations
 
@@ -150,11 +141,9 @@ for memory headroom, capability checks, reconciliation and failure handling.
 - A per-model throughput breakdown appears only after at least two models have
   valid measured samples for the current local calendar day.
 - Darkbloom CLI output and APIs may evolve after the validated 0.8.15 contract.
-- Protected live switching requires building and installing the matching
-  provider control branch; the stock 0.8.15 provider does not expose it.
-- One-slot switching deliberately has a cold-load gap and may leave the old
-  model unloaded if the replacement load fails; use the fresh reconciled state
-  before retrying.
+- Only the official CLI is supported; do not install a custom provider branch
+  to enable monitor features. Live streaming throughput and protected model
+  switching are not available.
 - Provider actions affect the local provider and may affect customer jobs; read
   confirmation dialogs before proceeding.
 
@@ -165,8 +154,6 @@ for memory headroom, capability checks, reconciliation and failure handling.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Electricity estimates and model icons](docs/ELECTRICITY_AND_MODEL_ICONS.md)
 - [Presentation research](docs/PRESENTATION_OPTIONS.md)
-- [Live model control and demand design](docs/superpowers/specs/2026-09-03-live-model-warming-design.md)
-- [Live model control implementation plan](docs/superpowers/plans/2026-09-03-live-model-warming.md)
 
 ## Development
 

@@ -2,67 +2,12 @@ import DarkbloomTelemetry
 import Foundation
 import SwiftUI
 
-@MainActor
-protocol ProviderRestartRequirementPersisting: AnyObject {
-    func loadRequired() -> Bool
-    func saveRequired(_ required: Bool)
-}
-
-@MainActor
-final class UserDefaultsProviderRestartRequirementPersistence:
-    ProviderRestartRequirementPersisting
-{
-    static let key = "providerRestartRequired"
-
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    func loadRequired() -> Bool {
-        defaults.bool(forKey: Self.key)
-    }
-
-    func saveRequired(_ required: Bool) {
-        defaults.set(required, forKey: Self.key)
-    }
-}
-
-@MainActor
-private final class TransientProviderRestartRequirementPersistence:
-    ProviderRestartRequirementPersisting
-{
-    private var required = false
-
-    func loadRequired() -> Bool { required }
-    func saveRequired(_ required: Bool) { self.required = required }
-}
-
-private final class WarmupMutationLaunchEvidence: @unchecked Sendable {
-    private let lock = NSLock()
-    private var launched = false
-
-    func markLaunched() {
-        lock.lock()
-        launched = true
-        lock.unlock()
-    }
-
-    var didLaunch: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return launched
-    }
-}
-
 enum ProviderOperation: Equatable {
     case idle
     case refreshing
     case saving
     case downloading(String)
     case deleting(String)
-    case warming(String)
     case lifecycle(ProviderLifecycleAction)
 }
 
@@ -86,43 +31,28 @@ enum LifecycleConfirmation: Equatable {
 
 @MainActor
 final class ProviderControlStore: ObservableObject {
-    private enum RuntimeConfigurationProof {
-        case matches
-        case mismatches
-        case unavailable
-    }
-
     @Published private(set) var snapshot: ProviderControlSnapshot?
     @Published private(set) var draft: ProviderConfigDraft?
     @Published private(set) var operation: ProviderOperation = .idle
     @Published private(set) var operationPhase: ProviderMutationPhase?
     @Published private(set) var pendingConfirmation: LifecycleConfirmation?
-    @Published private(set) var restartRequired = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var latestDownloadProgressLine: String?
 
     private let controller: any ProviderControlling
     private let diagnosticSanitizer: UserDiagnosticSanitizer
     private let refreshTelemetry: @MainActor @Sendable () async -> Void
-    private let restartRequirementPersistence: any ProviderRestartRequirementPersisting
-    private let now: @MainActor () -> Date
     private var currentTask: Task<Void, Never>?
     private var operationGeneration: UInt64 = 0
 
     init(
         controller: any ProviderControlling,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-        refreshTelemetry: @escaping @MainActor @Sendable () async -> Void = {},
-        restartRequirementPersistence: any ProviderRestartRequirementPersisting =
-            TransientProviderRestartRequirementPersistence(),
-        now: @escaping @MainActor () -> Date = Date.init
+        refreshTelemetry: @escaping @MainActor @Sendable () async -> Void = {}
     ) {
         self.controller = controller
         diagnosticSanitizer = UserDiagnosticSanitizer(homeDirectory: homeDirectory)
         self.refreshTelemetry = refreshTelemetry
-        self.restartRequirementPersistence = restartRequirementPersistence
-        self.now = now
-        restartRequired = restartRequirementPersistence.loadRequired()
     }
 
     var canSave: Bool {
@@ -251,26 +181,11 @@ final class ProviderControlStore: ObservableObject {
                 )
                 let result = completion.result
                 draft = result.draft
-                if result.restartRequired {
-                    setRestartRequired(true)
-                }
                 if let snapshot {
                     self.snapshot = ProviderControlSnapshot(
                         inventory: snapshot.inventory,
                         draft: result.draft,
                         daemonState: snapshot.daemonState,
-                        supportsProtectedWarmup: snapshot.supportsProtectedWarmup,
-                        protectedWarmupMaxModelSlots: snapshot.protectedWarmupMaxModelSlots,
-                        protectedWarmupAdvertisedModelIDs:
-                            snapshot.protectedWarmupAdvertisedModelIDs,
-                        protectedWarmupLaunchModelIDs:
-                            snapshot.protectedWarmupLaunchModelIDs,
-                        protectedWarmupConfiguredMaxModelSlots:
-                            snapshot.protectedWarmupConfiguredMaxModelSlots,
-                        protectedWarmupConfiguredEnabledModels:
-                            snapshot.protectedWarmupConfiguredEnabledModels,
-                        protectedWarmupConfiguredPreloadModels:
-                            snapshot.protectedWarmupConfiguredPreloadModels,
                         residentModelIDs: snapshot.residentModelIDs,
                         capturedAt: snapshot.capturedAt,
                         sources: snapshot.sources
@@ -369,53 +284,6 @@ final class ProviderControlStore: ObservableObject {
         }
         currentTask = task
         await awaitTask(task)
-    }
-
-    @discardableResult
-    func warm(_ modelID: String) async -> Bool {
-        guard pendingConfirmation == nil,
-              let generation = begin(.warming(modelID))
-        else { return false }
-        let controller = self.controller
-        let launchEvidence = WarmupMutationLaunchEvidence()
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let completion = try await controller.performWarmup(
-                    modelID,
-                    onPhase: { [weak self] phase in
-                        await self?.advanceMutationPhase(phase, generation: generation)
-                    },
-                    onMutationLaunch: {
-                        launchEvidence.markLaunched()
-                    }
-                )
-                await reconcileCompletedMutation(
-                    completion,
-                    preserving: draft,
-                    failureMessage: "Warmup completed, but model state could not refresh.",
-                    uncertainFailureMessage: "Warmup outcome could not be confirmed."
-                )
-            } catch is CancellationError {
-                await reconcileFailedWarmupState(
-                    mayHaveMutated: launchEvidence.didLaunch
-                )
-            } catch let error as ProviderControlError {
-                await reconcileFailedWarmupState(
-                    mayHaveMutated: launchEvidence.didLaunch
-                )
-                errorMessage = controlErrorMessage(error, action: "warm")
-            } catch {
-                await reconcileFailedWarmupState(
-                    mayHaveMutated: launchEvidence.didLaunch
-                )
-                errorMessage = "Could not warm '\(Self.safeIdentifier(modelID))'."
-            }
-            finish(generation)
-        }
-        currentTask = task
-        await awaitTask(task)
-        return launchEvidence.didLaunch
     }
 
     func request(_ action: ProviderLifecycleAction) async {
@@ -569,24 +437,12 @@ final class ProviderControlStore: ObservableObject {
         accept(refreshed, preserving: draft)
     }
 
-    private func reconcileFailedWarmupState(mayHaveMutated: Bool) async {
-        await refreshTelemetryAfterCompletedMutation()
-        do {
-            let refreshed = try await refreshControlsAfterCompletedMutation()
-            accept(refreshed, preserving: draft)
-        } catch {
-            if mayHaveMutated {
-                invalidateActionableSnapshot()
-            }
-        }
-    }
-
     private func begin(_ newOperation: ProviderOperation) -> UInt64? {
         guard operation == .idle else { return nil }
         operationGeneration &+= 1
         operation = newOperation
         switch newOperation {
-        case .saving, .downloading, .deleting, .warming, .lifecycle:
+        case .saving, .downloading, .deleting, .lifecycle:
             operationPhase = .mutating
         case .idle, .refreshing:
             operationPhase = nil
@@ -624,109 +480,6 @@ final class ProviderControlStore: ObservableObject {
     ) {
         snapshot = refreshed
         draft = stagedDraft ?? refreshed.draft
-        switch runtimeConfigurationProof(in: refreshed) {
-        case .matches where restartRequired:
-            setRestartRequired(false)
-        case .mismatches:
-            setRestartRequired(true)
-        case .matches, .unavailable:
-            break
-        }
-    }
-
-    private func setRestartRequired(_ required: Bool) {
-        guard restartRequired != required else { return }
-        restartRequired = required
-        restartRequirementPersistence.saveRequired(required)
-    }
-
-    private func runtimeConfigurationProof(
-        in snapshot: ProviderControlSnapshot
-    ) -> RuntimeConfigurationProof {
-        let currentTime = now()
-        let catalogState = snapshot.sources.catalog.evaluated(
-            at: currentTime,
-            invalidReason: "Model catalog timestamp is invalid",
-            staleReason: "Model catalog is stale",
-            futureReason: "Model catalog timestamp is in the future"
-        )
-        let localState = snapshot.sources.localModels.evaluated(
-            at: currentTime,
-            invalidReason: "Local model timestamp is invalid",
-            staleReason: "Local model list is stale",
-            futureReason: "Local model timestamp is in the future"
-        )
-        let daemonState = snapshot.sources.daemon.evaluated(
-            at: currentTime,
-            invalidReason: "Provider activity timestamp is invalid",
-            staleReason: "Provider activity is stale",
-            futureReason: "Provider activity timestamp is in the future"
-        )
-        guard catalogState.isMarkedFresh,
-              localState.isMarkedFresh,
-              daemonState.isMarkedFresh,
-              snapshot.supportsProtectedWarmup,
-              let savedMaxModelSlots = snapshot.draft.originalMaxModelSlots,
-              let configuredMaxModelSlots =
-                  snapshot.protectedWarmupConfiguredMaxModelSlots,
-              let configuredEnabled = snapshot.protectedWarmupConfiguredEnabledModels,
-              let configuredPreloaded = snapshot.protectedWarmupConfiguredPreloadModels,
-              let effectiveMaxModelSlots = snapshot.protectedWarmupMaxModelSlots,
-              let advertisedModels = snapshot.protectedWarmupAdvertisedModelIDs,
-              let launchModels = snapshot.protectedWarmupLaunchModelIDs,
-              let expectedAdvertised = Self.resolveSavedEnabledModelIDs(
-                  snapshot.draft.original.enabled,
-                  in: snapshot.inventory
-              )
-        else { return .unavailable }
-        let expectedEffectiveMaxModelSlots = max(
-            1,
-            min(
-                configuredMaxModelSlots,
-                max(launchModels.count, advertisedModels.count)
-            )
-        )
-        let matches = configuredMaxModelSlots == savedMaxModelSlots
-            && effectiveMaxModelSlots == expectedEffectiveMaxModelSlots
-            && Self.sameUniqueIdentifiers(
-                configuredEnabled,
-                snapshot.draft.original.enabled
-            )
-            && Self.sameUniqueIdentifiers(
-                configuredPreloaded,
-                snapshot.draft.original.preloaded
-            )
-            && launchModels == expectedAdvertised
-        return matches ? .matches : .mismatches
-    }
-
-    private static func sameUniqueIdentifiers(
-        _ lhs: [String],
-        _ rhs: [String]
-    ) -> Bool {
-        let left = Set(lhs)
-        let right = Set(rhs)
-        return left.count == lhs.count
-            && right.count == rhs.count
-            && left == right
-    }
-
-    private static func resolveSavedEnabledModelIDs(
-        _ selectors: [String],
-        in inventory: ModelInventory
-    ) -> Set<String>? {
-        var result: Set<String> = []
-        for selector in selectors {
-            let exact = inventory.myCatalog.filter { $0.catalogID == selector }
-            let matches = exact.isEmpty
-                ? inventory.myCatalog.filter { $0.enabledSelector == selector }
-                : exact
-            guard matches.count == 1,
-                  matches[0].isDownloaded,
-                  result.insert(matches[0].catalogID).inserted
-            else { return nil }
-        }
-        return result.count == selectors.count ? result : nil
     }
 
     private static func resolvedCatalogID(
@@ -788,18 +541,6 @@ final class ProviderControlStore: ObservableObject {
             inventory: snapshot.inventory,
             draft: snapshot.draft,
             daemonState: snapshot.daemonState,
-            supportsProtectedWarmup: snapshot.supportsProtectedWarmup,
-            protectedWarmupMaxModelSlots: snapshot.protectedWarmupMaxModelSlots,
-            protectedWarmupAdvertisedModelIDs:
-                snapshot.protectedWarmupAdvertisedModelIDs,
-            protectedWarmupLaunchModelIDs:
-                snapshot.protectedWarmupLaunchModelIDs,
-            protectedWarmupConfiguredMaxModelSlots:
-                snapshot.protectedWarmupConfiguredMaxModelSlots,
-            protectedWarmupConfiguredEnabledModels:
-                snapshot.protectedWarmupConfiguredEnabledModels,
-            protectedWarmupConfiguredPreloadModels:
-                snapshot.protectedWarmupConfiguredPreloadModels,
             residentModelIDs: snapshot.residentModelIDs,
             capturedAt: snapshot.capturedAt,
             sources: .unknown
@@ -850,10 +591,6 @@ final class ProviderControlStore: ObservableObject {
             Self.safeDeleteDiagnostics.contains(reason)
                 ? diagnosticSanitizer.sanitize(reason)
                 : "The model cannot be deleted safely."
-        case .warmupBlocked(let reason):
-            Self.safeWarmupDiagnostics.contains(reason)
-                ? diagnosticSanitizer.sanitize(reason)
-                : "The model cannot be warmed safely."
         case .invalidOutput:
             "Darkbloom returned an invalid response while trying to \(action)."
         }
@@ -923,38 +660,6 @@ final class ProviderControlStore: ObservableObject {
             "Loaded model state is stale",
             "Loaded model state timestamp is in the future",
         ].map { "\($0); deletion was not attempted" }
-        return Set(fixed + residency)
-    }()
-
-    private static let safeWarmupDiagnostics: Set<String> = {
-        let fixed = [
-            "The selected model could not be matched safely",
-            "Download this model first",
-            "Enable and save this model first",
-            "Waiting for fresh provider activity",
-            "Waiting for the current customer job to finish",
-            "Both model slots are occupied; waiting avoids evicting another model",
-            "Protected model switching requires a provider update",
-            "Protected two-model staging requires a provider update",
-            "Waiting for enough memory to stage this model without eviction",
-            "Choose one- or two-model serving capacity in Settings first",
-            "Loaded model state conflicts with one-model capacity; waiting for a clean refresh",
-            "Restart the provider to apply the saved model capacity",
-            "Protected warmup requires complete applied provider runtime proof",
-            "The provider did not preserve the previously loaded model",
-            "The selected model was not confirmed warm",
-            "Target warmed, but the previous model could not be retired safely",
-        ]
-        let residency = [
-            "Provider activity is unavailable",
-            "Provider activity timestamp is invalid",
-            "Provider activity is stale",
-            "Provider activity timestamp is in the future",
-            "Loaded model state is unavailable",
-            "Loaded model state timestamp is invalid",
-            "Loaded model state is stale",
-            "Loaded model state timestamp is in the future",
-        ].map { "\($0); warmup was not attempted" }
         return Set(fixed + residency)
     }()
 

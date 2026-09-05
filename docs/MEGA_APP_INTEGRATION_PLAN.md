@@ -4,6 +4,16 @@ Review snapshot: 2026-09-03
 
 This document defines this project's implementation requirements. It does not authorize copying third-party code, changing the provider, publishing a build, or merging another repository.
 
+## Official provider boundary
+
+The monitor must use only the signed, vendor-released Darkbloom CLI installed
+by the user. It must not build, install, select, or document a custom CLI
+branch, patched provider executable, unsigned replacement, private
+model-control endpoint, or endpoint override. Features unavailable through the
+official CLI are represented as unavailable/Coming Soon. Public network demand
+remains supported as read-only context and never authorizes a local residency
+change.
+
 ## Executive decision
 
 Develop the application within this repository's existing architecture.
@@ -390,80 +400,26 @@ Acceptance:
 - private log fields remain redacted in UI and export previews;
 - Health clearly distinguishes direct state, derived state, and permission-blocked state.
 
-### Phase 5 — lifecycle progress and live model warming
+### Phase 5 — lifecycle progress and model residency
 
-> Historical Phase 5 text. Superseded for this repository by
-> [`docs/superpowers/specs/2026-09-03-live-model-warming-design.md`](superpowers/specs/2026-09-03-live-model-warming-design.md)
-> and [`docs/superpowers/plans/2026-09-03-live-model-warming.md`](superpowers/plans/2026-09-03-live-model-warming.md).
-> In particular, do not use this phase's eviction-capable warmup, active/unknown
-> warn-and-allow, or one-time setup guidance as the current contract.
+The official vendor CLI is the only supported provider runtime. The earlier
+Phase 5 proposal for private loopback model-control routes, custom provider
+branches, protected warm/retire operations, load-first staging, automatic
+demand switching, and one-time endpoint setup is superseded and retained only
+in the historical design files under `docs/superpowers/`. Those files are
+evidence of rejected or obsolete work, not instructions to build, install, or
+launch a custom CLI.
 
-Goal: make Start, Stop, Restart, and one-time runtime model selection transparent without weakening safeguards. The detailed approved design is in [`docs/superpowers/specs/2026-09-03-live-model-warming-design.md`](superpowers/specs/2026-09-03-live-model-warming-design.md).
+The supported scope is limited to official CLI catalog/configuration and
+Start/Stop/Restart controls. Configuration may select enabled/preloaded models
+and one- or two-model capacity, with fresh telemetry reconciliation and the
+existing customer-impact confirmation for lifecycle actions. Public per-model
+demand remains a read-only opportunity signal. It must not trigger local model
+loading, unloading, residency switching, or automatic actions.
 
-Work:
-
-- Keep active/unknown customer-impact warnings. The user may confirm and proceed; the action is not silently blocked.
-- Keep exact enabled-model resolution and never replace it with `start --all`.
-- Publish an operation state machine:
-  - queued;
-  - validation;
-  - confirmation required;
-  - command launched;
-  - waiting for fresh process identity/state;
-  - reconciling enabled/preloaded models;
-  - optional warmup;
-  - complete, partial, failed, cancelled, or timed out.
-- Attach bounded, user-readable failure details to each subtask.
-- After any action, wait for a new/fresh provider snapshot before declaring success.
-- Treat provider `preload_models` as authoritative startup intent.
-- Keep every saved enabled model in the exact repeated `--model` startup arguments while `max_model_slots` controls residency.
-- Add `--local-endpoint` to app-managed Start, retaining authenticated loopback defaults. Never add `--no-auth`, a non-loopback bind, or `--all`.
-- Add **Make Warm** to enabled, downloaded, unloaded model rows:
-  - leave Enable and Preload unchanged;
-  - send one bounded authenticated local `/v1/chat/completions` request for the exact model with `max_tokens: 1`;
-  - let Darkbloom use a free slot or choose an idle eviction candidate;
-  - warn but allow the attempt when inference is active or unknown;
-  - never kill active inference or silently restart the provider;
-  - confirm success only from fresh daemon and loaded-model evidence.
-- When the currently running provider lacks the local endpoint, present a separate one-time **Enable Live Switching** stop/start transition using the lifecycle customer-impact warning. After setup, normal model switches do not restart.
-- Treat `~/.darkbloom/local.json` as a bounded, private, current-run control source. Accept only an authenticated loopback endpoint; keep its API key request-scoped and out of logs, persistence, fixtures, and errors.
-- Characterize whether the one-token local request affects daemon job/token counters. Exclude it only when exact attribution is possible; otherwise disclose the locally derived counter limitation instead of guessing.
-- Only add **Keep Warm** after a live test proves preloaded models unload in a way that harms operation.
-- If periodic Keep Warm is later added:
-  - make it opt-in and separate from Preload;
-  - bind only to a fresh loopback endpoint associated with the current provider process identity;
-  - generate payloads with `JSONEncoder`;
-  - use exact configured model IDs;
-  - obey slot and memory capacity;
-  - skip while `inference_active` or customer impact is unknown;
-  - rate-limit and cap request/response bytes;
-  - expose every failure.
-- Do not recommend restart as a generic trust remediation without reproducing and understanding the effect locally.
-
-Files:
-
-- extend `Sources/DarkbloomTelemetry/ProviderControlService.swift`
-- add `Sources/DarkbloomTelemetry/LocalEndpointDiscovery.swift`
-- add `Sources/DarkbloomTelemetry/ModelWarmupClient.swift`
-- add `Sources/DarkbloomTelemetry/ProviderOperation.swift`
-- extend `Sources/DarkbloomMonitor/ProviderControlStore.swift`
-- extend `Sources/DarkbloomMonitor/ModelManagerView.swift`
-- extend `Sources/DarkbloomMonitor/ProviderLifecycleControls.swift`
-- add `Sources/DarkbloomMonitor/Dashboard/OperationProgressView.swift`
-- add state-machine and integration-style fake-runner tests
-
-Acceptance:
-
-- no Start/Stop/Restart success is shown from exit status alone;
-- active and unknown work both require an explicit confirmation path;
-- failures and partial results remain visible until dismissed or superseded;
-- the final loaded/active model set is reconciled against exact configured intent;
-- Make Warm leaves Enable and Preload unchanged and never restarts or kills the provider;
-- an idle one-slot provider can replace its warm model using the authenticated local endpoint;
-- an active or unverifiable provider warns but allows the non-destructive attempt;
-- missing endpoint support is handled by a separately confirmed one-time setup transition;
-- synthetic-request effects on locally derived metrics are precisely excluded or explicitly disclosed;
-- periodic Keep Warm cannot run concurrently with known customer inference.
+Do not add a Warm, Keep Warm, live-switch, staged-load, private endpoint, or
+custom-provider fallback until the official CLI publishes a supported contract
+for it and this plan is deliberately revised.
 
 ### Phase 6 — Fleet, gated
 

@@ -1,10 +1,12 @@
 # Current mega-app status — September 4, 2026
 
 This is a current implementation/gap index, not a completion or release claim.
-The full scope remains in MEGA_APP_INTEGRATION_PLAN.md, with the unified-window
-and protected-warming specifications superseding the older conflicting text.
-MEGA_APP_PROGRESS_AUDIT.md retains chronological evidence, including superseded
-early descriptions. Do not use an early entry there as current status.
+The full scope remains in MEGA_APP_INTEGRATION_PLAN.md. The official vendor
+CLI is the only supported provider runtime: historical protected-warming and
+custom-CLI documents are retained as superseded evidence only and are not
+implementation instructions. MEGA_APP_PROGRESS_AUDIT.md retains chronological
+evidence, including superseded early descriptions. Do not use an early entry
+there as current status.
 
 | Area | Authoritative implementation/evidence | Still required or unproven |
 | --- | --- | --- |
@@ -13,7 +15,7 @@ early descriptions. Do not use an early entry there as current status.
 | 2: Activity | ActivitySeries, ActivityQuery, ActivityView and local SQLite queries; calendar date range, exact model filter, separate rewards, table summaries and explicit gaps | Full live ledger reconciliation/coverage, boundary behavior and accessibility verification. UTC-hour aggregates cannot precisely split partial local-hour boundaries. Projection is not enabled. |
 | 3: Opportunity | Separate capacity/catalog/pricing/series sources, backoff+jitter, total resource limit, loopback tests and live successful HTTPS smoke test; raw factors and RAM-minimum comparison | Every recommendation's complete factors/ages and full compatibility proof; a balanced profitability score is not established. Conditional requests need upstream support verification. Demand-first observations are not profit forecasts. |
 | 4: operations | Shared Models editor with My Catalog/Available, separate controls, metadata, demand/pricing/performance/work context; Health/Logs, redaction preview/export, bounded retention and measured churn optimization | Verified log model attribution/filter; manual doctor contract; broader hardware/competing-service context; native export failure/keyboard cases and full privacy/state audit. Work earnings are explicitly partial, not complete realized payout coverage. |
-| 5: lifecycle/warming | ProviderControlStore/Service reconciliation and safety tests; protected warmup gate, hysteresis and cooldown | Signed provider support for protected warming and safe runtime proof. Keep Coming Soon; do not revive the superseded eviction-capable request path or interrupt customer work. |
+| 5: lifecycle/model residency | Official CLI Start, Stop, Restart, catalog and configuration controls with customer-impact confirmation | Live warming, resident switching, automatic demand switching and load-first staging are unavailable with the official CLI. Keep those controls Coming Soon; do not add private endpoints or custom provider builds. |
 | 6: Fleet | Deliberately not enabled | Stable ownership/identity contract before implementation; remote control excluded from the first dashboard release. |
 | 7: Energy | Nonprivileged thermal/provider-memory context | Energy is opt-in and not implemented: supported sensor, tariff, coverage, retention and cost integration remain conditional work. No helper/privilege installation authorized. |
 | 8: packaging | Kernel single-instance guard/tests; REVIEW_LAUNCH.md records exact-artifact review procedure | Repeatable bundle assembly and CI, one canonical bundle identity, safe old-build detection/activation, upgrade/migration/rollback proof, signing/notarization, checksums/provenance/SBOM and clean-account Gatekeeper acceptance. No current publication authority. |
@@ -40,7 +42,7 @@ early descriptions. Do not use an early entry there as current status.
   and preloads both with two slots. Fresh daemon telemetry reports no warm
   models and a Gemma load error: 22.4 GB available versus 23.9 GB required.
   These are error-time memory figures, not a current free-memory measurement.
-  Local CLI source resolves the canonical config by default, so omission of
+  The official CLI resolves the canonical config by default, so omission of
   `--config` alone is not evidence that settings were ignored. Its admission
   failure text can say all models are serving when no eviction candidate is
   found; that wording must not override `inference_active=false` telemetry.

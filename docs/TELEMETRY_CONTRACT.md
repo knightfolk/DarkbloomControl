@@ -2,10 +2,12 @@
 
 Inventory captured locally on 2026-08-31 and revalidated against a fresh,
 read-only Darkbloom 0.8.15 run the same day. The stock telemetry schema remained
-1 and the field inventory below did not change. The monitor's 2026-09-03
-protected-control and public-capacity extensions are documented separately
-below; the matching provider control branch still requires runtime installation.
-No credential value is reproduced here, and no network diagnostic was invoked.
+1 and the field inventory below did not change. This contract describes the
+official CLI and its published local telemetry only. Private provider-control
+routes, custom CLI branches, and unsigned provider builds are outside the
+supported application boundary and are not required for any feature described
+here. No credential value is reproduced here, and no network diagnostic was
+invoked.
 
 ## `~/.darkbloom/daemon-state.json` (schema 1)
 
@@ -59,52 +61,25 @@ memory allowance, local boot checks, schedule, enabled model filter, local MLX
 model count, daemon running/PID/uptime, trust/status/reason, warm models, most
 recently used model, requests/tokens, state age, and per-slot KV/MTP posture.
 
-The monitor's CLI provider-control surface is limited to `status`, `models catalog`,
-`models list`, `models download`, `models remove`, `start`, `stop`, and `restart`.
-It uses the fixed `~/.config/darkbloom/provider.toml`, and config
-saves may alter only top-level `enabled_models`, `preload_models`, and
-`max_model_slots`. A save uses a UUID-named candidate beside that file and
-maintains one fixed backup; it reports restart-required rather than restarting
-automatically. App-managed Start and Restart pass every exact saved enabled
-model and `--local-endpoint`; native CLI restart arguments are not reused. Start
-repeats `--model` for every enabled model to bypass the CLI picker.
+The monitor's CLI provider-control surface is limited to the official
+`status`, `models catalog`, `models list`, `models download`, `models remove`,
+`start`, `stop`, and `restart` commands. It uses the fixed
+`~/.config/darkbloom/provider.toml`, and config saves may alter only top-level
+`enabled_models`, `preload_models`, and `max_model_slots`. A save uses a
+UUID-named candidate beside that file and maintains one fixed backup; it reports
+restart-required rather than restarting automatically. App-managed Start and
+Restart pass every exact saved enabled model using the official CLI's repeated
+`--model` arguments when supported by the installed release, so the interactive
+picker is not required.
 
-Live model switching is a separate authenticated loopback extension. The
-provider advertises a protected capability snapshot and exact model-control
-operations: `GET /v1/provider/model-control`,
-`POST /v1/provider/model-control/load`, and
-`POST /v1/provider/model-control/retire`. The load operation promises no implicit
-eviction; retire accepts one exact model and succeeds only while that model has
-no coordinator or local request in flight. Capability discovery is required;
-the legacy chat-completion warmup path is classified as eviction-capable and is
-not sufficient for protected staging.
-
-## Protected local endpoint discovery
-
-`~/.darkbloom/local.json` is a control-discovery source, not a telemetry source.
-The reader accepts only a current-user regular file with no group/world
-permission bits, a non-zero size no larger than 16 KiB, and a modification time
-no more than five seconds before the current provider `started_at` and no more
-than one second in the future. The JSON record contains `base_url` and `api_key`.
-The URL must be plain HTTP, use an allowed loopback host (`127.0.0.1`, `::1`,
-or `localhost`), include a valid port and exactly `/v1` (with an optional
-trailing slash), and contain no userinfo, query, or fragment. The API key is
-held only for the current authenticated request; it is never logged, displayed,
-persisted, or copied into diagnostics.
-
-The protected `GET /v1/provider/model-control` response is accepted only when
-it decodes as API version 1 and proves `protected_load`, `idle_retire`, and a
-positive `max_model_slots`. It reports `loaded_models` plus optional
-`advertised_models`, `launch_models`, `configured_max_model_slots`,
-`enabled_models`, and `preload_models`. The advertised set may change when the
-coordinator prefetches a model; the launch set is immutable for the running
-process and is the set used for restart proof.
-
-The protected load and retire requests send one exact model identifier in a
-bounded JSON body. Load is explicitly non-evicting. Retire names one exact
-resident model and is rejected when the provider reports coordinator or local
-work in flight. Redirects, unsupported capabilities, unauthorized responses,
-oversized responses, and busy responses fail closed.
+The official CLI has no supported monitor-side operator API for loading,
+retiring, or switching a resident model. Therefore live model switching,
+automatic demand-based switching, and load-first/two-slot staging are not part
+of this contract. A one- or two-model `max_model_slots` setting remains an
+official provider configuration choice, applied through the normal save and
+restart/start path; the second slot is not a monitor-controlled staging slot.
+Public capacity demand remains a read-only network signal and never authorizes
+a local residency mutation.
 
 ## Public model-capacity extension
 
@@ -123,40 +98,21 @@ older overlapping response cannot replace a newer accepted sample. Rows are
 filtered to enabled local models. These are aggregate network-demand signals,
 not provider earnings, local job progress, or per-request throughput.
 
-## Warmup capacity and safety contract
+## Official CLI model and slot boundary
 
-The saved `max_model_slots` value selects one of two modes and must match the
-running provider capability before Warm can mutate residency:
+The saved `max_model_slots` value is an official provider configuration choice
+and selects the provider's one- or two-model capacity after the normal
+configuration and restart/start path applies it. The second slot is not a
+monitor-reserved staging slot. The monitor does not load a target first, retire
+an idle resident, evict a model, or otherwise mutate residency through a private
+API. A model switch that requires a different resident model must use the
+official CLI/provider lifecycle supported by the installed release.
 
-- **One-model / Memory Saver:** wait for fresh idle state, retire the current
-  idle resident through the exact idle-only route, then load the target. This
-  necessarily creates a cold-load availability gap. If target loading fails
-  after retirement, fresh reconciliation reports the partial state; the
-  monitor does not claim an automatic rollback.
-- **Two-model capacity:** the coordinator may occupy both slots, and the second
-  slot is not reserved for the monitor. A prefetched or otherwise unknown
-  resident consumes capacity. When a slot is free and memory is sufficient,
-  load and verify the target first beside an active customer job, then retire
-  the previous model only if it is still idle. If retirement is refused because
-  work arrived, leave both models resident. If both slots are occupied, wait;
-  never evict to create room.
-
-Two-model staging requires the lower of provider-derived free capacity and live
-whole-system reclaimable memory to satisfy
-`min(max(0, total_memory - gpu_memory_active - gpu_memory_cache),
-system_available) >= target_size * 1.2 + reserve`. The reserve is configurable
-from 8 through 24 GiB (default 16 GiB). An unavailable system-memory sample,
-stale or invalid provider evidence, an unapplied slot-cap change, or a client
-that may evict is insufficient evidence and blocks the operation.
-
-Warm phases are `preparing`, `loading`/`staging`, `retiring`, and
-`reconciling`. Cancellation before a provider mutation is a no-op. Once a load
-or retire may have started, the service still performs fresh local telemetry
-and control reconciliation; if that cannot establish the outcome, it
-invalidates actionable state instead of presenting cancellation as proof that
-no residency changed. Success is reported only when fresh local state confirms
-the target resident. Warm never invokes Stop or Restart and never unloads an
-active customer model.
+Consequently, the monitor does not expose manual Warm, automatic demand-based
+switching, load-first staging, or live resident switching. Network demand stays
+available as read-only context for the user, but it is never treated as
+permission to change local model state. Current resident/active/idle state is
+reported only from fresh official telemetry and official CLI results.
 
 Config publication uses revision checks, bounded advisory locks, and atomic
 replacement. The locks coordinate only cooperating writers that reopen and
@@ -171,13 +127,12 @@ direct cache operations remain forbidden. The monitor does not execute
 shell to construct provider commands.
 
 Downloaded, enabled, preloaded, resident, active, and network-demand states are
-independent. Download or Delete does not implicitly enable, disable, preload,
-or unload a model. Stop and Restart can affect customer work: activity is
-checked, but an unavailable or stale observation is possible and is not treated
-as safe. Active or unknown activity requires an explicit user override before
-either lifecycle command is issued; that confirmation cannot make the
-operation atomic. Protected Warm follows the separate no-eviction and
-idle-retirement contract above and never interrupts an active customer request.
+independent. Download or Delete does not implicitly enable, disable, or
+preload a model. Stop and Restart can affect customer work: activity is checked,
+but an unavailable or stale observation is possible and is not treated as safe.
+Active or unknown activity requires an explicit user override before either
+lifecycle command is issued; that confirmation cannot make the operation
+atomic.
 
 For activity and delete-residency checks, `written_at` must be finite, no more
 than ten seconds old, and not in the future. Loaded-model evidence requires a
@@ -195,9 +150,8 @@ rereads and validates the authoritative sources before issuing a remove command.
 
 After a successful Start, Stop, or Restart, the app requests immediate telemetry
 and status reads before refreshing the provider-control snapshot. The popup
-renders model pills only when both telemetry model sources and the independent
-provider-control residency sources are fresh; otherwise it states that model
-state is unavailable. User-facing diagnostics redact home paths and
+renders model pills only when the official telemetry model sources are fresh;
+otherwise it states that model state is unavailable. User-facing diagnostics redact home paths and
 credential-shaped text, preserve only fixed safe error categories, and do not
 surface raw or unbounded command output. During a current download, the Settings
 view may show one latest sanitized progress line from stdout or stderr with a

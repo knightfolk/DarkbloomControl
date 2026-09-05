@@ -10,7 +10,7 @@ All paths below use `https://api.darkbloom.dev`.
 | --- | --- | --- | --- |
 | `/v1/models/catalog` | Public model metadata; not installed/enabled/warm state | 30 minutes | 6 hours |
 | `/v1/pricing` | Customer token prices; not provider payout | 15 minutes | 6 hours |
-| `/v1/models/capacity` | Per-model network routing pressure and capacity | 60 seconds with dashboard visible; 300 seconds hidden; 30 seconds with automatic switching enabled | 15 minutes |
+| `/v1/models/capacity` | Per-model network routing pressure and capacity | 60 seconds with dashboard visible; 300 seconds hidden | 15 minutes |
 | `/v1/network/series?window=24h` | Network-wide request and token history; not model-attributed or local work | 5 minutes, dashboard visible only | 1 hour |
 
 Collectors are independent. A pricing failure must not erase capacity or local telemetry. Failure retries use exponential backoff with nonnegative jitter bounded to 20%, limited by each source's cap. Successful requests restore the normal cadence. History retains its next-attempt deadline across dashboard close/reopen; hiding the dashboard cancels its polling task. Store shutdown cancels and joins owned tasks.
@@ -40,7 +40,7 @@ Catalog and pricing capture times are client-supplied observation times, not ser
 
 A failed refresh retains any previous value as stale with its original capture time. Without a previous value, the source is unavailable. Consumers must check age as well as availability before using data for decisions; retained data is not proof of current network demand. A zero explicitly returned by a valid payload is different from missing or stale data.
 
-Public history's 24-hour window is intentionally separate from the user's calendar-date earnings and local activity. Public customer pricing cannot be multiplied into a claimed provider earning, hourly payout or profit. Opportunity factors are explanatory network ratios, not a guaranteed ranking or income forecast. None of these endpoints authorizes interrupting jobs, unloading models or bypassing the protected model-switching contract.
+Public history's 24-hour window is intentionally separate from the user's calendar-date earnings and local activity. Public customer pricing cannot be multiplied into a claimed provider earning, hourly payout or profit. Opportunity factors are explanatory network ratios, not a guaranteed ranking or income forecast. None of these endpoints authorizes interrupting jobs, unloading models, or changing local residency. The official CLI remains the only supported path for model configuration and lifecycle actions.
 
 The displayed factors are `(active + queued) / max(routable, 1)` for demand pressure, `1 - warm / max(routable, 1)` for warm scarcity, and `queued / max(queueLimit, 1)` for queue pressure. These are app-derived formulas, not upstream scores. Negative scarcity or queue pressure above one is preserved rather than silently clamped; inconsistent populations and overload need explanation, not a fabricated clean value.
 

@@ -66,7 +66,7 @@ struct MonitorPresentationTests {
         #expect(presentation.health.reason == reason)
     }
 
-    @Test("automatic mode shows token rate while active")
+    @Test("completion counters are never presented as live throughput")
     func automaticModeUsesActiveThroughput() {
         let presentation = MenuBarPresentation.make(
             snapshot: snapshot(
@@ -79,8 +79,25 @@ struct MonitorPresentationTests {
             mode: .automatic
         )
 
-        #expect(presentation.metricText == "42.3 tok/s")
-        #expect(presentation.accessibilityLabel.contains("42.3 tokens per second"))
+        #expect(presentation.metricText == "Working")
+        #expect(presentation.accessibilityLabel.contains("live token rate unavailable"))
+    }
+
+    @Test("official CLI completion samples never override a labeled model average")
+    func completionSampleDoesNotOverrideAverage() {
+        let presentation = MenuBarPresentation.make(
+            snapshot: snapshot(
+                menuStatus: .online,
+                active: true,
+                tokenRate: .available(tokensPerSecond: 900, label: "derived")
+            ),
+            thermal: .nominal,
+            earnings: .available(microUSD: 0),
+            mode: .throughput,
+            activeModelAverage: 27
+        )
+        #expect(presentation.metricText == "27t/s avg")
+        #expect(presentation.metricUnavailableReason?.contains("not realtime") == true)
     }
 
     @Test("automatic mode shows rolling earnings while idle")

@@ -3,6 +3,13 @@
 Date: 2026-09-03
 Spec: `docs/superpowers/specs/2026-09-03-live-model-warming-design.md`
 
+> SUPERSEDED historical plan — do not execute. The signed vendor-released CLI
+> is the only supported provider. This plan's private model-control endpoints,
+> custom provider branch, protected warm/retire operations, staged loading, and
+> automatic switching are unavailable under the official-CLI boundary. It is
+> retained only as historical traceability, not as instructions to build,
+> install, select, or launch a custom CLI.
+
 ## Completed locally
 
 - App-managed Start and Restart pass every exact saved enabled model and enable the authenticated loopback endpoint, avoiding both the CLI model picker and its argument-preserving restart behavior.

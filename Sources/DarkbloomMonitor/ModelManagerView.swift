@@ -2,82 +2,6 @@ import DarkbloomTelemetry
 import Foundation
 import SwiftUI
 
-enum ModelWarmupPreferences {
-    static let headroomKey = "modelWarmupHeadroomGB"
-    static let automaticSwitchingKey = "automaticDemandSwitching"
-    static let automaticSwitchLastAttemptKey = "automaticDemandSwitchLastAttemptAt"
-    static let defaultHeadroomGB = 16.0
-    static let headroomChoices = [8.0, 12.0, 16.0, 20.0, 24.0]
-
-    static var selectedHeadroomGB: Double {
-        let value = UserDefaults.standard.double(forKey: headroomKey)
-        return headroomChoices.contains(value) ? value : defaultHeadroomGB
-    }
-
-    static var automaticSwitchingEnabled: Bool {
-        UserDefaults.standard.bool(forKey: automaticSwitchingKey)
-    }
-
-    static func automaticSwitchLastAttemptAt(
-        in defaults: UserDefaults = .standard
-    ) -> Date? {
-        guard defaults.object(forKey: automaticSwitchLastAttemptKey) != nil else {
-            return nil
-        }
-        let seconds = defaults.double(forKey: automaticSwitchLastAttemptKey)
-        guard seconds.isFinite, seconds > 0 else { return nil }
-        return Date(timeIntervalSince1970: seconds)
-    }
-
-    static func recordAutomaticSwitchAttempt(
-        at date: Date,
-        in defaults: UserDefaults = .standard
-    ) {
-        guard date.timeIntervalSince1970.isFinite,
-              date.timeIntervalSince1970 > 0
-        else { return }
-        defaults.set(
-            date.timeIntervalSince1970,
-            forKey: automaticSwitchLastAttemptKey
-        )
-    }
-}
-
-@MainActor
-enum ModelWarmupPresentation {
-    static func blockReason(
-        operation: ProviderOperation,
-        draftHasChanges: Bool,
-        restartRequired: Bool,
-        pendingConfirmation: LifecycleConfirmation?,
-        item: ModelInventoryItem,
-        snapshot: ProviderControlSnapshot,
-        currentTime: Date,
-        minimumHeadroomGB: Double,
-        availableSystemMemoryGB: Double?
-    ) -> String? {
-        guard operation == .idle else {
-            return "Another provider action is in progress"
-        }
-        guard pendingConfirmation == nil else {
-            return "Another provider action is awaiting confirmation"
-        }
-        guard !draftHasChanges else {
-            return "Save or reload model settings before warming a model"
-        }
-        guard !restartRequired else {
-            return "Restart the provider to apply saved model settings"
-        }
-        return ProviderWarmupPolicy.blockReason(
-            for: item,
-            in: snapshot,
-            currentTime: currentTime,
-            minimumHeadroomGB: minimumHeadroomGB,
-            availableSystemMemoryGB: availableSystemMemoryGB
-        )
-    }
-}
-
 enum ProviderCapacityMode: Int, CaseIterable, Identifiable {
     case memorySaver = 1
     case twoModelCapacity = 2
@@ -99,46 +23,10 @@ enum ProviderCapacityMode: Int, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .memorySaver:
-            "Uses the least memory. An idle model unloads before another model can load. Customer jobs are allowed to finish first."
+            "Configures the official CLI to keep one resident model. Save, then restart the provider to apply it."
         case .twoModelCapacity:
-            "Allows the coordinator to load and serve as many as two models. A free second slot can also make a manual switch faster."
+            "Configures the official CLI to keep up to two resident models. Save, then restart the provider to apply it."
         }
-    }
-}
-
-struct ModelWarmupFeaturePresentation: Equatable {
-    let isAvailable: Bool
-    let badgeText: String?
-    let accessibilityHint: String?
-
-    static func make(supportsProtectedWarmup: Bool) -> Self {
-        guard supportsProtectedWarmup else {
-            return Self(
-                isAvailable: false,
-                badgeText: "Coming Soon",
-                accessibilityHint: "Live model switching requires a future signed Darkbloom update."
-            )
-        }
-        return Self(
-            isAvailable: true,
-            badgeText: nil,
-            accessibilityHint: nil
-        )
-    }
-}
-
-struct ComingSoonBadge: View {
-    var body: some View {
-        Text("Coming Soon")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(Color.secondary.opacity(0.14))
-            )
-            .accessibilityLabel("Coming Soon")
     }
 }
 
@@ -465,9 +353,6 @@ struct ModelManagerView: View {
     @ObservedObject var store: ProviderControlStore
     var networkContext: (String, Date) -> [String] = { _, _ in [] }
     @State private var deletion: ModelDeletionConfirmation?
-    @AppStorage(ModelWarmupPreferences.headroomKey) private var warmupHeadroomGB =
-        ModelWarmupPreferences.defaultHeadroomGB
-    @AppStorage(ModelWarmupPreferences.automaticSwitchingKey) private var automaticSwitching = false
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -586,9 +471,6 @@ struct ModelManagerView: View {
     @ViewBuilder
     private var capacityControls: some View {
         if store.draft != nil {
-            let liveSwitching = ModelWarmupFeaturePresentation.make(
-                supportsProtectedWarmup: store.snapshot?.supportsProtectedWarmup == true
-            )
             VStack(alignment: .leading, spacing: 8) {
                 Picker("Maximum resident models", selection: capacityBinding) {
                     ForEach(ProviderCapacityMode.allCases) { option in
@@ -616,66 +498,14 @@ struct ModelManagerView: View {
 
                 if selectedCapacityMode == .twoModelCapacity {
                     Label(
-                        "The second slot is shared with network work; it is not reserved for manual staging.",
+                        "The official CLI manages both resident slots. It may unload an idle model when memory is needed.",
                         systemImage: "network"
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-
-                    HStack(spacing: 8) {
-                        Picker("Staging memory reserve", selection: $warmupHeadroomGB) {
-                            ForEach(ModelWarmupPreferences.headroomChoices, id: \.self) { value in
-                                Text("\(Int(value)) GB").tag(value)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .disabled(
-                            store.operation != .idle || !liveSwitching.isAvailable
-                        )
-                        .help(
-                            liveSwitching.accessibilityHint
-                                ?? "A manual warmup waits unless this much memory should remain after loading the requested model."
-                        )
-                        .accessibilityIdentifier("models.capacity.headroom")
-
-                        if liveSwitching.badgeText != nil {
-                            ComingSoonBadge()
-                                .help(liveSwitching.accessibilityHint ?? "")
-                                .accessibilityIdentifier(
-                                    "models.capacity.headroom.coming-soon"
-                                )
-                        }
-                    }
                 }
 
-                if selectedCapacityMode != nil {
-                    HStack(spacing: 8) {
-                        Toggle(
-                            "Automatic demand switching",
-                            isOn: $automaticSwitching
-                        )
-                        .disabled(!liveSwitching.isAvailable)
-                        .accessibilityIdentifier(
-                            "models.capacity.automatic-switching"
-                        )
-
-                        if liveSwitching.badgeText != nil {
-                            ComingSoonBadge()
-                                .help(liveSwitching.accessibilityHint ?? "")
-                                .accessibilityIdentifier(
-                                    "models.capacity.automatic-switching.coming-soon"
-                                )
-                        }
-                    }
-                    Text(
-                        liveSwitching.accessibilityHint
-                            ?? "After three high-demand samples, warm the recommended enabled model. Attempts are limited to once every 30 minutes and use the same no-interruption safety checks."
-                    )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
             .padding(.vertical, 3)
         } else {
@@ -1048,11 +878,9 @@ private struct ModelManagerFooter: View {
                     .foregroundStyle(.orange)
                     .font(.callout)
             }
-            if store.restartRequired {
-                Label("Restart required", systemImage: "arrow.clockwise.circle")
-                    .foregroundStyle(.orange)
-                    .font(.callout)
-            }
+            Text("Saved model settings apply after the next provider restart.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             if let error = store.errorMessage {
                 Label(error, systemImage: "xmark.octagon")
                     .foregroundStyle(.red)

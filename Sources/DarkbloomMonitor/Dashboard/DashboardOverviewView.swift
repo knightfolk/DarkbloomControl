@@ -25,9 +25,8 @@ struct DashboardOverviewView: View {
                         .foregroundStyle(store.snapshot.menuStatus == .online ? Color.green : Color.secondary)
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16)], spacing: 16) {
-                    DashboardMetric(title: "Current throughput", value: currentRate, unit: "tok/sec")
                     if let value = store.currentDayAverageTokenRate {
-                        DashboardMetric(title: "Today's average", value: number(value), unit: "tok/sec")
+                        DashboardMetric(title: "Today's observed average", value: number(value), unit: "tok/sec")
                     }
                     if let earnings = PopupEarningsMetrics.make(from: store.currentTodayEarnings) {
                         DashboardMetric(title: "Observed today", value: money(earnings.totalUSD), unit: "USD")
@@ -64,14 +63,6 @@ struct DashboardOverviewView: View {
             .padding(28)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    private var currentRate: String {
-        guard store.snapshot.state.value?.inferenceActive == true else {
-            return store.snapshot.state.value == nil ? "Unavailable" : "Idle"
-        }
-        guard case .available(let value, _) = store.snapshot.tokenRate, value.isFinite else { return "Unavailable" }
-        return number(value)
     }
 
     private func number(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(1))) }

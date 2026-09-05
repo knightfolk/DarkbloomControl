@@ -153,8 +153,6 @@ struct ProviderLifecycleFeedbackPresentation: Equatable {
 
     static func make(
         operation: ProviderOperation,
-        operationPhase: ProviderMutationPhase?,
-        maxModelSlots: Int?,
         errorMessage: String?
     ) -> Self? {
         if case .lifecycle(let action) = operation {
@@ -162,23 +160,6 @@ struct ProviderLifecycleFeedbackPresentation: Equatable {
             case .start: "Starting provider…"
             case .stop: "Stopping provider…"
             case .restart: "Restarting provider…"
-            }
-            return Self(message: message, isError: false)
-        }
-        if case .warming(let modelID) = operation {
-            let message = switch operationPhase {
-            case .loadingModel:
-                maxModelSlots == 2
-                    ? "Staging \(modelID) in the free slot…"
-                    : "Loading \(modelID) into the active slot…"
-            case .retiringPreviousModels:
-                maxModelSlots == 2
-                    ? "Target warm; retiring the previous idle model…"
-                    : "Retiring the previous idle model before switching…"
-            case .reconciling:
-                "Confirming model state…"
-            case .mutating, nil:
-                "Preparing \(modelID)…"
             }
             return Self(message: message, isError: false)
         }

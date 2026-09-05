@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 private final class MutationDispatchEvidence: @unchecked Sendable {
@@ -86,13 +85,6 @@ public struct ProviderControlSnapshot: Equatable, Sendable {
     public let inventory: ModelInventory
     public let draft: ProviderConfigDraft
     public let daemonState: DaemonState?
-    public let supportsProtectedWarmup: Bool
-    public let protectedWarmupMaxModelSlots: Int?
-    public let protectedWarmupAdvertisedModelIDs: Set<String>?
-    public let protectedWarmupLaunchModelIDs: Set<String>?
-    public let protectedWarmupConfiguredMaxModelSlots: Int?
-    public let protectedWarmupConfiguredEnabledModels: [String]?
-    public let protectedWarmupConfiguredPreloadModels: [String]?
     public let residentModelIDs: Set<String>
     public let capturedAt: Date
     public let sources: ProviderControlSourceStates
@@ -101,13 +93,6 @@ public struct ProviderControlSnapshot: Equatable, Sendable {
         inventory: ModelInventory,
         draft: ProviderConfigDraft,
         daemonState: DaemonState? = nil,
-        supportsProtectedWarmup: Bool = false,
-        protectedWarmupMaxModelSlots: Int? = nil,
-        protectedWarmupAdvertisedModelIDs: Set<String>? = nil,
-        protectedWarmupLaunchModelIDs: Set<String>? = nil,
-        protectedWarmupConfiguredMaxModelSlots: Int? = nil,
-        protectedWarmupConfiguredEnabledModels: [String]? = nil,
-        protectedWarmupConfiguredPreloadModels: [String]? = nil,
         residentModelIDs: Set<String>? = nil,
         capturedAt: Date,
         sources: ProviderControlSourceStates = .unknown
@@ -115,13 +100,6 @@ public struct ProviderControlSnapshot: Equatable, Sendable {
         self.inventory = inventory
         self.draft = draft
         self.daemonState = daemonState
-        self.supportsProtectedWarmup = supportsProtectedWarmup
-        self.protectedWarmupMaxModelSlots = protectedWarmupMaxModelSlots
-        self.protectedWarmupAdvertisedModelIDs = protectedWarmupAdvertisedModelIDs
-        self.protectedWarmupLaunchModelIDs = protectedWarmupLaunchModelIDs
-        self.protectedWarmupConfiguredMaxModelSlots = protectedWarmupConfiguredMaxModelSlots
-        self.protectedWarmupConfiguredEnabledModels = protectedWarmupConfiguredEnabledModels
-        self.protectedWarmupConfiguredPreloadModels = protectedWarmupConfiguredPreloadModels
         self.residentModelIDs = residentModelIDs ?? Set(
             inventory.myCatalog.compactMap {
                 $0.liveState == .unloaded ? nil : $0.catalogID
@@ -132,235 +110,9 @@ public struct ProviderControlSnapshot: Equatable, Sendable {
     }
 }
 
-public enum SystemMemoryAvailability {
-    /// Whole-system reclaimable memory. This includes free and inactive pages,
-    /// so memory used by macOS and other applications is never mistaken for
-    /// model staging space.
-    public static func availableGB() -> Double? {
-        var statistics = vm_statistics64()
-        var count = mach_msg_type_number_t(
-            MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size
-        )
-        let result = withUnsafeMutablePointer(to: &statistics) { pointer in
-            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                host_statistics64(
-                    mach_host_self(),
-                    HOST_VM_INFO64,
-                    $0,
-                    &count
-                )
-            }
-        }
-        guard result == KERN_SUCCESS else { return nil }
-        let (pages, pageOverflow) = UInt64(statistics.free_count)
-            .addingReportingOverflow(UInt64(statistics.inactive_count))
-        guard !pageOverflow else { return nil }
-        let pageSize = getpagesize()
-        guard pageSize > 0 else { return nil }
-        let (bytes, byteOverflow) = pages.multipliedReportingOverflow(
-            by: UInt64(pageSize)
-        )
-        guard !byteOverflow else { return nil }
-        let value = Double(bytes) / 1_073_741_824
-        return value.isFinite && value >= 0 ? value : nil
-    }
-}
-
-/// A single fail-closed policy shared by execution and the monitor UI. Keeping
-/// these checks together prevents a warm button or automatic recommendation
-/// from promising an operation that the service must reject moments later.
-public enum ProviderWarmupPolicy {
-    public static func blockReason(
-        for item: ModelInventoryItem,
-        in snapshot: ProviderControlSnapshot,
-        currentTime: Date,
-        minimumHeadroomGB: Double,
-        availableSystemMemoryGB: Double?
-    ) -> String? {
-        let catalogState = snapshot.sources.catalog.evaluated(
-            at: currentTime,
-            invalidReason: "Model catalog timestamp is invalid",
-            staleReason: "Model catalog is stale",
-            futureReason: "Model catalog timestamp is in the future"
-        )
-        let localModelsState = snapshot.sources.localModels.evaluated(
-            at: currentTime,
-            invalidReason: "Local model list timestamp is invalid",
-            staleReason: "Local model list is stale",
-            futureReason: "Local model list timestamp is in the future"
-        )
-        let daemonState = snapshot.sources.daemon.evaluated(
-            at: currentTime,
-            invalidReason: "Provider activity timestamp is invalid",
-            staleReason: "Provider activity is stale",
-            futureReason: "Provider activity timestamp is in the future"
-        )
-        let loadedModelsState = snapshot.sources.loadedModels.evaluated(
-            at: currentTime,
-            invalidReason: "Loaded model state timestamp is invalid",
-            staleReason: "Loaded model state is stale",
-            futureReason: "Loaded model state timestamp is in the future"
-        )
-        guard catalogState.isMarkedFresh,
-              localModelsState.isMarkedFresh
-        else {
-            return "Waiting for fresh model catalog and local-model state"
-        }
-        guard daemonState.isMarkedFresh,
-              loadedModelsState.isMarkedFresh,
-              let daemon = snapshot.daemonState
-        else {
-            return "Waiting for fresh provider and loaded-model state"
-        }
-        guard item.issue == nil else {
-            return "The selected model could not be matched safely"
-        }
-        guard item.isDownloaded else { return "Download this model first" }
-        guard item.isEnabled,
-              let selector = item.enabledSelector,
-              snapshot.draft.original.enabled.contains(selector)
-        else {
-            return "Enable and save this model first"
-        }
-        if item.liveState != .unloaded
-            || snapshot.residentModelIDs.contains(item.catalogID) {
-            return nil
-        }
-
-        switch snapshot.draft.originalMaxModelSlots {
-        case 1:
-            if daemon.inferenceActive {
-                return "Waiting for the current customer job to finish"
-            }
-            if snapshot.residentModelIDs.count > 1 {
-                return "Loaded model state conflicts with one-model capacity; waiting for a clean refresh"
-            }
-            guard snapshot.supportsProtectedWarmup else {
-                return "Protected model switching requires a provider update"
-            }
-            guard snapshot.protectedWarmupMaxModelSlots == 1 else {
-                return "Restart the provider to apply the saved model capacity"
-            }
-            guard hasCompleteAppliedProtectedRuntimeProof(in: snapshot) else {
-                return "Protected warmup requires complete applied provider runtime proof"
-            }
-        case 2:
-            if snapshot.residentModelIDs.count >= 2 {
-                return "Both model slots are occupied; waiting avoids evicting another model"
-            }
-            guard snapshot.supportsProtectedWarmup else {
-                return "Protected two-model staging requires a provider update"
-            }
-            guard snapshot.protectedWarmupMaxModelSlots == 2 else {
-                return "Restart the provider to apply the saved model capacity"
-            }
-            guard hasCompleteAppliedProtectedRuntimeProof(in: snapshot) else {
-                return "Protected warmup requires complete applied provider runtime proof"
-            }
-            guard hasConservativeStagingHeadroom(
-                for: item,
-                capacity: daemon.capacity,
-                minimumHeadroomGB: minimumHeadroomGB,
-                availableSystemMemoryGB: availableSystemMemoryGB
-            ) else {
-                return "Waiting for enough memory to stage this model without eviction"
-            }
-        default:
-            return "Choose one- or two-model serving capacity in Settings first"
-        }
-        return nil
-    }
-
-    private static func hasCompleteAppliedProtectedRuntimeProof(
-        in snapshot: ProviderControlSnapshot
-    ) -> Bool {
-        guard snapshot.supportsProtectedWarmup,
-              let configuredMaxModelSlots = snapshot.protectedWarmupConfiguredMaxModelSlots,
-              let configuredEnabledModels = snapshot.protectedWarmupConfiguredEnabledModels,
-              let configuredPreloadModels = snapshot.protectedWarmupConfiguredPreloadModels,
-              let launchModelIDs = snapshot.protectedWarmupLaunchModelIDs,
-              let expectedLaunchModelIDs = resolveSavedEnabledModelIDs(
-                  snapshot.draft.original.enabled,
-                  in: snapshot.inventory
-              ),
-              configuredMaxModelSlots == snapshot.draft.originalMaxModelSlots,
-              sameUniqueIdentifiers(
-                  configuredEnabledModels,
-                  snapshot.draft.original.enabled
-              ),
-              sameUniqueIdentifiers(
-                  configuredPreloadModels,
-                  snapshot.draft.original.preloaded
-              )
-        else { return false }
-        return launchModelIDs == expectedLaunchModelIDs
-    }
-
-    private static func sameUniqueIdentifiers(
-        _ lhs: [String],
-        _ rhs: [String]
-    ) -> Bool {
-        let left = Set(lhs)
-        let right = Set(rhs)
-        return left.count == lhs.count
-            && right.count == rhs.count
-            && left == right
-    }
-
-    private static func resolveSavedEnabledModelIDs(
-        _ selectors: [String],
-        in inventory: ModelInventory
-    ) -> Set<String>? {
-        var result: Set<String> = []
-        for selector in selectors {
-            let exact = inventory.myCatalog.filter { $0.catalogID == selector }
-            let matches = exact.isEmpty
-                ? inventory.myCatalog.filter { $0.enabledSelector == selector }
-                : exact
-            guard matches.count == 1,
-                  matches[0].isDownloaded,
-                  result.insert(matches[0].catalogID).inserted
-            else { return nil }
-        }
-        return result.count == selectors.count ? result : nil
-    }
-
-    public static func hasConservativeStagingHeadroom(
-        for item: ModelInventoryItem,
-        capacity: MemoryCapacity,
-        minimumHeadroomGB: Double,
-        availableSystemMemoryGB: Double?
-    ) -> Bool {
-        guard let availableSystemMemoryGB else { return false }
-        let values = [
-            item.sizeGB,
-            capacity.totalMemoryGB,
-            capacity.gpuMemoryActiveGB,
-            capacity.gpuMemoryCacheGB,
-            minimumHeadroomGB,
-            availableSystemMemoryGB,
-        ]
-        guard values.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return false }
-        let providerDerivedAvailable = max(
-            0,
-            capacity.totalMemoryGB
-                - capacity.gpuMemoryActiveGB
-                - capacity.gpuMemoryCacheGB
-        )
-        let available = min(providerDerivedAvailable, availableSystemMemoryGB)
-        let paddedTargetWeights = item.sizeGB * 1.2
-        return available >= paddedTargetWeights + minimumHeadroomGB
-    }
-}
-
 public enum ProviderMutationPhase: Equatable, Sendable {
     /// Preconditions and the external command/publication remain cancellable.
     case mutating
-    /// The requested model is being loaded without allowing implicit eviction.
-    case loadingModel
-    /// Previously resident models are being retired only when the provider
-    /// confirms that they are idle.
-    case retiringPreviousModels
     /// The external mutation completed; only authoritative reconciliation remains.
     case reconciling
 }
@@ -393,9 +145,6 @@ public struct ProviderSaveMutationCompletion: Equatable, Sendable {
 public typealias ProviderMutationPhaseObserver =
     @Sendable (ProviderMutationPhase) async -> Void
 
-public typealias ProviderMutationLaunchObserver =
-    ModelWarmupRequestLaunchObserver
-
 public protocol ProviderControlling: Sendable {
     func refresh() async throws -> ProviderControlSnapshot
     func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult
@@ -423,11 +172,6 @@ public protocol ProviderControlling: Sendable {
         _ action: ProviderLifecycleAction,
         enabledModels: [String],
         onPhase: ProviderMutationPhaseObserver?
-    ) async throws -> ProviderMutationCompletion
-    func performWarmup(
-        _ modelID: String,
-        onPhase: ProviderMutationPhaseObserver?,
-        onMutationLaunch: ProviderMutationLaunchObserver?
     ) async throws -> ProviderMutationCompletion
 }
 
@@ -470,24 +214,6 @@ public extension ProviderControlling {
         return .refreshUncertain
     }
 
-    func performWarmup(
-        _ modelID: String,
-        onPhase: ProviderMutationPhaseObserver?
-    ) async throws -> ProviderMutationCompletion {
-        try await performWarmup(
-            modelID,
-            onPhase: onPhase,
-            onMutationLaunch: nil
-        )
-    }
-
-    func performWarmup(
-        _ modelID: String,
-        onPhase: ProviderMutationPhaseObserver?,
-        onMutationLaunch: ProviderMutationLaunchObserver?
-    ) async throws -> ProviderMutationCompletion {
-        throw ProviderControlError.warmupBlocked("Live model switching is unavailable")
-    }
 }
 
 public enum ProviderControlError: Error, Equatable, Sendable {
@@ -496,20 +222,12 @@ public enum ProviderControlError: Error, Equatable, Sendable {
     case noEnabledModels
     case inventoryUnavailable(String)
     case deleteBlocked(String)
-    case warmupBlocked(String)
     case invalidOutput(String)
 }
 
 public actor ProviderControlService: ProviderControlling {
     private enum FreshResidencyRequirement {
         case deletion
-        case warmup
-    }
-
-    private enum WarmupReconciliation {
-        case warm(ProviderControlSnapshot)
-        case notWarm
-        case uncertain
     }
 
     private struct ModelSources: Sendable {
@@ -528,10 +246,6 @@ public actor ProviderControlService: ProviderControlling {
     private let telemetrySource: any TelemetrySource
     private let configStore: any ProviderConfigManaging
     private let runner: any ProcessExecuting
-    private let endpointReader: any LocalEndpointDiscoveryReading
-    private let warmupClient: any ModelWarmupRequesting
-    private let minimumWarmupHeadroomGB: @Sendable () -> Double
-    private let availableSystemMemoryGB: @Sendable () -> Double?
     private let now: @Sendable () -> Date
     private var lastCatalog: [CatalogModel]?
     private var lastLocalModels: [LocalModel]?
@@ -545,25 +259,12 @@ public actor ProviderControlService: ProviderControlling {
         telemetrySource: any TelemetrySource,
         configStore: any ProviderConfigManaging,
         runner: any ProcessExecuting,
-        endpointReader: (any LocalEndpointDiscoveryReading)? = nil,
-        warmupClient: (any ModelWarmupRequesting)? = nil,
-        minimumWarmupHeadroomGB: @escaping @Sendable () -> Double = { 16 },
-        availableSystemMemoryGB: @escaping @Sendable () -> Double? = {
-            SystemMemoryAvailability.availableGB()
-        },
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.policy = policy
         self.telemetrySource = telemetrySource
         self.configStore = configStore
         self.runner = runner
-        self.endpointReader = endpointReader ?? LocalEndpointDiscoveryReader(
-            url: policy.localEndpointDiscovery,
-            now: now
-        )
-        self.warmupClient = warmupClient ?? ProtectedModelControlClient()
-        self.minimumWarmupHeadroomGB = minimumWarmupHeadroomGB
-        self.availableSystemMemoryGB = availableSystemMemoryGB
         self.now = now
     }
 
@@ -733,8 +434,8 @@ public actor ProviderControlService: ProviderControlling {
         case .restart:
             // The CLI's native restart intentionally reuses its existing
             // launchd arguments. Re-run the non-interactive start command so
-            // saved model changes and the protected loopback endpoint are
-            // actually applied while still avoiding the model picker.
+            // saved model changes are applied while still avoiding the model
+            // picker.
             command = DarkbloomCommand.start(
                 executable: executable,
                 config: policy.providerConfig,
@@ -749,144 +450,6 @@ public actor ProviderControlService: ProviderControlling {
             onPhase: onPhase,
             executable: executable
         )
-    }
-
-    public func performWarmup(
-        _ modelID: String,
-        onPhase: ProviderMutationPhaseObserver?,
-        onMutationLaunch: ProviderMutationLaunchObserver?
-    ) async throws -> ProviderMutationCompletion {
-        try beginCommand()
-        defer { endCommand() }
-
-        let executable = try resolveExecutable()
-        let preflight = try await refresh(
-            using: executable,
-            allowStaleModelSources: false,
-            freshResidencyRequirement: .warmup
-        )
-        let matches = preflight.inventory.myCatalog.filter { $0.catalogID == modelID }
-        guard matches.count == 1, let item = matches.first, item.issue == nil else {
-            throw ProviderControlError.warmupBlocked(
-                "The selected model could not be matched safely"
-            )
-        }
-        guard item.isDownloaded else {
-            throw ProviderControlError.warmupBlocked("Download this model first")
-        }
-        guard item.isEnabled,
-              let selector = item.enabledSelector,
-              preflight.draft.original.enabled.contains(selector)
-        else {
-            throw ProviderControlError.warmupBlocked("Enable and save this model first")
-        }
-        if item.liveState != .unloaded
-            || preflight.residentModelIDs.contains(modelID) {
-            return .refreshed(preflight)
-        }
-        if let reason = ProviderWarmupPolicy.blockReason(
-            for: item,
-            in: preflight,
-            currentTime: now(),
-            minimumHeadroomGB: minimumWarmupHeadroomGB(),
-            availableSystemMemoryGB: availableSystemMemoryGB()
-        ) {
-            throw ProviderControlError.warmupBlocked(reason)
-        }
-        guard let daemon = preflight.daemonState else {
-            throw ProviderControlError.warmupBlocked(
-                "Waiting for fresh provider activity"
-            )
-        }
-        let residentModels = preflight.residentModelIDs
-
-        try Task.checkCancellation()
-        let discovery = try await endpointReader.read(for: daemon)
-        try Task.checkCancellation()
-        let requestError: (any Error)?
-        var retirementError: (any Error)? = nil
-        do {
-            if preflight.draft.originalMaxModelSlots == 1 {
-                if !residentModels.isEmpty {
-                    await onPhase?(.retiringPreviousModels)
-                }
-                for resident in residentModels.sorted() {
-                    try Task.checkCancellation()
-                    do {
-                        try await warmupClient.retire(
-                            modelID: resident,
-                            using: discovery,
-                            onLaunch: onMutationLaunch
-                        )
-                    } catch ModelWarmupClientError.busy {
-                        throw ProviderControlError.warmupBlocked(
-                            "Waiting for the current customer job to finish"
-                        )
-                    }
-                }
-            }
-            try Task.checkCancellation()
-            await onPhase?(.loadingModel)
-            try Task.checkCancellation()
-            _ = try await warmupClient.warm(
-                modelID: modelID,
-                using: discovery,
-                onLaunch: onMutationLaunch
-            )
-            try Task.checkCancellation()
-            if preflight.draft.originalMaxModelSlots == 2 {
-                // The target is resident before any old slot is touched. If a
-                // customer job arrived during the load, the provider refuses
-                // retirement and both models remain warm until a later switch.
-                let previousModels = residentModels.sorted().filter { $0 != modelID }
-                if !previousModels.isEmpty {
-                    await onPhase?(.retiringPreviousModels)
-                }
-                for resident in previousModels {
-                    try Task.checkCancellation()
-                    do {
-                        try await warmupClient.retire(
-                            modelID: resident,
-                            using: discovery,
-                            onLaunch: onMutationLaunch
-                        )
-                    } catch ModelWarmupClientError.busy {
-                        continue
-                    } catch {
-                        // The target is already resident at this point. A
-                        // non-busy retirement failure is a safe partial state,
-                        // not a clean successful switch.
-                        retirementError = error
-                        throw error
-                    }
-                }
-            }
-            requestError = nil
-        } catch {
-            requestError = error
-        }
-
-        await onPhase?(.reconciling)
-        let reconciliation = await reconcileWarmup(
-            modelID: modelID,
-            using: executable
-        )
-        switch reconciliation {
-        case .warm(let snapshot):
-            if retirementError != nil {
-                throw ProviderControlError.warmupBlocked(
-                    "Target warmed, but the previous model could not be retired safely"
-                )
-            }
-            return .refreshed(snapshot)
-        case .uncertain:
-            return .outcomeUncertain
-        case .notWarm:
-            if let requestError { throw requestError }
-            throw ProviderControlError.warmupBlocked(
-                "The selected model was not confirmed warm"
-            )
-        }
     }
 
     public func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
@@ -939,29 +502,6 @@ public actor ProviderControlService: ProviderControlling {
             return .refreshed(try await refresh.value)
         } catch {
             return .refreshUncertain
-        }
-    }
-
-    private func reconcileWarmup(
-        modelID: String,
-        using executable: URL
-    ) async -> WarmupReconciliation {
-        let service = self
-        let refresh = Task.detached(priority: Task.currentPriority) {
-            try await service.refresh(
-                using: executable,
-                allowStaleModelSources: false,
-                freshResidencyRequirement: .warmup
-            )
-        }
-        do {
-            let snapshot = try await refresh.value
-            guard snapshot.residentModelIDs.contains(modelID) else {
-                return .notWarm
-            }
-            return .warm(snapshot)
-        } catch {
-            return .uncertain
         }
     }
 
@@ -1075,11 +615,7 @@ public actor ProviderControlService: ProviderControlling {
         )
         appendIssue(from: loadedModelsState, to: &sourceIssues)
 
-        let protectedWarmup = await protectedWarmupCapability(for: daemon)
-        let protectedResidents = protectedWarmup?.loadedModels.filter {
-            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        } ?? []
-        let authoritativeLoadedModels = Array(Set(loadedModels + protectedResidents)).sorted()
+        let authoritativeLoadedModels = loadedModels.sorted()
         let builtInventory = ModelInventoryBuilder.build(
             catalog: modelSources.catalog,
             local: modelSources.local,
@@ -1104,13 +640,6 @@ public actor ProviderControlService: ProviderControlling {
             inventory: inventory,
             draft: draft,
             daemonState: daemon,
-            supportsProtectedWarmup: protectedWarmup != nil,
-            protectedWarmupMaxModelSlots: protectedWarmup?.maxModelSlots,
-            protectedWarmupAdvertisedModelIDs: protectedWarmup?.advertisedModels.map(Set.init),
-            protectedWarmupLaunchModelIDs: protectedWarmup?.launchModels.map(Set.init),
-            protectedWarmupConfiguredMaxModelSlots: protectedWarmup?.configuredMaxModelSlots,
-            protectedWarmupConfiguredEnabledModels: protectedWarmup?.configuredEnabledModels,
-            protectedWarmupConfiguredPreloadModels: protectedWarmup?.configuredPreloadModels,
             residentModelIDs: residentModelIDs,
             capturedAt: capturedAt,
             sources: ProviderControlSourceStates(
@@ -1120,23 +649,6 @@ public actor ProviderControlService: ProviderControlling {
                 loadedModels: loadedModelsState
             )
         )
-    }
-
-    private func protectedWarmupCapability(
-        for daemon: DaemonState?
-    ) async -> ModelControlSnapshot? {
-        guard warmupClient.loadSafety == .preservesResidents, let daemon else { return nil }
-        do {
-            let discovery = try await endpointReader.read(for: daemon)
-            guard let capability = try await warmupClient.controlSnapshot(using: discovery) else {
-                return nil
-            }
-            guard capability.apiVersion == 1
-                && capability.protectedLoad
-                && capability.idleRetire
-            else { return nil }
-            return capability
-        } catch { return nil }
     }
 
     private func readModelSources(
@@ -1266,9 +778,6 @@ public actor ProviderControlService: ProviderControlling {
         case .deletion:
             throw ProviderControlError.deleteBlocked(
                 "\(reason); deletion was not attempted")
-        case .warmup:
-            throw ProviderControlError.warmupBlocked(
-                "\(reason); warmup was not attempted")
         }
     }
 

@@ -204,72 +204,18 @@ struct ProviderLifecyclePresentationTests {
         #expect(
             ProviderLifecycleFeedbackPresentation.make(
                 operation: .lifecycle(.start),
-                operationPhase: .mutating,
-                maxModelSlots: 1,
                 errorMessage: nil
             ) == .init(message: "Starting provider…", isError: false)
         )
         #expect(
             ProviderLifecycleFeedbackPresentation.make(
-                operation: .warming("gpt-oss-20b"),
-                operationPhase: .mutating,
-                maxModelSlots: 2,
-                errorMessage: nil
-            ) == .init(message: "Preparing gpt-oss-20b…", isError: false)
-        )
-        #expect(
-            ProviderLifecycleFeedbackPresentation.make(
-                operation: .warming("gpt-oss-20b"),
-                operationPhase: .loadingModel,
-                maxModelSlots: 2,
-                errorMessage: nil
-            ) == .init(message: "Staging gpt-oss-20b in the free slot…", isError: false)
-        )
-        #expect(
-            ProviderLifecycleFeedbackPresentation.make(
-                operation: .warming("gpt-oss-20b"),
-                operationPhase: .retiringPreviousModels,
-                maxModelSlots: 2,
-                errorMessage: nil
-            ) == .init(message: "Target warm; retiring the previous idle model…", isError: false)
-        )
-        #expect(
-            ProviderLifecycleFeedbackPresentation.make(
-                operation: .warming("gpt-oss-20b"),
-                operationPhase: .retiringPreviousModels,
-                maxModelSlots: 1,
-                errorMessage: nil
-            ) == .init(message: "Retiring the previous idle model before switching…", isError: false)
-        )
-        #expect(
-            ProviderLifecycleFeedbackPresentation.make(
-                operation: .warming("gpt-oss-20b"),
-                operationPhase: .loadingModel,
-                maxModelSlots: 1,
-                errorMessage: nil
-            ) == .init(message: "Loading gpt-oss-20b into the active slot…", isError: false)
-        )
-        #expect(
-            ProviderLifecycleFeedbackPresentation.make(
-                operation: .warming("gpt-oss-20b"),
-                operationPhase: .reconciling,
-                maxModelSlots: 2,
-                errorMessage: nil
-            ) == .init(message: "Confirming model state…", isError: false)
-        )
-        #expect(
-            ProviderLifecycleFeedbackPresentation.make(
                 operation: .idle,
-                operationPhase: nil,
-                maxModelSlots: 1,
                 errorMessage: "Could not stop the provider."
             ) == .init(message: "Could not stop the provider.", isError: true)
         )
         #expect(
             ProviderLifecycleFeedbackPresentation.make(
                 operation: .idle,
-                operationPhase: nil,
-                maxModelSlots: 1,
                 errorMessage: nil
             ) == nil
         )
@@ -813,7 +759,6 @@ struct ProviderLifecyclePresentationTests {
             .saving,
             .downloading("gpt-oss"),
             .deleting("gpt-oss"),
-            .warming("gpt-oss"),
             .lifecycle(.start),
             .lifecycle(.stop),
             .lifecycle(.restart),

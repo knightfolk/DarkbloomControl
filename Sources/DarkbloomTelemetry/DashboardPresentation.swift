@@ -139,68 +139,6 @@ public enum ModelOpportunityRanker {
     }
 }
 
-public struct AutomaticModelSwitchTracker: Equatable, Sendable {
-    public static let requiredConsistentSamples = 3
-    public static let cooldown: TimeInterval = 30 * 60
-
-    private var candidateModelID: String?
-    private var consistentSamples = 0
-    private var lastAttemptAt: Date?
-    private var lastSampleAt: Date?
-
-    public init(lastAttemptAt: Date? = nil) {
-        self.lastAttemptAt = lastAttemptAt
-    }
-
-    public mutating func observe(
-        _ recommendation: ModelOpportunityRecommendation?,
-        residentModelIDs: Set<String>,
-        sampledAt: Date,
-        now: Date
-    ) -> String? {
-        guard lastSampleAt.map({ sampledAt > $0 }) ?? true else { return nil }
-        lastSampleAt = sampledAt
-        guard let recommendation,
-              recommendation.demandBand == .urgent || recommendation.demandBand == .high,
-              !residentModelIDs.contains(recommendation.modelID),
-              lastAttemptAt.map({ now.timeIntervalSince($0) >= Self.cooldown }) ?? true
-        else {
-            resetCandidate()
-            return nil
-        }
-
-        if candidateModelID == recommendation.modelID {
-            consistentSamples += 1
-        } else {
-            candidateModelID = recommendation.modelID
-            consistentSamples = 1
-        }
-        return consistentSamples >= Self.requiredConsistentSamples
-            ? recommendation.modelID
-            : nil
-    }
-
-    public mutating func recordAttempt(at date: Date) {
-        lastAttemptAt = date
-        resetCandidate()
-    }
-
-    public mutating func reset() {
-        lastAttemptAt = nil
-        lastSampleAt = nil
-        resetCandidate()
-    }
-
-    public mutating func clearCandidate() {
-        resetCandidate()
-    }
-
-    private mutating func resetCandidate() {
-        candidateModelID = nil
-        consistentSamples = 0
-    }
-}
-
 public enum ModelTokenRatePresentation {
     public static func breakdown(
         _ averages: [ModelTokenRateAverage]

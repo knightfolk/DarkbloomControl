@@ -114,7 +114,7 @@ struct TelemetryServiceTests {
             thermal: .nominal,
             earnings: .available(microUSD: 0),
             mode: .automatic
-        ).metricText == "15.0 tok/s")
+        ).metricText == "$0.00/24h")
         #expect(nextIdle.tokenRate == .unavailable(reason: "Waiting for activity"))
     }
 

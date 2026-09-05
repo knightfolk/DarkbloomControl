@@ -4,16 +4,20 @@
 
 **Goal:** Add separate model download/delete, enable/disable, and preload management plus non-interactive provider Start, Stop, and Restart controls with customer-impact confirmation.
 
+> Historical implementation plan. The signed vendor-released CLI is the only
+> supported provider. Any linked or later text about protected live switching,
+> private model-control endpoints, custom CLI branches, staged warming, or
+> automatic residency changes is superseded and is not an instruction to build,
+> install, or launch those artifacts.
+
 **Architecture:** Keep all external mutations behind shell-free Darkbloom CLI command objects and a narrow provider configuration store. A dedicated `ProviderControlStore` owns model/config/lifecycle state for SwiftUI while the existing `MonitorStore` remains responsible for telemetry and earnings. The Settings window receives the model manager; the popup receives a compact lifecycle strip.
 
 **Tech Stack:** Swift 6, SwiftUI, AppKit, Swift Testing, Foundation `Process`, CryptoKit SHA-256, Darkbloom CLI 0.8.15, TOML byte-preserving targeted edits.
 
 **Spec:** `docs/superpowers/specs/2026-09-01-model-management-provider-controls-design.md`
 
-> Historical implementation plan retained for its earlier control-surface
-> work. Superseded for current live model switching by
-> [`2026-09-03-live-model-warming-design.md`](../specs/2026-09-03-live-model-warming-design.md)
-> and [`2026-09-03-live-model-warming.md`](2026-09-03-live-model-warming.md).
+> The linked live-model-warming design and plan are historical only and are
+> superseded by the official-CLI boundary above.
 
 ## Global Constraints
 

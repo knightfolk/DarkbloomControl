@@ -1,7 +1,13 @@
 # Live Model Control and Demand Design
 
 Date: 2026-09-03
-Status: Implemented locally across monitor and provider; runtime installation pending
+Status: SUPERSEDED — historical proposal only; do not implement or launch
+
+> The official vendor-released Darkbloom CLI is the only supported provider.
+> This document describes rejected custom provider branches, private
+> model-control endpoints, protected warm/retire operations, staged loading,
+> and automatic switching. It is retained for historical traceability and is
+> not a current contract or implementation plan.
 
 ## Goal
 

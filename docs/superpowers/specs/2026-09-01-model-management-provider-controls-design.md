@@ -1,9 +1,10 @@
 # Model Management and Provider Controls
 
-> Historical design retained as a baseline. Superseded for current live model
-> switching by [`2026-09-03-live-model-warming-design.md`](2026-09-03-live-model-warming-design.md),
-> which defines `max_model_slots`, protected no-eviction load, idle-only retire,
-> shared coordinator capacity, and fail-closed reconciliation.
+> Historical design retained as a baseline for the official-CLI catalog,
+> configuration, and lifecycle controls. Any later text or linked design that
+> describes protected live model switching, private provider endpoints, custom
+> CLI branches, or staged warming is superseded and must not be implemented or
+> launched. The signed vendor-released CLI is the only supported provider.
 
 ## Goal
 

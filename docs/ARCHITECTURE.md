@@ -20,10 +20,9 @@ read a file or launch a process directly.
 
 1. `DarkbloomSourcePolicy` resolves only the approved home-directory files,
    including the fixed provider config path, fixes all byte/time limits, and
-   exposes typed shell-free commands for the allowlisted Darkbloom operations
-   and the local `/usr/bin/log stream` predicate. `LocalEndpointDiscovery` is a
-   separate, bounded control-source reader for `~/.darkbloom/local.json`; it
-   does not become part of the telemetry file allowlist.
+   exposes typed shell-free commands for the allowlisted official Darkbloom
+   operations and the local `/usr/bin/log stream` predicate. The monitor does
+   not discover or call private provider-control endpoints.
 2. `LocalTelemetrySource` reads schema-1 state and loaded models, retries a
    transient daemon-state decode once after 100 milliseconds, reads only the
    final 128 KiB of the legacy log, and parses the fixed status result.
@@ -61,10 +60,12 @@ read a file or launch a process directly.
 9. `LocalProviderConfigStore` reads the fixed config, permits changes only to
    top-level `enabled_models`, `preload_models`, and `max_model_slots`,
    validates a UUID-named sibling candidate, and retains one fixed backup after
-   publication. `ProviderControlService` owns catalog/list/download/remove,
-   start/stop/restart, and capability-probed protected model load/retire
-   operations; `ProviderControlStore` serializes their UI state. A config save
-   reports restart-required rather than restarting the provider itself.
+   publication. `ProviderControlService` owns only the official CLI's
+   catalog/list/download/remove and start/stop/restart operations;
+   `ProviderControlStore` serializes their UI state. A config save reports
+   restart-required rather than restarting the provider itself. The official
+   CLI does not provide a supported monitor-side warm, retire, or live-switch
+   operation.
 
    Its revision checks, bounded advisory locks, and atomic replacement
    coordinate cooperating writers only. A noncooperating writer that keeps an
@@ -83,20 +84,14 @@ read a file or launch a process directly.
     authoritative fresh preflight again when Delete is actually requested.
 11. After a successful lifecycle command, `ProviderControlStore` awaits an
     immediate `MonitorStore` telemetry/status refresh before refreshing its
-    own provider-control snapshot. The popup withholds model pills unless both
-    telemetry model sources and provider-control residency sources are fresh.
-12. `ProviderWarmupPolicy` is the shared fail-closed gate for manual and
-   automatic Warm operations. It requires a unique downloaded saved-enabled
-   target, fresh catalog/local-model/daemon/loaded evidence, a current loopback
-   discovery record, an applied live slot cap, and the protected provider
-   capability. One-slot switching retires only idle residents before loading;
-   two-slot switching loads into an available slot before requesting exact idle
-   retirement of the previous model.
-13. `PublicNetworkCapacityClient` polls the fixed public per-model capacity
-    endpoint every 30 seconds. Its last-good value is retained for display but
-    is actionable only while fresh; `MonitorStore` rejects older overlapping
-    responses. Network demand is context for model selection, never a local
-    job-progress or earnings measurement.
+    own official-CLI snapshot. The popup withholds model pills unless the
+    official telemetry model sources are fresh.
+12. `PublicNetworkCapacityClient` polls the fixed public per-model capacity
+   endpoint every 30 seconds. Its last-good value is retained for display but
+   is actionable only while fresh; `MonitorStore` rejects older overlapping
+   responses. Network demand is context for model selection, never a local
+   job-progress or earnings measurement. It is informational only: it does not
+   authorize or trigger local model loading, unloading, or switching.
 
 ```text
 approved files -----> LocalTelemetrySource --\
@@ -123,88 +118,72 @@ fixed provider TOML --> LocalProviderConfigStore --> candidate validation --> fi
                                            v
                               Settings Models + popup lifecycle controls
 
-~/.darkbloom/local.json --> LocalEndpointDiscovery -- protected loopback control
 public model capacity --> PublicNetworkCapacityClient --> MonitorStore
                                                                |
                                                                v
-                                                  demand rows / automatic evaluator
+                                                  demand rows / opportunity context
 ```
 
 ## Ownership and cancellation
 
 Only one acquisition per source can be active. Periodic and manual refreshes
 join an existing per-source task rather than overlap it. `ProviderControlStore`
-owns the current provider operation and cancels it when the monitor is closing.
-Cancellation before a protected load or retire request is a no-op; after a
-mutation may have started, the warmup path performs fresh telemetry/control
-reconciliation and invalidates actionable state if that reconciliation cannot
-establish the outcome.
+owns the current official-CLI operation and cancels it when the monitor is
+closing. Provider lifecycle completion is reconciled with fresh official
+telemetry; the monitor does not attempt a separate residency mutation or
+private control request.
 
 The user-facing Quit path awaits `MonitorStore.stop()` before asking AppKit to
 terminate the monitor. Shutdown cancels polling and freshness tasks, cancels
 and awaits the unified-log iterator, closes its pipes, terminates only the
 monitor-owned `/usr/bin/log` child, and finishes snapshot subscribers. The
-AppDelegate termination callback cancels automatic switching and the current
-control task, then starts `MonitorStore.stop()` asynchronously; that callback
-is not a guarantee that an in-flight provider HTTP request or reconciliation
-will finish before the process exits. No shutdown path targets the Darkbloom
-provider process; only an explicit Stop or Restart action can do that.
+AppDelegate termination callback cancels the current control task, then starts
+`MonitorStore.stop()` asynchronously; that callback is not a guarantee that an
+in-flight provider command or reconciliation will finish before the process
+exits. No shutdown path targets the Darkbloom provider process; only an explicit
+Stop or Restart action can do that.
 
 ## Trust and privacy boundaries
 
 The provider surface is an exact allowlist: the fixed `provider.toml` (only
 `enabled_models`, `preload_models`, and `max_model_slots`),
 catalog/list/status, download/remove/start/stop/restart, a UUID-named sibling
-candidate, one fixed backup, and the separately validated local endpoint
-record. The protected loopback surface is limited to an authenticated
-capability GET plus exact-model load-without-eviction and idle-only retire POSTs.
-No other config field may change; credentials, account commands, launchd
-internals, direct cache mutation, remote coordinator mutation, and arbitrary
-local HTTP routes remain forbidden. Production commands use executable and
-argument values directly, never a shell. Paths printed by `darkbloom status`
-are inert display strings and are never followed. The monitor reads `auth_token`
-only for the fixed authenticated account-earnings GET and reads the local
-endpoint API key only for the bounded protected request; neither is logged,
-displayed, or persisted. The state `attestation_public_key` and unknown fields
-are ignored. Log messages are untrusted literal text without link activation or
-command execution; a unified-log `<private>` value becomes an explicit
+candidate, and one fixed backup. No other config field may change; credentials,
+account commands, launchd internals, direct cache mutation, remote coordinator
+mutation, private provider-control routes, and arbitrary local HTTP routes
+remain forbidden. Production commands use the official executable and argument
+values directly, never a shell. Paths printed by `darkbloom status` are inert
+display strings and are never followed. The monitor reads `auth_token` only for
+the fixed authenticated account-earnings GET; it is never logged, displayed, or
+persisted. The state `attestation_public_key` and unknown fields are ignored.
+Log messages are untrusted literal text without link activation or command
+execution; a unified-log `<private>` value becomes an explicit
 privacy-redaction placeholder.
 
 Networking has three fixed public HTTPS GET paths on `api.darkbloom.dev`:
 authenticated account earnings, the public 24-hour leaderboard, and public
-per-model capacity. The protected model-control requests are authenticated
-HTTP loopback calls discovered from the current provider run, not remote
-coordinator calls. SQLite keeps separate hourly inference-work and online-
+per-model capacity. SQLite keeps separate hourly inference-work and online-
 reward aggregates plus balances with user-only permissions; it excludes
 account IDs, provider keys, and credential material. The source policy does not
 offer an arbitrary command interface.
 
-Download/Delete, Enable/Disable, Preload/Unpreload, and Warm are independent.
-Start passes enabled models as repeated `--model` arguments to bypass the CLI
-picker. Protected Warm never invokes Stop or Restart and never unloads an
-active customer model.
+Download/Delete, Enable/Disable, and Preload/Unpreload are independent.
+Start passes saved enabled models as repeated official CLI `--model` arguments
+when supported by the installed release, bypassing the interactive picker.
+Changing which model is resident requires the provider's supported
+configuration/startup path; the monitor does not perform live warming or
+unloading.
 Stop and Restart check provider activity, but that read may be unknown and can
 change before the command runs. Active or unknown activity therefore requires a
 user's explicit destructive override; this is a customer-impact warning, not an
 atomic no-interruption guarantee.
 
-In one-model capacity, the current idle resident retires before the target
-loads, so a safe switch has a cold-load availability gap. If target loading
-fails after retirement, the service reconciles fresh state and reports the
-partial outcome; it does not claim an automatic rollback. In two-model
-capacity, the second slot is shared with coordinator work rather than reserved
-for the monitor. A coordinator-prefetched or otherwise unknown resident
-consumes that slot. The target loads first beside an existing customer job, and
-the previous model retires only if the provider confirms it is still idle. If
-retirement is refused because work arrived, both models remain resident.
-
-Two-model staging requires the lower of provider-derived free capacity and live
-whole-system reclaimable memory to satisfy
-`min(max(0, total - gpuActive - gpuCache), systemAvailable) >=
-targetSize * 1.2 + reserve`, where reserve is 8-24 GiB (default 16 GiB).
-Missing or stale provider/system evidence, a full slot set, insufficient
-headroom, an unapplied slot-cap change, or a client that may evict causes the
-operation to wait or fail closed.
+The official `max_model_slots` setting controls provider capacity after the
+normal configuration/restart path applies it. The second slot is not a monitor-
+reserved staging slot, and the monitor does not load a target first, retire an
+idle resident, or evict a model to make room. Public demand remains useful as
+read-only opportunity context, but it cannot authorize a local residency
+change.
 
 For provider-control safety decisions, the daemon heartbeat must be finite, no
 more than ten seconds old, and not in the future. Loaded-model evidence requires
@@ -220,7 +199,7 @@ After lifecycle completion, the shared control store requests an immediate
 telemetry/status refresh and refreshes its control snapshot. Popup model pills
 are withheld when their independent freshness conditions are not satisfied.
 Control diagnostics redact home paths and credential-shaped values, and expose
-only fixed safe categories for config and model-control failures. Raw or
+only fixed safe categories for config and lifecycle failures. Raw or
 unbounded command output is not rendered, except for one latest sanitized
 download-progress line from stdout or stderr with a 4,096-byte input bound.
 Model-row actions carry
@@ -244,17 +223,16 @@ enabled-model network-demand rows, a labeled Settings control, an icon-only
 door control for Quit, and compact Start/Stop/Restart controls. The Settings
 window has General and Models tabs; the latter separates My Catalog and
 Available models, makes download/delete independent from enable/preload
-settings, and exposes one- versus two-model capacity plus the two-model
-headroom reserve. Automatic switching is default-off.
+settings, and exposes the official one- versus two-model capacity setting.
 Model presentation is derived from the enabled-model filter plus loaded, warm,
 slot, and current-model state. Green
 means active, yellow means loaded but idle, and gray means available but
-unloaded. A Warm action reports preparing, loading or staging, idle retirement,
-and authoritative reconciliation; it distinguishes the one-slot cold-load
-gap from two-slot load-before-retire behavior. `StatusItemController` owns an in-process Settings window whose
-SwiftUI view owns the persisted menu-bar metric picker, avoiding delegation to
-another registered app bundle. Diagnostic telemetry remains in the library and
-tests rather than being exposed through disclosure groups.
+unloaded. No Warm or live-switch action is presented because the official CLI
+does not expose the required operator API. `StatusItemController` owns an
+in-process Settings window whose SwiftUI view owns the persisted menu-bar
+metric picker, avoiding delegation to another registered app bundle.
+Diagnostic telemetry remains in the library and tests rather than being
+exposed through disclosure groups.
 
 ## Failure and freshness model
 
@@ -267,12 +245,8 @@ seconds using acquisition time. Process identity
 changes reset token-rate history immediately. Unified-stream termination and
 finite-source errors become stable, source-specific diagnostics.
 
-Public capacity is polled every 30 seconds and remains actionable only for 120
-seconds, with no more than five seconds of future skew. An older overlapping
-response is discarded. Warm preflight requires fresh catalog, local-model,
-daemon, and loaded-model evidence, a current loopback discovery record, a
-protected capability snapshot, and a live slot cap matching the saved setting.
-Unknown or unavailable system memory is insufficient for two-slot staging.
-After any load or retire request, fresh local residency is authoritative:
-success means the target is resident; otherwise the operation remains blocked,
-failed, or outcome-uncertain rather than being presented as complete.
+Public capacity is polled every 30 seconds and remains useful for display only
+while fresh, with no more than five seconds of future skew. An older overlapping
+response is discarded. Local model state is authoritative only from fresh
+official telemetry and official CLI results; the monitor does not infer
+residency changes from public demand or unsupported private control APIs.

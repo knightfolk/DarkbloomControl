@@ -367,10 +367,7 @@ struct MonitorPopover: View {
                                 .accessibilityLabel("\(demand.band.rawValue) network demand")
                         }
                         Spacer(minLength: 4)
-                        if model.state == .active, let rate = currentTokenRate {
-                            Text("\(rate, specifier: "%.1f") t/s")
-                                .foregroundStyle(.primary)
-                        } else if let average = store.currentModelTokenRateAverages.first(where: { $0.model == model.name }) {
+                        if let average = store.currentModelTokenRateAverages.first(where: { $0.model == model.name }) {
                             VStack(alignment: .trailing, spacing: 1) {
                             if model.state == .active {
                                 Text("Working").font(.caption).foregroundStyle(.primary)
@@ -380,7 +377,7 @@ struct MonitorPopover: View {
                             }
                         } else if model.state == .active {
                             Text("Working")
-                                .help("Live token rate is not exposed by the provider yet")
+                                .help("The official CLI does not expose streaming token throughput")
                         }
                     }
                     .font(.system(size: 13, weight: .medium, design: .monospaced))
@@ -492,8 +489,6 @@ struct MonitorPopover: View {
                 )
                 if let feedback = ProviderLifecycleFeedbackPresentation.make(
                     operation: controlStore.operation,
-                    operationPhase: controlStore.operationPhase,
-                    maxModelSlots: controlStore.snapshot?.draft.originalMaxModelSlots,
                     errorMessage: controlStore.errorMessage
                 ) {
                     Text(feedback.message)
@@ -537,20 +532,17 @@ struct MonitorPopover: View {
 
     private var currentRateCard: some View {
         InfographicMetricCard(
-            title: "Current",
-            unit: currentTokenRate == nil ? nil : "tok/sec",
-            accessibilityValue: currentTokenRate.map { "\($0) tokens per second" }
-                ?? currentTokenFallback
+            title: "Activity",
+            unit: nil,
+            accessibilityValue: currentActivityLabel
         ) {
-            if let currentTokenRate {
-                Text(
-                    currentTokenRate,
-                    format: .number.precision(.fractionLength(1))
-                )
-            } else {
-                Text(currentTokenFallback)
-            }
+            Text(currentActivityLabel)
         }
+    }
+
+    private var currentActivityLabel: String {
+        guard let state = store.snapshot.state.value else { return "Unavailable" }
+        return state.inferenceActive ? "Working" : "Idle"
     }
 
     private func earningsSection(
@@ -655,93 +647,11 @@ struct MonitorPopover: View {
                         HStack(spacing: 8) {
                             ModelStatusPill(model: model)
                             Spacer(minLength: 6)
-                            if model.state == .availableUnloaded,
-                               let item = inventoryItem(for: model) {
-                                let liveSwitching = ModelWarmupFeaturePresentation.make(
-                                    supportsProtectedWarmup:
-                                        controlStore.snapshot?.supportsProtectedWarmup == true
-                                )
-                                if liveSwitching.isAvailable {
-                                    let blockReason = warmupBlockReason(
-                                        for: item,
-                                        currentTime: currentTime
-                                    )
-                                    Button {
-                                        Task { await controlStore.warm(item.catalogID) }
-                                    } label: {
-                                        if controlStore.operation == .warming(item.catalogID) {
-                                            ProgressView()
-                                                .controlSize(.small)
-                                        } else {
-                                            Image(systemName: "flame.fill")
-                                        }
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                    .disabled(blockReason != nil)
-                                    .help(
-                                        blockReason ?? warmupActionDescription(for: item)
-                                    )
-                                    .accessibilityLabel("Warm \(item.displayName)")
-                                    .accessibilityHint(
-                                        blockReason ?? warmupActionDescription(for: item)
-                                    )
-                                    .accessibilityIdentifier("dashboard.model.\(item.catalogID).warm")
-                                } else {
-                                    ComingSoonBadge()
-                                        .help(liveSwitching.accessibilityHint ?? "")
-                                        .accessibilityHint(
-                                            liveSwitching.accessibilityHint ?? ""
-                                        )
-                                        .accessibilityIdentifier(
-                                            "dashboard.model.\(item.catalogID).warm.coming-soon"
-                                        )
-                                }
-                            }
                         }
                     }
                 }
             }
         }
-    }
-
-    private func inventoryItem(for model: DashboardModel) -> ModelInventoryItem? {
-        guard let items = controlStore.snapshot?.inventory.myCatalog else {
-            return nil
-        }
-        if let exact = items.first(where: { $0.catalogID == model.name }) {
-            return exact
-        }
-        return items.first {
-            $0.enabledSelector == model.name || $0.preloadSelector == model.name
-        }
-    }
-
-    private func warmupBlockReason(
-        for item: ModelInventoryItem,
-        currentTime: Date
-    ) -> String? {
-        guard let snapshot = controlStore.snapshot else {
-            return "Waiting for fresh provider and loaded-model state"
-        }
-        return ModelWarmupPresentation.blockReason(
-            operation: controlStore.operation,
-            draftHasChanges: controlStore.draft?.hasChanges == true,
-            restartRequired: controlStore.restartRequired,
-            pendingConfirmation: controlStore.pendingConfirmation,
-            item: item,
-            snapshot: snapshot,
-            currentTime: currentTime,
-            minimumHeadroomGB: ModelWarmupPreferences.selectedHeadroomGB,
-            availableSystemMemoryGB: SystemMemoryAvailability.availableGB()
-        )
-    }
-
-    private func warmupActionDescription(for item: ModelInventoryItem) -> String {
-        if controlStore.snapshot?.draft.originalMaxModelSlots == 2 {
-            return "Load \(item.displayName) first, then retire the previous model only if it is idle"
-        }
-        return "Switch to \(item.displayName); the current idle model unloads first"
     }
 
     private func networkDemandSection(currentTime: Date) -> some View {
@@ -792,19 +702,6 @@ struct MonitorPopover: View {
             return inventory.filter(\.isEnabled).map(\.catalogID)
         }
         return models.map(\.name)
-    }
-
-    private var currentTokenRate: Double? {
-        guard store.snapshot.state.value?.inferenceActive == true,
-              case .available(let value, _) = store.snapshot.tokenRate,
-              value.isFinite
-        else { return nil }
-        return value
-    }
-
-    private var currentTokenFallback: String {
-        guard let state = store.snapshot.state.value else { return "—" }
-        return state.inferenceActive ? "—" : "Idle"
     }
 
     private var averageTokenRate: Double? {

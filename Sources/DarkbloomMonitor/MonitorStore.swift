@@ -392,7 +392,6 @@ final class MonitorStore: ObservableObject {
                 await self?.refreshNetworkCapacity()
                 guard let delay = self?.networkPollingPolicy.delay(
                     dashboardVisible: self?.dashboardVisible ?? false,
-                    automaticSwitching: ModelWarmupPreferences.automaticSwitchingEnabled,
                     jitter: self?.publicPollingJitter() ?? 0
                 ) else { return }
                 guard let sleep = self?.publicPollingSleep else { return }

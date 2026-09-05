@@ -166,119 +166,7 @@ struct ProviderControlStoreTests {
         }
     }
 
-    @Test("warm action is serialized and delegated without changing configuration")
-    func warmsModel() async throws {
-        let controller = FakeProviderController.fixture()
-        let store = ProviderControlStore(controller: controller)
-        await store.refresh()
-        let originalDraft = store.draft
-
-        let didAttemptMutation = await store.warm("second-model")
-
-        #expect(await controller.warmedModels == ["second-model"])
-        #expect(didAttemptMutation)
-        #expect(store.draft == originalDraft)
-        #expect(store.operation == .idle)
-        #expect(store.errorMessage == nil)
-    }
-
-    @Test("warm cancellation between progress phase and provider launch does not count as mutation")
-    func warmCancellationBeforeProviderLaunchDoesNotCount() async throws {
-        let controller = FakeProviderController.fixture(
-            warmCancellationAfterPhase: true
-        )
-        let store = ProviderControlStore(controller: controller)
-        await store.refresh()
-
-        let didAttemptMutation = await store.warm("second-model")
-
-        #expect(didAttemptMutation == false)
-        #expect(await controller.warmedModels.isEmpty)
-        #expect(store.operation == .idle)
-        #expect(store.errorMessage == nil)
-    }
-
-    @Test("warm cancellation after provider launch reconciles the changed residency")
-    func warmCancellationAfterProviderLaunchReconciles() async throws {
-        let initial = fixtureSnapshot()
-        let changed = fixtureSnapshot(downloadedAvailable: true)
-        let controller = FakeProviderController.fixture(
-            snapshot: initial,
-            snapshotAfterWarm: changed,
-            warmCancellationAfterLaunch: true
-        )
-        let store = ProviderControlStore(controller: controller)
-        await store.refresh()
-
-        let didAttemptMutation = await store.warm("second-model")
-
-        #expect(didAttemptMutation)
-        #expect(await controller.warmedModels == ["second-model"])
-        #expect(store.snapshot == changed)
-        #expect(store.operation == .idle)
-        #expect(store.errorMessage == nil)
-        #expect(await controller.refreshCount == 2)
-    }
-
-    @Test("preflight warmup rejection does not count as a mutation attempt")
-    func distinguishesWarmupPreflightRejection() async {
-        let controller = FakeProviderController.fixture(
-            warmFailure: .warmupBlocked("Waiting for a safe state"),
-            warmPhases: []
-        )
-        let store = ProviderControlStore(controller: controller)
-        await store.refresh()
-
-        let didAttemptMutation = await store.warm("second-model")
-
-        #expect(didAttemptMutation == false)
-    }
-
-    @Test("failed warmup refreshes residency after a possibly partial mutation")
-    func reconcilesFailedWarmup() async throws {
-        let initial = fixtureSnapshot()
-        let changed = fixtureSnapshot(downloadedAvailable: true)
-        let controller = FakeProviderController.fixture(
-            snapshot: initial,
-            warmFailure: .warmupBlocked("Target was not confirmed warm"),
-            snapshotAfterWarm: changed
-        )
-        let store = ProviderControlStore(controller: controller)
-        await store.refresh()
-
-        await store.warm("second-model")
-
-        #expect(store.snapshot == changed)
-        #expect(store.errorMessage == "The model cannot be warmed safely.")
-        #expect(await controller.refreshCount == 2)
-    }
-
-    @Test("partial warmup warning preserves reconciled state and launched mutation evidence")
-    func preservesPartialWarmupStateAfterRetirementFailure() async throws {
-        let initial = fixtureSnapshot()
-        let changed = fixtureSnapshot(downloadedAvailable: true)
-        let controller = FakeProviderController.fixture(
-            snapshot: initial,
-            warmFailure: .warmupBlocked(
-                "Target warmed, but the previous model could not be retired safely"
-            ),
-            snapshotAfterWarm: changed
-        )
-        let store = ProviderControlStore(controller: controller)
-        await store.refresh()
-
-        let didAttemptMutation = await store.warm("second-model")
-
-        #expect(didAttemptMutation)
-        #expect(store.snapshot == changed)
-        #expect(
-            store.errorMessage
-                == "Target warmed, but the previous model could not be retired safely"
-        )
-        #expect(await controller.refreshCount == 2)
-    }
-
-    @Test("save promotes staged selectors and retains restart required state")
+    @Test("save promotes staged selectors")
     func savesDraft() async throws {
         let controller = FakeProviderController.fixture()
         let store = ProviderControlStore(controller: controller)
@@ -289,152 +177,8 @@ struct ProviderControlStoreTests {
 
         #expect(store.draft?.original.enabled == ["saved-model", "second-model"])
         #expect(store.draft?.selection.enabled == ["saved-model", "second-model"])
-        #expect(store.restartRequired)
         #expect(!store.canSave)
         #expect(await controller.saveCount == 1)
-    }
-
-    @Test("restart requirement survives store recreation until complete runtime proof arrives")
-    func persistsRestartRequirementAcrossRelaunch() async throws {
-        let persistence = RestartRequirementPersistenceFake(initial: true)
-        let unproven = ProviderControlStore(
-            controller: FakeProviderController.fixture(),
-            restartRequirementPersistence: persistence,
-            now: { providerControlTestNow }
-        )
-
-        #expect(unproven.restartRequired)
-        await unproven.refresh()
-        #expect(unproven.restartRequired)
-        #expect(persistence.values.isEmpty)
-
-        let proven = ProviderControlStore(
-            controller: FakeProviderController.fixture(snapshot: runtimeProofSnapshot()),
-            restartRequirementPersistence: persistence,
-            now: { providerControlTestNow }
-        )
-        await proven.refresh()
-
-        #expect(!proven.restartRequired)
-        #expect(persistence.values == [false])
-    }
-
-    @Test("fresh runtime proof detects a config mismatch after relaunch")
-    func derivesRestartRequirementFromRuntimeMismatch() async {
-        let mismatched = runtimeProofSnapshot(
-            configuredEnabledModels: ["second-model"]
-        )
-        let persistence = RestartRequirementPersistenceFake()
-        let store = ProviderControlStore(
-            controller: FakeProviderController.fixture(snapshot: mismatched),
-            restartRequirementPersistence: persistence,
-            now: { providerControlTestNow }
-        )
-
-        await store.refresh()
-
-        #expect(store.restartRequired)
-        #expect(persistence.values == [true])
-    }
-
-    @Test("runtime proof validates adaptive effective capacity")
-    func runtimeProofValidatesEffectiveCapacity() async {
-        let twoModels = ProviderModelSelection(
-            enabled: ["saved-model", "second-model"],
-            preloaded: []
-        )
-        let mismatchPersistence = RestartRequirementPersistenceFake()
-        let mismatchStore = ProviderControlStore(
-            controller: FakeProviderController.fixture(snapshot: runtimeProofSnapshot(
-                selection: twoModels,
-                maxModelSlots: 2,
-                effectiveMaxModelSlots: 1
-            )),
-            restartRequirementPersistence: mismatchPersistence,
-            now: { providerControlTestNow }
-        )
-
-        await mismatchStore.refresh()
-
-        #expect(mismatchStore.restartRequired)
-        #expect(mismatchPersistence.values == [true])
-
-        let oneModel = ProviderModelSelection(enabled: ["saved-model"], preloaded: [])
-        let adaptivePersistence = RestartRequirementPersistenceFake(initial: true)
-        let adaptiveStore = ProviderControlStore(
-            controller: FakeProviderController.fixture(snapshot: runtimeProofSnapshot(
-                selection: oneModel,
-                maxModelSlots: 2,
-                effectiveMaxModelSlots: 1,
-                advertisedModels: ["saved-model"]
-            )),
-            restartRequirementPersistence: adaptivePersistence,
-            now: { providerControlTestNow }
-        )
-
-        await adaptiveStore.refresh()
-
-        #expect(!adaptiveStore.restartRequired)
-        #expect(adaptivePersistence.values == [false])
-    }
-
-    @Test("successful restart retains its gate when runtime config proof does not match")
-    func restartGateRequiresMatchingRuntimeConfiguration() async throws {
-        let savedSelection = ProviderModelSelection(
-            enabled: ["saved-model", "second-model"],
-            preloaded: ["second-model"]
-        )
-        let mismatchedProof = runtimeProofSnapshot(
-            selection: savedSelection,
-            configuredPreloadModels: []
-        )
-        let controller = FakeProviderController.fixture(
-            activityRisks: [.idle, .idle],
-            lifecycleSnapshotAfterExecute: mismatchedProof
-        )
-        let persistence = RestartRequirementPersistenceFake()
-        let store = ProviderControlStore(
-            controller: controller,
-            restartRequirementPersistence: persistence,
-            now: { providerControlTestNow }
-        )
-        await store.refresh()
-        store.setEnabled(true, modelID: "second-model")
-        store.setPreloaded(true, modelID: "second-model")
-        await store.save()
-        #expect(store.restartRequired)
-
-        await store.request(.restart)
-
-        #expect(store.restartRequired)
-        #expect(persistence.values == [true])
-    }
-
-    @Test("matching post-restart runtime proof clears and persists the gate")
-    func restartGateClearsAfterMatchingRuntimeConfiguration() async throws {
-        let savedSelection = ProviderModelSelection(
-            enabled: ["saved-model", "second-model"],
-            preloaded: ["second-model"]
-        )
-        let controller = FakeProviderController.fixture(
-            activityRisks: [.idle, .idle],
-            lifecycleSnapshotAfterExecute: runtimeProofSnapshot(selection: savedSelection)
-        )
-        let persistence = RestartRequirementPersistenceFake()
-        let store = ProviderControlStore(
-            controller: controller,
-            restartRequirementPersistence: persistence,
-            now: { providerControlTestNow }
-        )
-        await store.refresh()
-        store.setEnabled(true, modelID: "second-model")
-        store.setPreloaded(true, modelID: "second-model")
-        await store.save()
-
-        await store.request(.restart)
-
-        #expect(!store.restartRequired)
-        #expect(persistence.values == [true, false])
     }
 
     @Test("save invalidates old source freshness when its follow-up refresh fails")
@@ -450,12 +194,11 @@ struct ProviderControlStoreTests {
         #expect(store.draft?.original.enabled == ["saved-model", "second-model"])
         #expect(store.draft?.selection.enabled == ["saved-model", "second-model"])
         #expect(store.draft?.hasChanges == false)
-        #expect(store.restartRequired)
         #expect(!store.canSave)
         #expect(store.errorMessage == "Settings were saved, but model controls could not refresh.")
     }
 
-    @Test("save cancellation does not promote the staged draft or require restart")
+    @Test("save cancellation does not promote the staged draft")
     func preservesSaveCancellationAsNoOp() async throws {
         let controller = FakeProviderController.fixture(saveCancellation: true)
         let store = ProviderControlStore(controller: controller)
@@ -471,7 +214,6 @@ struct ProviderControlStoreTests {
         #expect(store.draft == stagedDraft)
         #expect(store.draft?.hasChanges == true)
         #expect(store.canSave)
-        #expect(!store.restartRequired)
         #expect(store.errorMessage == nil)
         #expect(await controller.saveCount == 1)
     }
@@ -641,7 +383,6 @@ struct ProviderControlStoreTests {
         await save.value
 
         #expect(saveStore.draft?.original.enabled == ["saved-model", "second-model"])
-        #expect(saveStore.restartRequired)
         #expect(saveStore.errorMessage == nil)
 
         let deleteGate = TelemetryRefreshGate()
@@ -1163,36 +904,6 @@ struct ProviderControlStoreTests {
         #expect(unsafeStore.errorMessage == "The model cannot be deleted safely.")
     }
 
-    @Test("warmup freshness blockers preserve warmup-specific diagnostics")
-    func mapsWarmupFreshnessBlockers() async {
-        let messages = [
-            "Provider activity is unavailable; warmup was not attempted",
-            "Provider activity timestamp is invalid; warmup was not attempted",
-            "Provider activity is stale; warmup was not attempted",
-            "Provider activity timestamp is in the future; warmup was not attempted",
-            "Loaded model state is unavailable; warmup was not attempted",
-            "Loaded model state timestamp is invalid; warmup was not attempted",
-            "Loaded model state is stale; warmup was not attempted",
-            "Loaded model state timestamp is in the future; warmup was not attempted",
-            "Loaded model state conflicts with one-model capacity; waiting for a clean refresh",
-            "Restart the provider to apply the saved model capacity",
-            "Protected warmup requires complete applied provider runtime proof",
-            "Target warmed, but the previous model could not be retired safely",
-        ]
-        for message in messages {
-            let controller = FakeProviderController.fixture(
-                warmFailure: .warmupBlocked(message),
-                warmPhases: []
-            )
-            let store = ProviderControlStore(controller: controller)
-            await store.refresh()
-
-            _ = await store.warm("second-model")
-
-            #expect(store.errorMessage == message)
-        }
-    }
-
     @Test("a failed refresh retains the last good snapshot and maps a secret error")
     func retainsLastGoodSnapshot() async throws {
         let controller = FakeProviderController.fixture()
@@ -1223,23 +934,6 @@ struct ProviderControlStoreTests {
         #expect(await controller.executedActions.map(\.action) == [.restart])
         #expect(await controller.activityReadCount == 2)
         #expect(store.pendingConfirmation == nil)
-    }
-
-    @Test("warm action is blocked while lifecycle confirmation is pending")
-    func blocksWarmDuringPendingLifecycleConfirmation() async throws {
-        let controller = FakeProviderController.fixture(activityRisks: [.active])
-        let store = ProviderControlStore(controller: controller)
-        await store.refresh()
-
-        await store.request(.restart)
-        #expect(store.pendingConfirmation == .restart(.active))
-
-        let didAttemptMutation = await store.warm("second-model")
-
-        #expect(!didAttemptMutation)
-        #expect(await controller.warmedModels.isEmpty)
-        #expect(store.operation == .idle)
-        #expect(store.pendingConfirmation == .restart(.active))
     }
 
     @Test("unknown stop requires confirmation and the override executes after a final read")
@@ -1974,11 +1668,6 @@ private actor FakeProviderController: ProviderControlling {
     private let deleteFailure: ProviderControlError?
     private let snapshotAfterDelete: ProviderControlSnapshot?
     private let deleteCompletionGate: TelemetryRefreshGate?
-    private let warmFailure: ProviderControlError?
-    private let snapshotAfterWarm: ProviderControlSnapshot?
-    private let warmPhases: [ProviderMutationPhase]
-    private let warmCancellationAfterPhase: Bool
-    private let warmCancellationAfterLaunch: Bool
     private let executeFailure: Failure?
     private let executeControlFailure: ProviderControlError?
     private let executeCancellation: Bool
@@ -1989,7 +1678,6 @@ private actor FakeProviderController: ProviderControlling {
     private var downloadStarted = false
     private(set) var downloadedModels: [String] = []
     private(set) var deletedModels: [String] = []
-    private(set) var warmedModels: [String] = []
     private(set) var executedActions: [Execution] = []
     private(set) var saveCount = 0
     private(set) var activityReadCount = 0
@@ -2012,11 +1700,6 @@ private actor FakeProviderController: ProviderControlling {
         deleteFailure: ProviderControlError? = nil,
         snapshotAfterDelete: ProviderControlSnapshot? = nil,
         deleteCompletionGate: TelemetryRefreshGate? = nil,
-        warmFailure: ProviderControlError? = nil,
-        snapshotAfterWarm: ProviderControlSnapshot? = nil,
-        warmPhases: [ProviderMutationPhase] = [.loadingModel],
-        warmCancellationAfterPhase: Bool = false,
-        warmCancellationAfterLaunch: Bool = false,
         executeFailure: Failure? = nil,
         executeControlFailure: ProviderControlError? = nil,
         executeCancellation: Bool = false,
@@ -2040,11 +1723,6 @@ private actor FakeProviderController: ProviderControlling {
             deleteFailure: deleteFailure,
             snapshotAfterDelete: snapshotAfterDelete,
             deleteCompletionGate: deleteCompletionGate,
-            warmFailure: warmFailure,
-            snapshotAfterWarm: snapshotAfterWarm,
-            warmPhases: warmPhases,
-            warmCancellationAfterPhase: warmCancellationAfterPhase,
-            warmCancellationAfterLaunch: warmCancellationAfterLaunch,
             executeFailure: executeFailure,
             executeControlFailure: executeControlFailure,
             executeCancellation: executeCancellation,
@@ -2070,11 +1748,6 @@ private actor FakeProviderController: ProviderControlling {
         deleteFailure: ProviderControlError?,
         snapshotAfterDelete: ProviderControlSnapshot?,
         deleteCompletionGate: TelemetryRefreshGate?,
-        warmFailure: ProviderControlError?,
-        snapshotAfterWarm: ProviderControlSnapshot?,
-        warmPhases: [ProviderMutationPhase],
-        warmCancellationAfterPhase: Bool,
-        warmCancellationAfterLaunch: Bool,
         executeFailure: Failure?,
         executeControlFailure: ProviderControlError?,
         executeCancellation: Bool,
@@ -2097,11 +1770,6 @@ private actor FakeProviderController: ProviderControlling {
         self.deleteFailure = deleteFailure
         self.snapshotAfterDelete = snapshotAfterDelete
         self.deleteCompletionGate = deleteCompletionGate
-        self.warmFailure = warmFailure
-        self.snapshotAfterWarm = snapshotAfterWarm
-        self.warmPhases = warmPhases
-        self.warmCancellationAfterPhase = warmCancellationAfterPhase
-        self.warmCancellationAfterLaunch = warmCancellationAfterLaunch
         self.executeFailure = executeFailure
         self.executeControlFailure = executeControlFailure
         self.executeCancellation = executeCancellation
@@ -2200,32 +1868,6 @@ private actor FakeProviderController: ProviderControlling {
         return .refreshUncertain
     }
 
-    func performWarmup(
-        _ modelID: String,
-        onPhase: ProviderMutationPhaseObserver?,
-        onMutationLaunch: ProviderMutationLaunchObserver?
-    ) async throws -> ProviderMutationCompletion {
-        for phase in warmPhases {
-            await onPhase?(phase)
-        }
-        if warmCancellationAfterPhase {
-            throw CancellationError()
-        }
-        guard !warmPhases.isEmpty else {
-            if let warmFailure { throw warmFailure }
-            return .refreshUncertain
-        }
-        onMutationLaunch?()
-        warmedModels.append(modelID)
-        if let snapshotAfterWarm { currentSnapshot = snapshotAfterWarm }
-        if warmCancellationAfterLaunch {
-            throw CancellationError()
-        }
-        if let warmFailure { throw warmFailure }
-        await onPhase?(.reconciling)
-        return .refreshUncertain
-    }
-
     func activityRisk() async -> ProviderActivityRisk {
         activityReadCount += 1
         guard !activityRisks.isEmpty else { return .unknown("Provider activity is unavailable") }
@@ -2317,60 +1959,6 @@ private func fixtureSnapshot(
         capturedAt: Date(timeIntervalSince1970: 1_750_000_000),
         sources: sources
     )
-}
-
-private func runtimeProofSnapshot(
-    selection: ProviderModelSelection = ProviderModelSelection(
-        enabled: ["saved-model"],
-        preloaded: []
-    ),
-    maxModelSlots: Int = 1,
-    effectiveMaxModelSlots: Int? = nil,
-    advertisedModels: Set<String>? = nil,
-    configuredEnabledModels: [String]? = nil,
-    configuredPreloadModels: [String]? = nil
-) -> ProviderControlSnapshot {
-    let base = fixtureSnapshot()
-    let draft = ProviderConfigDraft(
-        sourceRevision: "runtime-proof-revision",
-        original: selection,
-        selection: selection,
-        originalMaxModelSlots: maxModelSlots,
-        maxModelSlots: maxModelSlots
-    )
-    return ProviderControlSnapshot(
-        inventory: base.inventory,
-        draft: draft,
-        daemonState: postExitDaemon(currentModel: ""),
-        supportsProtectedWarmup: true,
-        protectedWarmupMaxModelSlots: effectiveMaxModelSlots ?? maxModelSlots,
-        protectedWarmupAdvertisedModelIDs:
-            advertisedModels ?? Set(selection.enabled + ["dynamic-prefetch"]),
-        protectedWarmupLaunchModelIDs: Set(selection.enabled),
-        protectedWarmupConfiguredMaxModelSlots: maxModelSlots,
-        protectedWarmupConfiguredEnabledModels:
-            configuredEnabledModels ?? selection.enabled,
-        protectedWarmupConfiguredPreloadModels:
-            configuredPreloadModels ?? selection.preloaded,
-        residentModelIDs: [],
-        capturedAt: providerControlTestNow,
-        sources: freshProviderSources()
-    )
-}
-
-@MainActor
-private final class RestartRequirementPersistenceFake:
-    ProviderRestartRequirementPersisting
-{
-    private let initial: Bool
-    private(set) var values: [Bool] = []
-
-    init(initial: Bool = false) {
-        self.initial = initial
-    }
-
-    func loadRequired() -> Bool { values.last ?? initial }
-    func saveRequired(_ required: Bool) { values.append(required) }
 }
 
 private func freshProviderSources() -> ProviderControlSourceStates {

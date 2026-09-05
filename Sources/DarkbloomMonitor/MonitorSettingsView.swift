@@ -39,7 +39,7 @@ private struct GeneralSettingsView: View {
                 }
                 .pickerStyle(.menu)
 
-                Text("Automatic shows token rate when available, otherwise today's earnings. An asterisk marks partial-day earnings coverage.")
+                Text("Automatic shows Working or today's model average during activity, and today's earnings while idle. An asterisk marks partial-day earnings coverage.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
