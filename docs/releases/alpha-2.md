@@ -22,8 +22,8 @@ This release does not install, patch, or bundle the provider CLI.
 ## Download and signing
 
 - `DarkbloomMonitor-v0.1.0-alpha.2-arm64.zip`: macOS 14 or newer, Apple Silicon.
-- App version 0.1.0, build 8; signed with Developer ID Application:
-  KEVIN PATRICK KNIGHT (5P2LWPPWRN), with hardened runtime and secure timestamp.
+- App version 0.1.0, build 8; Developer ID–signed with hardened runtime
+  and secure timestamp.
 - **Not notarized.** Apple notarization credentials are not configured in this
   release environment. Gatekeeper may block the downloaded app.
 - `SHA256SUMS.txt` provides the ZIP checksum.
