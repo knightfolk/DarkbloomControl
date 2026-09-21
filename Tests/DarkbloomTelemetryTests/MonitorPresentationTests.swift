@@ -194,7 +194,7 @@ struct MonitorPresentationTests {
             requestedKVBackend: "auto"
         )
 
-        #expect(slot.displayMTPReason == "Unavailable — not exposed by Darkbloom schema 1")
+        #expect(slot.displayMTPReason == "Unavailable — not reported by this daemon")
     }
 
     @Test("event empty states distinguish no events from source failure")

@@ -221,9 +221,11 @@ The 400-by-600-point popover intentionally renders current and session-average
 throughput, today and covered seven-day job metrics, model-state capsules,
 enabled-model network-demand rows, a labeled Settings control, an icon-only
 door control for Quit, and compact Start/Stop/Restart controls. The Settings
-window has General and Models tabs; the latter separates My Catalog and
-Available models, makes download/delete independent from enable/preload
-settings, and exposes the official one- versus two-model capacity setting.
+dashboard separates Models into On this Mac, Available, and Capacity views.
+Compact model cards keep download/delete independent from enable/startup-load
+settings. Capacity exposes concurrent-request and resident-model limits; all
+changes share the staged draft and the validated configuration save path.
+Refresh preserves edits; Discard edits explicitly reloads the saved settings.
 Model presentation is derived from the enabled-model filter plus loaded, warm,
 slot, and current-model state. Green
 means active, yellow means loaded but idle, and gray means available but
@@ -250,3 +252,18 @@ while fresh, with no more than five seconds of future skew. An older overlapping
 response is discarded. Local model state is authoritative only from fresh
 official telemetry and official CLI results; the monitor does not infer
 residency changes from public demand or unsupported private control APIs.
+
+## CLI 0.9.7 integration (September 21, 2026)
+
+The retained dashboard is now the shared resizable window for Overview, Models, Network, Health, and Settings. New optional daemon fields preserve schema-1 compatibility: advertised models, coordinator identity, authorization summary, KV fallback and MTP explanations, and normalized load failures. Authorization retains only bounded status and presence flags, never session/machine ID values. ProviderVerification checks the live kernel process identity, coordinator, timestamps, protocol and expiry before showing current verification guidance.
+
+ProviderExtrasClient uses bounded shell-free official CLI commands for idle policy, beta flags, fan diagnostics, and update posture. MonitorStore owns its 30-second read-only polling loop and joins cancellation during shutdown. ProviderExtrasStore retains independent source states and serializes its refreshes. Explicit idle and allowlisted beta writes pass through ProviderControlStore's shared mutation gate, are blocked by staged model changes or pending confirmations, and refresh settings and model controls afterward. They never automatically restart the provider. No helper installation, fan override, enrollment, or autoupdate mutation is exposed.
+
+ProviderSelectionComparison and the dashboard separate saved enabled models, the daemon's advertised set, and current residency. When supported advertised models differ, Restart presents the saved set it will apply, rechecks before dispatch, and asks again if that comparison changed. The CLI/service still performs its own fresh preflight; the UI does not claim an atomic transaction against noncooperating external config writers.
+
+NetworkCacheStore owns a visibility-scoped public cache-health request independent of the existing public data sources. This aggregate network state never drives local model switching or claims local cache gains. See PUBLIC_API_CONTRACT.md for cadence and validation.
+
+
+### Queued stop
+
+Stop when idle is an in-memory request owned by ProviderControlStore, independent of dashboard or popover visibility. It polls official activity evidence and never interprets stale or unknown activity as idle. A second fresh idle check precedes the normal stop command. Users can cancel while waiting; the monitor must remain open. Configuration and other lifecycle mutations are blocked while queued. The CLI has no drain-only mode, so new work may arrive while waiting. Once dispatched, normal CLI shutdown refuses new work and drains in-flight requests, with the CLI's bounded shutdown timeout; the two idle reads are not an atomic admission lock.

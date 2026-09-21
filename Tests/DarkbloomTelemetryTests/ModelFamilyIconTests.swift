@@ -6,6 +6,8 @@ struct ModelFamilyIconTests {
         #expect(ModelFamilyIcon.select(status: .online, activeModel: "EigenLabs/Qwen3.8-27B-4bit-mtp") == .qwen)
         #expect(ModelFamilyIcon.select(status: .online, activeModel: "gemma-4-26b-qat-4bit") == .google)
         #expect(ModelFamilyIcon.select(status: .online, activeModel: "openai/gpt-oss-20b") == .openai)
+        #expect(ModelFamilyIcon.select(status: .online, activeModel: "nvidia/NVIDIA-Nemotron-3.5-Lightning") == .nvidia)
+        #expect(ModelFamilyIcon.select(status: .online, activeModel: "ternary-bonsai-2-27b") == .prismml)
         #expect(ModelFamilyIcon.select(status: .online, activeModel: "unknown") == .darkbloom)
         #expect(ModelFamilyIcon.select(status: .online, activeModel: nil) == .darkbloom)
         for status in [MenuPresentationStatus.offline, .stale, .unavailable] {

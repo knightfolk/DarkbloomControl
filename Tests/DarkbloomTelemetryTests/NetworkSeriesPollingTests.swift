@@ -65,7 +65,9 @@ struct NetworkSeriesPollingTests {
   }
 
   private func expectDelay(_ expected: TimeInterval, sleeper: SeriesTestSleeper) async throws {
-    // A bounded real-time guard catches missing timer wiring without hanging the suite.
+    // A bounded watchdog catches missing wiring. Native rendering tests share
+    // the main actor and can occupy it for several seconds in the full suite;
+    // the injected clock still verifies the exact polling deadlines below.
     let actual = try await withThrowingTaskGroup(of: TimeInterval.self) { group in
       group.addTask {
         var iterator = sleeper.requests.makeAsyncIterator()
@@ -73,7 +75,7 @@ struct NetworkSeriesPollingTests {
         return value
       }
       group.addTask {
-        try await Task.sleep(for: .seconds(2))
+        try await Task.sleep(for: .seconds(10))
         throw PollingTestError.timerNotRequested
       }
       defer { group.cancelAll() }

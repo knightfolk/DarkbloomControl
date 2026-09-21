@@ -2,34 +2,6 @@ import DarkbloomTelemetry
 import Foundation
 import SwiftUI
 
-enum ProviderCapacityMode: Int, CaseIterable, Identifiable {
-    case memorySaver = 1
-    case twoModelCapacity = 2
-
-    var id: Int { rawValue }
-    var maxModelSlots: Int { rawValue }
-
-    init?(maxModelSlots: Int) {
-        self.init(rawValue: maxModelSlots)
-    }
-
-    var title: String {
-        switch self {
-        case .memorySaver: "1 · Memory Saver"
-        case .twoModelCapacity: "2 · Two Models"
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .memorySaver:
-            "Configures the official CLI to keep one resident model. Save, then restart the provider to apply it."
-        case .twoModelCapacity:
-            "Configures the official CLI to keep up to two resident models. Save, then restart the provider to apply it."
-        }
-    }
-}
-
 struct ModelActionPresentation: Equatable {
     let accessibilityLabel: String
     let accessibilityHint: String
@@ -38,6 +10,22 @@ struct ModelActionPresentation: Equatable {
 
 @MainActor
 enum ModelManagerPresentation {
+    static func effectiveLimit(_ value: Int, maximum: Int? = nil) -> Int {
+        min(maximum ?? Int.max, max(1, value))
+    }
+
+    static func filtered(_ items: [ModelInventoryItem], search: String) -> [ModelInventoryItem] {
+        return items.filter { search.isEmpty || $0.displayName.localizedCaseInsensitiveContains(search)
+            || $0.catalogID.localizedCaseInsensitiveContains(search) }.sorted {
+                func rank(_ item: ModelInventoryItem) -> Int {
+                    switch item.liveState { case .active: 0; case .loadedIdle: 1; case .unloaded: 2 }
+                }
+                if rank($0) != rank($1) { return rank($0) < rank($1) }
+                let names = $0.displayName.localizedStandardCompare($1.displayName)
+                return names == .orderedSame ? $0.catalogID < $1.catalogID : names == .orderedAscending
+            }
+    }
+
     static func diagnostic(
         _ value: String,
         sanitize: (String) -> String
@@ -353,6 +341,8 @@ struct ModelManagerView: View {
     @ObservedObject var store: ProviderControlStore
     var networkContext: (String, Date) -> [String] = { _, _ in [] }
     @State private var deletion: ModelDeletionConfirmation?
+    @State private var section = 0
+    @State private var search = ""
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -386,147 +376,154 @@ struct ModelManagerView: View {
     }
 
     private func modelList(currentTime: Date) -> some View {
-        List {
-            Section {
-                capacityControls
-            } header: {
-                Text("Serving Capacity")
-                    .accessibilityIdentifier("models.capacity")
+        VStack(alignment: .leading, spacing: 14) {
+            Picker("View", selection: $section) {
+                Text("On this Mac").tag(0)
+                Text("Available").tag(1)
+                Text("Capacity").tag(2)
+            }.pickerStyle(.segmented)
+            if section == 0 {
+                Text("Enable models to receive work. Load at startup requests them after a restart, subject to memory.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
-
-            Section {
-                if let snapshot = store.snapshot, !snapshot.inventory.myCatalog.isEmpty {
-                    ForEach(snapshot.inventory.myCatalog) { item in
-                        VStack(alignment: .leading, spacing: 4) {
-                        DownloadedModelRow(
-                            item: item,
-                            draft: store.draft,
-                            operation: store.operation,
-                            sources: snapshot.sources,
-                            currentTime: currentTime,
-                            sanitize: store.sanitizedDiagnostic,
-                            setEnabled: { enabled, modelID in
-                                store.setEnabled(enabled, modelID: modelID)
-                            },
-                            setPreloaded: { preloaded, modelID in
-                                store.setPreloaded(preloaded, modelID: modelID)
-                            },
-                            requestDelete: { item in
-                                guard let localID = item.localID else { return }
-                                deletion = ModelDeletionConfirmation(
-                                    localID: localID,
-                                    displayName: item.displayName,
-                                    sizeGB: item.sizeGB
-                                )
+            if section != 2 {
+                TextField("Find a model", text: $search)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Find a model")
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if section == 2 {
+                        capacityControls
+                    } else {
+                        let items = visibleModels
+                        if store.snapshot == nil && store.operation == .refreshing {
+                            HStack { ProgressView().controlSize(.small); Text("Reading your model catalog…") }
+                                .foregroundStyle(.secondary).padding(.vertical, 20)
+                        } else if items.isEmpty {
+                            ContentUnavailableView(search.isEmpty ? "No models here" : "No matching models",
+                                systemImage: "cpu", description: Text(store.snapshot == nil
+                                    ? "Refresh to load the model catalog." : "Try another view or search."))
+                        }
+                        ForEach(items) { item in
+                            VStack(alignment: .leading, spacing: 12) {
+                                if item.isDownloaded, let snapshot = store.snapshot {
+                                    DownloadedModelRow(item: item, draft: store.draft,
+                                        operation: store.operation, sources: snapshot.sources,
+                                        currentTime: currentTime, sanitize: store.sanitizedDiagnostic,
+                                        setEnabled: { store.setEnabled($0, modelID: $1) },
+                                        setPreloaded: { store.setPreloaded($0, modelID: $1) },
+                                        requestDelete: { item in
+                                            guard let localID = item.localID else { return }
+                                            deletion = ModelDeletionConfirmation(localID: localID,
+                                                displayName: item.displayName, sizeGB: item.sizeGB)
+                                        }).disabled(store.queuedStopState != nil)
+                                } else {
+                                    AvailableModelRow(item: item, store: store).disabled(store.queuedStopState != nil)
+                                }
+                                modelDetails(item, at: currentTime)
                             }
-                        )
-                        modelDetails(item, at: currentTime)
+                            .padding(16)
+                            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 16))
                         }
                     }
-                } else {
-                    Text(store.snapshot == nil ? "Model catalog is unavailable." : "No downloaded models.")
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("My Catalog")
-                    .accessibilityIdentifier("models.my-catalog")
-            }
-
-            Section {
-                if let items = store.snapshot?.inventory.available, !items.isEmpty {
-                    ForEach(items) { item in
-                        VStack(alignment: .leading, spacing: 4) {
-                        AvailableModelRow(item: item, store: store)
-                        modelDetails(item, at: currentTime)
+                    if let issues = store.snapshot?.inventory.issues, !issues.isEmpty {
+                        DisclosureGroup("Catalog notices (\(issues.count))") {
+                            ForEach(issues, id: \.self) { issue in
+                                Text(store.sanitizedDiagnostic(issue)).font(.callout).foregroundStyle(.orange)
+                            }
                         }
                     }
-                } else {
-                    Text(store.snapshot == nil ? "Reload to discover available models." : "No additional models available.")
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("Available")
-                    .accessibilityIdentifier("models.available")
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
+        }.padding(.horizontal, 24).padding(.bottom, 12)
+    }
 
-            if let issues = store.snapshot?.inventory.issues, !issues.isEmpty {
-                Section("Inventory status") {
-                    ForEach(issues, id: \.self) { issue in
-                        Label(
-                            ModelManagerPresentation.diagnostic(
-                                issue,
-                                sanitize: store.sanitizedDiagnostic
-                            ),
-                            systemImage: "exclamationmark.triangle"
-                        )
-                            .font(.callout)
-                            .foregroundStyle(.orange)
-                    }
-                }
-            }
-        }
-        .listStyle(.inset)
+    private var visibleModels: [ModelInventoryItem] {
+        let items = section == 0 ? store.snapshot?.inventory.myCatalog : store.snapshot?.inventory.available
+        return ModelManagerPresentation.filtered(items ?? [], search: search)
     }
 
     @ViewBuilder
     private var capacityControls: some View {
-        if store.draft != nil {
-            VStack(alignment: .leading, spacing: 8) {
-                Picker("Maximum resident models", selection: capacityBinding) {
-                    ForEach(ProviderCapacityMode.allCases) { option in
-                        Text(option.title).tag(Optional(option))
+        if let draft = store.draft {
+            VStack(alignment: .leading, spacing: 20) {
+                capacityCard("Simultaneous requests", icon: "arrow.triangle.branch",
+                    value: draft.engineV2MaxConcurrent, defaultValue: 4, effectiveMaximum: 8,
+                    explanation: "Maximum concurrent requests per model engine. Higher limits use more memory; model-specific overrides can differ.",
+                    set: store.setEngineV2MaxConcurrent)
+                capacityCard("Models kept in memory", icon: "memorychip",
+                    value: draft.maxModelSlots, defaultValue: 3,
+                    explanation: "The provider can keep this many models loaded, when memory allows. This is separate from simultaneous requests.",
+                    set: store.setMaxModelSlots)
+                Label("Save, then restart the provider to apply these limits.", systemImage: "info.circle")
+                    .font(.callout).foregroundStyle(.secondary)
+            }.disabled(store.operation != .idle || store.queuedStopState != nil)
+        } else {
+            ContentUnavailableView("Capacity settings unavailable", systemImage: "slider.horizontal.3",
+                description: Text("Refresh to read the provider configuration."))
+        }
+    }
+
+    private func capacityCard(_ title: String, icon: String, value: Int?, defaultValue: Int, effectiveMaximum: Int? = nil,
+                              explanation: String, set: @escaping @MainActor @Sendable (Int) -> Void) -> some View {
+        let effective = ModelManagerPresentation.effectiveLimit(value ?? defaultValue, maximum: effectiveMaximum)
+        return VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: icon).font(.headline)
+            HStack {
+                Text(String(effective)).font(.largeTitle.bold().monospacedDigit())
+                Text(value == nil ? "CLI default" : "Selected limit")
+                    .font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Picker(title, selection: Binding(get: { value ?? defaultValue }, set: set)) {
+                    ForEach(Array(1...8), id: \.self) { Text(String($0)).tag($0) }
+                    if let value, !(1...8).contains(value) {
+                        Text("\(value) · existing setting").tag(value)
                     }
                 }
-                .pickerStyle(.segmented)
-                .disabled(store.operation != .idle)
-                .accessibilityIdentifier("models.capacity.mode")
-
-                if let mode = selectedCapacityMode {
-                    Text(mode.detail)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Label(
-                        "Choose one or two resident models to add the missing provider setting, then save and restart.",
-                        systemImage: "wrench.and.screwdriver"
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if selectedCapacityMode == .twoModelCapacity {
-                    Label(
-                        "The official CLI manages both resident slots. It may unload an idle model when memory is needed.",
-                        systemImage: "network"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-
+                .labelsHidden().frame(width: 110).accessibilityLabel(title)
             }
-            .padding(.vertical, 3)
-        } else {
-            Label(
-                "Provider configuration is unavailable.",
-                systemImage: "exclamationmark.triangle"
-            )
-            .font(.callout)
-            .foregroundStyle(.orange)
-        }
+            if let value, value != effective {
+                Text("Saved value \(value); the CLI applies a limit of \(effective). Choose a value to replace it.")
+                    .font(.callout).foregroundStyle(.orange)
+            }
+            Text(explanation).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 16))
     }
 
     private func modelDetails(_ item: ModelInventoryItem, at date: Date) -> some View {
         DisclosureGroup("Details") {
             VStack(alignment: .leading, spacing: 4) {
                 ModelIdentityDetails(item: item)
-                Text("\(ModelFormatting.size(item.sizeGB)) catalog estimate · \(item.minimumRAMGB) GB minimum RAM")
+                Text("\(ModelFormatting.size(item.sizeGB)) catalog estimate")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("\(item.minimumRAMGB) GB minimum RAM (catalog requirement)")
                     .font(.caption).foregroundStyle(.secondary)
                 if let bytes = item.downloadedSizeBytes {
                     Text("Downloaded · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) reported locally")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                if let quantization = ModelFormatting.quantization(item) {
+                    Text("Quantization: \(quantization) · catalog metadata")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let limits = ModelFormatting.catalogLimits(item) {
+                    Text(limits)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let requirements = ModelFormatting.providerRequirements(item) {
+                    Label(requirements, systemImage: "questionmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("model.\(item.catalogID).provider-requirements")
+                }
+                ForEach(ModelFormatting.capabilityAdvisories(item), id: \.self) { advisory in
+                    Label(advisory, systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 contextBadges(for: item.catalogID, at: date)
             }
@@ -537,20 +534,7 @@ struct ModelManagerView: View {
         .accessibilityIdentifier("model.\(item.catalogID).details")
     }
 
-    private var selectedCapacityMode: ProviderCapacityMode? {
-        guard let slots = store.draft?.maxModelSlots else { return nil }
-        return ProviderCapacityMode(maxModelSlots: slots)
-    }
 
-    private var capacityBinding: Binding<ProviderCapacityMode?> {
-        Binding(
-            get: { selectedCapacityMode },
-            set: { mode in
-                guard let mode else { return }
-                store.setMaxModelSlots(mode.maxModelSlots)
-            }
-        )
-    }
 }
 
 private struct ModelDetailsDisclosureStyle: DisclosureGroupStyle {
@@ -616,7 +600,7 @@ private struct DownloadedModelRow: View {
                 Spacer(minLength: 8)
 
                 if presentation.showsEnableToggle {
-                    ModelOptionToggle(title: "Enable", isOn: enabledBinding)
+                    ModelOptionToggle(title: "Enabled", isOn: enabledBinding)
                         .disabled(presentation.enableAction?.isEnabled != true)
                         .accessibilityLabel(
                             presentation.enableAction?.accessibilityLabel ?? "Enable \(item.displayName)"
@@ -627,7 +611,7 @@ private struct DownloadedModelRow: View {
                         .accessibilityIdentifier("model.\(item.catalogID).enable")
                 }
                 if presentation.showsPreloadToggle {
-                    ModelOptionToggle(title: "Preload", isOn: preloadedBinding)
+                    ModelOptionToggle(title: "Load at startup", isOn: preloadedBinding)
                         .disabled(presentation.preloadAction?.isEnabled != true)
                         .accessibilityLabel(
                             presentation.preloadAction?.accessibilityLabel ?? "Preload \(item.displayName)"
@@ -655,10 +639,10 @@ private struct DownloadedModelRow: View {
                 }
             }
 
+
             if let reason = presentation.deleteBlockReason {
                 Label(reason, systemImage: "lock.fill")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -797,7 +781,7 @@ private struct AvailableModelRow: View {
                     Button {
                         Task { await store.download(item.catalogID) }
                     } label: {
-                        Label("Add", systemImage: "square.and.arrow.down")
+                        Label("Download", systemImage: "square.and.arrow.down")
                     }
                     .disabled(presentation.downloadAction?.isEnabled != true)
                     .help(presentation.downloadAction?.accessibilityHint ?? "")
@@ -840,9 +824,9 @@ private struct ModelManagerFooter: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
                 Button {
-                    Task { await store.refresh() }
+                    Task { await store.refreshPreservingDraft() }
                 } label: {
-                    Label("Reload", systemImage: "arrow.clockwise")
+                    Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .disabled(store.operation != .idle)
 
@@ -854,6 +838,8 @@ private struct ModelManagerFooter: View {
                 Spacer()
 
                 if store.draft?.hasChanges == true {
+                    Button("Discard edits") { Task { await store.refresh() } }
+                        .disabled(store.operation != .idle)
                     Text("Unsaved changes")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -867,7 +853,7 @@ private struct ModelManagerFooter: View {
                 .accessibilityIdentifier("models.save")
             }
 
-            if let validation = store.draftValidationMessage {
+            if let validation = store.draftValidationMessage, store.operation != .refreshing {
                 Label(
                     ModelManagerPresentation.diagnostic(
                         validation,
@@ -878,7 +864,7 @@ private struct ModelManagerFooter: View {
                     .foregroundStyle(.orange)
                     .font(.callout)
             }
-            Text("Saved model settings apply after the next provider restart.")
+            Text("Save changes first, then restart the provider to apply them.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if let error = store.errorMessage {
@@ -929,7 +915,7 @@ private struct ModelDeletionConfirmation: Identifiable {
     var formattedSize: String { ModelFormatting.size(sizeGB) }
 }
 
-private enum ModelFormatting {
+enum ModelFormatting {
     static func size(_ sizeGB: Double) -> String {
         sizeGB.formatted(.number.precision(.fractionLength(0...1))) + " GB"
     }
@@ -939,6 +925,68 @@ private enum ModelFormatting {
             ? "Capabilities unavailable"
             : item.capabilities.map { $0.capitalized }.joined(separator: ", ")
         return "\(item.modelType.uppercased()) · \(capabilities) · \(size(item.sizeGB)) · \(item.minimumRAMGB) GB minimum RAM"
+    }
+
+    static func quantization(_ item: ModelInventoryItem) -> String? {
+        guard let value = item.quantization?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty, value.utf8.count <= 64 else { return nil }
+        switch value.lowercased() {
+        case "2bit", "2-bit": return "2-bit"
+        case "3bit", "3-bit": return "3-bit"
+        case "4bit", "4-bit": return "4-bit"
+        case "8bit", "8-bit": return "8-bit"
+        default: return value.uppercased()
+        }
+    }
+
+    static func catalogLimits(_ item: ModelInventoryItem) -> String? {
+        let limits = [
+            item.maxContextLength.flatMap { validTokenLimit($0).map { "up to \($0.formatted(.number)) context tokens" } },
+            item.maxOutputLength.flatMap { validTokenLimit($0).map { "up to \($0.formatted(.number)) output tokens" } },
+        ].compactMap { $0 }
+        guard !limits.isEmpty else { return nil }
+        return "Catalog limits (not a per-machine guarantee): " + limits.joined(separator: " · ")
+    }
+
+    static func providerRequirements(_ item: ModelInventoryItem) -> String? {
+        guard let values = item.requiredProviderCapabilities else { return nil }
+        let requirements = values.prefix(32).compactMap { providerRequirementName($0) }
+        guard !requirements.isEmpty else { return nil }
+        return "Provider requirements: \(requirements.joined(separator: " · ")) · unverified (runtime evidence unavailable)"
+    }
+
+    static func capabilityAdvisories(_ item: ModelInventoryItem) -> [String] {
+        item.capabilities.compactMap { capability in
+            switch capability.lowercased() {
+            case "chat": return "Chat"
+            case "tools", "tool_calling", "function_calling": return "Tool calling"
+            case "vision", "image": return "Vision input"
+            case "video": return "Video input"
+            case "reasoning": return "Reasoning"
+            case "json_mode": return "Structured JSON output"
+            case "code": return "Code"
+            case "text": return "Text"
+            default: return capability.capitalized
+            }
+        }
+    }
+
+    private static func providerRequirementName(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 128 else { return nil }
+        switch trimmed.lowercased() {
+        case "apple_m5": return "Apple M5"
+        case "mlx_nax": return "MLX NAX"
+        default:
+            return trimmed
+                .split(separator: "_")
+                .map { $0.prefix(1).uppercased() + $0.dropFirst().lowercased() }
+                .joined(separator: " ")
+        }
+    }
+
+    private static func validTokenLimit(_ value: Int) -> Int? {
+        (1...10_000_000).contains(value) ? value : nil
     }
 }
 

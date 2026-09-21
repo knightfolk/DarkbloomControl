@@ -39,6 +39,21 @@ struct PublicCatalogTests {
             }
         }
     }
+
+    @Test("rejects malformed additive model metadata")
+    func rejectsMalformedModelDetails() {
+        let cases = [
+            model.replacingOccurrences(of: "\"active\":true", with: "\"active\":true,\"required_provider_capabilities\":[\"\"]"),
+            model.replacingOccurrences(of: "\"active\":true", with: "\"active\":true,\"quantization\":\"\""),
+            model.replacingOccurrences(of: "\"active\":true", with: "\"active\":true,\"max_context_length\":0"),
+            model.replacingOccurrences(of: "\"active\":true", with: "\"active\":true,\"max_output_length\":10000001"),
+        ]
+        for body in cases {
+            #expect(throws: PublicCatalogError.invalidCatalog) {
+                try PublicCatalogSnapshot.parse(Data("{\"models\":[\(body)]}".utf8), capturedAt: Date())
+            }
+        }
+    }
 }
 
 private actor CatalogSequence: PublicCatalogFetching {

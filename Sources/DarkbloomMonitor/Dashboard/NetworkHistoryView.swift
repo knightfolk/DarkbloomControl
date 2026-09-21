@@ -21,8 +21,8 @@ struct NetworkHistoryView: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 10)) { context in
             VStack(alignment: .leading, spacing: 12) {
-                Text("Network history").font(.largeTitle.bold())
-                Text("Network-wide totals, not your provider or a particular model. This is the API’s 24-hour window; your earnings remain calendar-based.")
+                Text("The last 24 hours").font(.title2.bold())
+                Text("Work across the whole Darkbloom network.")
                     .font(.callout).foregroundStyle(.secondary)
                 if let series = source.value {
                     let stale = isStale(series, at: context.date)
@@ -54,22 +54,24 @@ struct NetworkHistoryView: View {
                             }
                         }
                     }
-                    .frame(height: 160)
+                    .frame(height: 220)
                     Text("Each bar covers \(series.bucketSeconds / 60) minutes. Missing buckets remain gaps; no missing totals are estimated.")
                         .font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("Hourly data") {
                     Table(series.buckets) {
                         TableColumn("Period") { Text($0.timestamp, format: .dateTime.month().day().hour().minute()) }.width(130)
                         TableColumn("Requests") { Text($0.requests, format: .number) }.width(85)
                         TableColumn("Input tokens") { Text($0.promptTokens, format: .number) }.width(110)
                         TableColumn("Output tokens") { Text($0.completionTokens, format: .number) }.width(110)
                     }
-                    .frame(minHeight: 160)
+                    .frame(height: 220)
+                    }
                 } else {
                     ContentUnavailableView("Network history unavailable", systemImage: "chart.bar",
                                            description: Text("The shared collector has not returned usable history. Local monitoring continues independently."))
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 

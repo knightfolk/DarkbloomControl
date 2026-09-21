@@ -1,6 +1,6 @@
-# Darkbloom 0.8.15 Local Telemetry Contract
+# Darkbloom 0.8.15–0.9.7 Local Telemetry Contract
 
-Inventory captured locally on 2026-08-31 and revalidated against a fresh,
+Baseline inventory captured locally on 2026-08-31 and revalidated against a fresh,
 read-only Darkbloom 0.8.15 run the same day. The stock telemetry schema remained
 1 and the field inventory below did not change. This contract describes the
 official CLI and its published local telemetry only. Private provider-control
@@ -11,6 +11,8 @@ invoked.
 
 ## `~/.darkbloom/daemon-state.json` (schema 1)
 
+The following table is the August 31 observed baseline. New optional fields and current behavior are documented in the September 21 extension below.
+
 | Normalized field | Observed source field | Availability |
 |---|---|---|
 | Version | `version` | Direct |
@@ -19,7 +21,7 @@ invoked.
 | Slots | `slots[]` | Direct |
 | MTP enabled | `slots[].mtp_enabled` | Direct |
 | MTP active | `slots[].mtp_active` | Direct |
-| MTP reason | No field observed | Explicitly unavailable; may be recoverable only from a future log message |
+| MTP reason | No field observed | Absent in that baseline sample; the current parser supports `mtp_inactive_reason` |
 | KV backend | `slots[].kv_backend` | Direct |
 | Requested KV backend | `slots[].kv_backend_requested` | Direct |
 | Total memory | `capacity.total_memory_gb` | Direct |
@@ -121,8 +123,9 @@ outside that guarantee. Detected external changes reject the save. When recovery
 cannot establish a safe outcome, the store preserves visible versions and
 reports the bounded recovery failure instead of claiming a completed save.
 
-All other config fields, credentials, account commands, launchd internals, and
-direct cache operations remain forbidden. The monitor does not execute
+Other than the official idle/beta settings extension below, all other config
+fields, credentials, account commands, launchd internals, and direct cache
+operations remain outside this application contract. The monitor does not execute
 `darkbloom local`, `verify`, `doctor`, or update commands. It never runs a
 shell to construct provider commands.
 
@@ -201,8 +204,8 @@ content or a reconstruction of omitted source history.
 - Per-request start/end timestamps and per-request token counts were not
   observed, so exact request-level throughput and latency are unavailable.
 - Prompt/input token counts were not observed.
-- MTP inactive/disable reason was not present in schema 1 state. Absence is
-  displayed as unavailable rather than inferred from `mtp_active`.
+- MTP inactive/disable reason is optional in schema 1. New decoding retains it
+  when reported and does not infer it from `mtp_active`.
 - CPU usage, process RSS, temperatures, power, and network throughput were not
   exposed by the inventoried Darkbloom sources. System-wide probes are outside
   the requested contract.
@@ -248,3 +251,50 @@ The menu bar displays `warm` until five classified minutes have accumulated.
 After warm-up it displays the rounded percentage and a neutral progress bar.
 The popover and accessibility text disclose classified observed coverage so a
 high percentage over sparse evidence is not presented as full-day coverage.
+
+
+## September 21, 2026: official CLI 0.9.7 extension
+
+The installed executable matched the official 0.9.7 release binary hash. Current
+catalog, local inventory, daemon state, and public capacity responses were used
+for compatibility review. Schema remains 1. Old inventory observations above
+are historical; optional fields now include advertised models, coordinator URL,
+authorization, MTP inactive reasons, KV fallback reasons, and load failures.
+
+Advertised models are the daemon's actual serving set; saved enabled models are
+a future-start selection and loaded models are residency. These remain separate.
+App Restart uses Start with saved model arguments and confirms a known difference
+before dispatch. It does not claim that advertised models prove every applied
+runtime option. Unloaded advertised models can be requested on demand; absence
+alone does not identify the reason for unloading.
+
+Verification uses fresh state/trust timestamps, matching kernel process identity,
+matching coordinator, supported protocol, and unexpired App Attest lease when
+applicable. App Attest availability alone never means authorized or safe to remove
+MDM. Identity/session material is not displayed or retained in history.
+
+Official additional CLI sources: `idle status --json`, `beta list --json`, and
+`fan status --json`. Sources fail independently and values expire; missing fan
+hardware or optional fields are omitted. GPU temperatures and fan RPM are CLI
+sensor readings, distinct from macOS thermal-pressure classification and from
+adapter-power estimates. Fan helper timestamps use Swift's Date encoding rather
+than Unix seconds. No fan helper install, privileged setting, or enrollment change
+is performed by the app.
+
+User-invoked idle/beta saves use fixed official command arguments, run through
+the existing app mutation gate, preserve staged model drafts, and report that a
+restart is required. They do not restart automatically. MTP auto/on/off policy is
+separate from productive per-slot drafting. Unsupported feature IDs and invalid
+idle durations are rejected before command launch.
+
+Catalog runtime requirements are separate from minimum RAM. A chip name alone
+does not verify MLX NAX runtime support. Context limits describe catalog limits,
+not guaranteed full-context operation on every machine. New model families retain
+catalog identities and use official bundled branding assets where available.
+
+Public capacity `draining: true` represents network maintenance, not zero demand.
+The new unauthenticated `/v1/cache/status` read is bounded and dashboard-scoped;
+only aggregate routing/planner health is retained, with freshness and failure
+backoff. It is never presented as this Mac's cache-hit rate, disk usage, earnings,
+or per-request progress. Customer cache contents are never inspected. Per-request
+profiling remains an admin surface and is not queried.

@@ -1,8 +1,8 @@
 import Foundation
 
 /// Branding is separate from routing health and must not imply activity while idle.
-public enum ModelFamilyIcon: String, Equatable, Sendable {
-    case darkbloom, qwen, openai, google
+public enum ModelFamilyIcon: String, CaseIterable, Equatable, Sendable {
+    case darkbloom, qwen, openai, google, nvidia, prismml
 
     public static func select(snapshot: TelemetrySnapshot, now: Date) -> Self {
         guard snapshot.menuStatus == .online,
@@ -25,6 +25,8 @@ public enum ModelFamilyIcon: String, Equatable, Sendable {
             return .google
         }
         if name.hasPrefix("gpt-oss-") { return .openai }
+        if name.contains("nemotron") { return .nvidia }
+        if name.contains("bonsai") || name.contains("prismml") { return .prismml }
         return .darkbloom
     }
 }

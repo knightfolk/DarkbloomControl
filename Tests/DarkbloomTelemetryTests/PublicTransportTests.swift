@@ -13,7 +13,7 @@ struct PublicTransportTests {
     }
 
     enum Endpoint: String, CaseIterable, Sendable {
-        case catalog, pricing, capacity, series
+        case catalog, pricing, capacity, series, cache
 
         func fetch(session: URLSession, at date: Date) async throws -> Date {
             switch self {
@@ -21,6 +21,7 @@ struct PublicTransportTests {
             case .pricing: return try await PublicPricingClient(session: session).fetch(at: date).capturedAt
             case .capacity: return try await PublicNetworkCapacityClient(session: session).fetch(at: date).capturedAt
             case .series: return try await NetworkSeriesClient(session: session).fetch(at: date).capturedAt
+            case .cache: return try await NetworkCacheClient(session: session).fetch(at: date).capturedAt
             }
         }
 
@@ -28,7 +29,7 @@ struct PublicTransportTests {
             switch self {
             case .catalog: PublicCatalogError.httpStatus(status)
             case .pricing: PublicPricingError.httpStatus(status)
-            case .capacity: NetworkCapacityError.httpStatus(status)
+            case .capacity, .cache: NetworkCapacityError.httpStatus(status)
             case .series: NetworkSeriesError.httpStatus(status)
             }
         }
@@ -65,7 +66,7 @@ struct PublicTransportTests {
             switch endpoint {
             case .catalog: #expect(error as? PublicCatalogError == .responseTooLarge)
             case .pricing: #expect(error as? PublicPricingError == .responseTooLarge)
-            case .capacity: #expect(error as? NetworkCapacityError == .responseTooLarge)
+            case .capacity, .cache: #expect(error as? NetworkCapacityError == .responseTooLarge)
             case .series: #expect(error as? NetworkSeriesError == .responseTooLarge)
             }
         }
@@ -153,6 +154,7 @@ private final class PublicFixtureProtocol: URLProtocol, @unchecked Sendable {
         default:
             switch request.url?.path {
             case "/v1/models/catalog", "/v1/models/capacity": body = Data(#"{"models":[]}"#.utf8)
+            case "/v1/cache/status": body = Data(#"{"routing_mode":"shadow","sidecar":{"ready":true}}"#.utf8)
             case "/v1/pricing": body = Data(#"{"prices":[]}"#.utf8)
             case "/v1/network/series":
                 #expect(request.url?.query == "window=24h")

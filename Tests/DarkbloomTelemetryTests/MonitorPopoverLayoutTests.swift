@@ -180,9 +180,9 @@ struct MonitorPopoverLayoutTests {
     @Test("model-family vectors render distinctly at menu-bar size")
     func modelFamilyAssets() throws {
         var rendered: [Data] = []
-        let strip = NSImage(size: NSSize(width: 128, height: 24))
+        let strip = NSImage(size: NSSize(width: 192, height: 24))
         strip.lockFocus()
-        for (index, family) in [ModelFamilyIcon.darkbloom, .qwen, .openai, .google].enumerated() {
+        for (index, family) in [ModelFamilyIcon.darkbloom, .qwen, .openai, .google, .nvidia, .prismml].enumerated() {
             let image = try #require(DarkbloomLogoAsset.menuBarImage(tint: .systemGreen, family: family))
             #expect(image.size.width > 0 && image.size.height > 0)
             let color = try #require(sampledMarkColor(in: image))
@@ -191,7 +191,7 @@ struct MonitorPopoverLayoutTests {
             image.draw(in: NSRect(x: index * 32 + 8, y: 3, width: 16, height: 18))
         }
         strip.unlockFocus()
-        #expect(Set(rendered).count == 4)
+        #expect(Set(rendered).count == 6)
         if ProcessInfo.processInfo.environment["DARKBLOOM_RENDER_EVIDENCE"] == "1" {
             let data = try #require(strip.tiffRepresentation)
             let bitmap = try #require(NSBitmapImageRep(data: data))

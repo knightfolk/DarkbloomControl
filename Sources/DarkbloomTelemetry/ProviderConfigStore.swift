@@ -8,10 +8,14 @@ public struct ProviderConfigDraft: Equatable, Sendable {
     public var selection: ProviderModelSelection
     public let originalMaxModelSlots: Int?
     public var maxModelSlots: Int?
+    public let originalEngineV2MaxConcurrent: Int?
+    public var engineV2MaxConcurrent: Int?
     fileprivate let sourceFileState: ProviderConfigFileState?
 
     public var hasChanges: Bool {
-        selection != original || maxModelSlots != originalMaxModelSlots
+        selection != original
+            || maxModelSlots != originalMaxModelSlots
+            || engineV2MaxConcurrent != originalEngineV2MaxConcurrent
     }
 
     public init(
@@ -19,13 +23,17 @@ public struct ProviderConfigDraft: Equatable, Sendable {
         original: ProviderModelSelection,
         selection: ProviderModelSelection,
         originalMaxModelSlots: Int? = nil,
-        maxModelSlots: Int? = nil
+        maxModelSlots: Int? = nil,
+        originalEngineV2MaxConcurrent: Int? = nil,
+        engineV2MaxConcurrent: Int? = nil
     ) {
         self.sourceRevision = sourceRevision
         self.original = original
         self.selection = selection
         self.originalMaxModelSlots = originalMaxModelSlots
         self.maxModelSlots = maxModelSlots
+        self.originalEngineV2MaxConcurrent = originalEngineV2MaxConcurrent
+        self.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.sourceFileState = nil
     }
 
@@ -35,12 +43,15 @@ public struct ProviderConfigDraft: Equatable, Sendable {
         self.selection = document.selection
         self.originalMaxModelSlots = document.maxModelSlots
         self.maxModelSlots = document.maxModelSlots
+        self.originalEngineV2MaxConcurrent = document.engineV2MaxConcurrent
+        self.engineV2MaxConcurrent = document.engineV2MaxConcurrent
         self.sourceFileState = sourceFileState
     }
 
     fileprivate init(
         publishedSelection: ProviderModelSelection,
         publishedMaxModelSlots: Int?,
+        publishedEngineV2MaxConcurrent: Int?,
         sourceFileState: ProviderConfigFileState
     ) {
         self.sourceRevision = sourceFileState.revision
@@ -48,6 +59,8 @@ public struct ProviderConfigDraft: Equatable, Sendable {
         self.selection = publishedSelection
         self.originalMaxModelSlots = publishedMaxModelSlots
         self.maxModelSlots = publishedMaxModelSlots
+        self.originalEngineV2MaxConcurrent = publishedEngineV2MaxConcurrent
+        self.engineV2MaxConcurrent = publishedEngineV2MaxConcurrent
         self.sourceFileState = sourceFileState
     }
 
@@ -63,12 +76,20 @@ public struct ProviderConfigDraft: Equatable, Sendable {
         return draft
     }
 
+    public func withEngineV2MaxConcurrent(_ engineV2MaxConcurrent: Int) -> Self {
+        var draft = self
+        draft.engineV2MaxConcurrent = engineV2MaxConcurrent
+        return draft
+    }
+
     public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.sourceRevision == rhs.sourceRevision
             && lhs.original == rhs.original
             && lhs.selection == rhs.selection
             && lhs.originalMaxModelSlots == rhs.originalMaxModelSlots
             && lhs.maxModelSlots == rhs.maxModelSlots
+            && lhs.originalEngineV2MaxConcurrent == rhs.originalEngineV2MaxConcurrent
+            && lhs.engineV2MaxConcurrent == rhs.engineV2MaxConcurrent
     }
 }
 
@@ -187,7 +208,12 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
 
         let candidateData = try current.rendering(
             draft.selection,
-            maxModelSlots: draft.maxModelSlots
+            maxModelSlots: draft.maxModelSlots != draft.originalMaxModelSlots
+                ? draft.maxModelSlots
+                : nil,
+            engineV2MaxConcurrent: draft.engineV2MaxConcurrent != draft.originalEngineV2MaxConcurrent
+                ? draft.engineV2MaxConcurrent
+                : nil
         )
         let mode = expectedState.permissions
         let candidateURL = uniqueSibling(named: "candidate")
@@ -222,6 +248,7 @@ public actor LocalProviderConfigStore: ProviderConfigManaging {
             draft: ProviderConfigDraft(
                 publishedSelection: draft.selection,
                 publishedMaxModelSlots: draft.maxModelSlots,
+                publishedEngineV2MaxConcurrent: draft.engineV2MaxConcurrent,
                 sourceFileState: publishedState
             ),
             restartRequired: true

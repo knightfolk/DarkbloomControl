@@ -9,10 +9,38 @@ public struct CatalogModel: Decodable, Equatable, Identifiable, Sendable {
     public let sizeGB: Double
     public let minimumRAMGB: Int
     public let active: Bool
+    /// Provider features required by this catalog build. `nil` means the
+    /// catalog source did not publish the field; an empty array means the
+    /// source explicitly published no additional requirements.
+    public let requiredProviderCapabilities: [String]?
+    /// Weight quantization as published by the catalog (for example `fp4` or
+    /// `2bit`). This is descriptive metadata, not proof of the local build.
+    public let quantization: String?
+    /// Architectural context limit published by the catalog, when available.
+    public let maxContextLength: Int?
+    /// Architectural output limit published by the catalog, when available.
+    public let maxOutputLength: Int?
 
-    public init(id: String, displayName: String, family: String, modelType: String, capabilities: [String], sizeGB: Double, minimumRAMGB: Int, active: Bool) {
+    public init(
+        id: String,
+        displayName: String,
+        family: String,
+        modelType: String,
+        capabilities: [String],
+        sizeGB: Double,
+        minimumRAMGB: Int,
+        active: Bool,
+        requiredProviderCapabilities: [String]? = nil,
+        quantization: String? = nil,
+        maxContextLength: Int? = nil,
+        maxOutputLength: Int? = nil
+    ) {
         self.id = id; self.displayName = displayName; self.family = family; self.modelType = modelType
         self.capabilities = capabilities; self.sizeGB = sizeGB; self.minimumRAMGB = minimumRAMGB; self.active = active
+        self.requiredProviderCapabilities = requiredProviderCapabilities
+        self.quantization = quantization
+        self.maxContextLength = maxContextLength
+        self.maxOutputLength = maxOutputLength
     }
 
     enum CodingKeys: String, CodingKey {
@@ -21,6 +49,48 @@ public struct CatalogModel: Decodable, Equatable, Identifiable, Sendable {
         case modelType = "model_type"
         case sizeGB = "size_gb"
         case minimumRAMGB = "min_ram_gb"
+        case requiredProviderCapabilities = "required_provider_capabilities"
+        case quantization
+        case maxContextLength = "max_context_length"
+        case maxOutputLength = "max_output_length"
+    }
+}
+
+/// Bounds additive catalog metadata before it reaches model controls or text
+/// rendering. Catalog data is remote input, so a malformed limit must not turn
+/// into an unbounded UI value or an enormous requirement list.
+enum CatalogModelMetadataValidation {
+    static let maximumProviderCapabilityCount = 32
+    static let maximumProviderCapabilityLength = 128
+    static let maximumQuantizationLength = 64
+    static let maximumTokenLimit = 10_000_000
+
+    static func isValid(_ model: CatalogModel) -> Bool {
+        guard let required = model.requiredProviderCapabilities else {
+            return validQuantization(model.quantization)
+                && validLimit(model.maxContextLength)
+                && validLimit(model.maxOutputLength)
+        }
+        guard required.count <= maximumProviderCapabilityCount,
+              Set(required).count == required.count,
+              required.allSatisfy({ value in
+                  let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                  return !trimmed.isEmpty && trimmed.utf8.count <= maximumProviderCapabilityLength
+              }) else { return false }
+        return validQuantization(model.quantization)
+            && validLimit(model.maxContextLength)
+            && validLimit(model.maxOutputLength)
+    }
+
+    private static func validQuantization(_ value: String?) -> Bool {
+        guard let value else { return true }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed.utf8.count <= maximumQuantizationLength
+    }
+
+    private static func validLimit(_ value: Int?) -> Bool {
+        guard let value else { return true }
+        return (1...maximumTokenLimit).contains(value)
     }
 }
 
@@ -71,7 +141,15 @@ public struct LocalModelList: Decodable, Equatable, Sendable {
 
 public enum ModelCatalogDecoder {
     public static func decode(_ data: Data) throws -> [CatalogModel] {
-        try JSONDecoder().decode([CatalogModel].self, from: data)
+        let models = try JSONDecoder().decode([CatalogModel].self, from: data)
+        guard models.count <= 128,
+              models.allSatisfy(CatalogModelMetadataValidation.isValid) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: [],
+                debugDescription: "Catalog model metadata is invalid"
+            ))
+        }
+        return models
     }
 }
 
@@ -122,6 +200,10 @@ public struct ModelInventoryItem: Equatable, Identifiable, Sendable {
     public let capabilities: [String]
     public let sizeGB: Double
     public let minimumRAMGB: Int
+    public let requiredProviderCapabilities: [String]?
+    public let quantization: String?
+    public let maxContextLength: Int?
+    public let maxOutputLength: Int?
     public let isDownloaded: Bool
     public let isEnabled: Bool
     public let isPreloaded: Bool
@@ -137,6 +219,10 @@ public struct ModelInventoryItem: Equatable, Identifiable, Sendable {
         capabilities: [String],
         sizeGB: Double,
         minimumRAMGB: Int,
+        requiredProviderCapabilities: [String]? = nil,
+        quantization: String? = nil,
+        maxContextLength: Int? = nil,
+        maxOutputLength: Int? = nil,
         isDownloaded: Bool,
         isEnabled: Bool,
         isPreloaded: Bool,
@@ -158,6 +244,10 @@ public struct ModelInventoryItem: Equatable, Identifiable, Sendable {
         self.capabilities = capabilities
         self.sizeGB = sizeGB
         self.minimumRAMGB = minimumRAMGB
+        self.requiredProviderCapabilities = requiredProviderCapabilities
+        self.quantization = quantization
+        self.maxContextLength = maxContextLength
+        self.maxOutputLength = maxOutputLength
         self.isDownloaded = isDownloaded
         self.isEnabled = isEnabled
         self.isPreloaded = isPreloaded
@@ -225,6 +315,10 @@ public enum ModelInventoryBuilder {
                 displayName: model.displayName, modelType: model.modelType,
                 capabilities: model.capabilities,
                 sizeGB: model.sizeGB, minimumRAMGB: model.minimumRAMGB,
+                requiredProviderCapabilities: model.requiredProviderCapabilities,
+                quantization: model.quantization,
+                maxContextLength: model.maxContextLength,
+                maxOutputLength: model.maxOutputLength,
                 isDownloaded: downloaded, isEnabled: resolvedEnabled[model.id] != nil,
                 isPreloaded: resolvedPreloaded[model.id] != nil, liveState: live, issue: itemIssues[model.id],
                 enabledSelector: resolvedEnabled[model.id],

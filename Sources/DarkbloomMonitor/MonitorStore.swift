@@ -4,6 +4,8 @@ import SwiftUI
 
 @MainActor
 final class MonitorStore: ObservableObject {
+    let providerExtras: ProviderExtrasStore?
+    private var providerExtrasTask: Task<Void, Never>?
     @Published private(set) var energy: EnergyRecordingSnapshot?
     @Published private(set) var energyEarnings: EnergyEarnings?
     private var energyEarningsDay: Date?
@@ -26,7 +28,7 @@ final class MonitorStore: ObservableObject {
     private let energyRecorder = EnergyRecorder(file: FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Darkbloom Monitor/energy-history.json"))
     static let earningsPollingInterval: Duration = .seconds(600)
-    private(set) var dashboardVisible = false
+    @Published private(set) var dashboardVisible = false
     private var networkPollingPolicy = NetworkPollingPolicy()
 
     @Published private(set) var snapshot: TelemetrySnapshot
@@ -83,6 +85,7 @@ final class MonitorStore: ObservableObject {
     init(
         service: TelemetryService,
         initial: TelemetrySnapshot,
+        providerExtras: ProviderExtrasStore? = nil,
         earningsClient: any AccountEarningsFetching = AuthenticatedEarningsClient(
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser
         ),
@@ -99,6 +102,7 @@ final class MonitorStore: ObservableObject {
         publicPollingJitter: @escaping @Sendable () -> Double = { Double.random(in: 0...0.2) }
     ) {
         self.service = service
+        self.providerExtras = providerExtras
         self.earningsClient = earningsClient
         self.uptimeRecorder = uptimeRecorder
         self.tokenRateRecorder = tokenRateRecorder
@@ -129,6 +133,15 @@ final class MonitorStore: ObservableObject {
         guard !hasStarted, shutdownTask == nil else { return }
         hasStarted = true
         observeThermalState()
+        if providerExtras != nil {
+            providerExtrasTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    await self?.providerExtras?.refresh()
+                    do { try await Task.sleep(for: .seconds(30)) }
+                    catch { return }
+                }
+            }
+        }
         energyTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -560,6 +573,10 @@ final class MonitorStore: ObservableObject {
     }
 
     func stop() async {
+        providerExtrasTask?.cancel()
+        await providerExtrasTask?.value
+        providerExtrasTask = nil
+        await providerExtras?.stop()
         energyTask?.cancel()
         await energyTask?.value
         energyTask = nil

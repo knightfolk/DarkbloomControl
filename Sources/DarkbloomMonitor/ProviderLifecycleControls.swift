@@ -238,6 +238,14 @@ struct LifecycleConfirmationPresentation: Equatable {
         case .active, .idle:
             confirmation.action == .stop ? "Stop Anyway" : "Restart Anyway"
         }
+        if case .restartSelection(_, let comparison) = confirmation {
+            let advertised = comparison.advertised.map { $0.joined(separator: ", ") } ?? "not currently verified"
+            return Self(title: "Restart applies the saved model selection",
+                        body: body + "\n\nAdvertised now: " + advertised
+                            + "\nSaved selection: " + comparison.saved.joined(separator: ", ")
+                            + "\n\nRestart will apply the saved selection. Unsaved edits are not applied.",
+                        confirmLabel: "Restart with Saved Models")
+        }
         return Self(
             title: "Customer work may be interrupted",
             body: body,
@@ -362,7 +370,8 @@ struct ProviderLifecycleControls: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(!control.isEnabled(in: presentation))
+                    .disabled(store.queuedStopState != nil
+                        || !control.isEnabled(in: presentation))
                     .help(control.accessibilityLabel)
                     .accessibilityLabel(control.accessibilityLabel)
                     .accessibilityIdentifier(control.accessibilityIdentifier)
@@ -386,6 +395,12 @@ struct ProviderLifecycleControls: View {
                     .accessibilityLabel(reason.message)
                     .accessibilityIdentifier(reason.accessibilityIdentifier)
             }
+
+            ProviderQueuedStopView(
+                store: store,
+                providerIsRunning: presentation.canStop,
+                currentTime: currentTime
+            )
         }
         .frame(
             maxWidth: ProviderLifecycleUnavailableReasonPresentation.maxWidth,

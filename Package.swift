@@ -24,6 +24,8 @@ let package = Package(
                 .copy("Resources/model-qwen.svg"),
                 .copy("Resources/model-openai.svg"),
                 .copy("Resources/model-google.svg"),
+                .copy("Resources/model-nvidia.svg"),
+                .copy("Resources/model-prismml.svg"),
                 .copy("Resources/MODEL-ICONS-LICENSE.txt"),
             ]
         ),

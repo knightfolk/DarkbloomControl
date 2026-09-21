@@ -6,14 +6,59 @@ import Testing
 @Suite("Model manager presentation")
 @MainActor
 struct ModelManagerPresentationTests {
-    @Test("capacity modes describe official one and two model limits honestly")
-    func capacityModes() {
-        #expect(ProviderCapacityMode(maxModelSlots: 1) == .memorySaver)
-        #expect(ProviderCapacityMode(maxModelSlots: 2) == .twoModelCapacity)
-        #expect(ProviderCapacityMode(maxModelSlots: 3) == nil)
-        #expect(ProviderCapacityMode.memorySaver.detail.contains("official CLI"))
-        #expect(ProviderCapacityMode.twoModelCapacity.detail.contains("official CLI"))
-        #expect(ProviderCapacityMode.twoModelCapacity.detail.contains("two"))
+    @Test("capacity reflects the CLI effective clamp without rewriting saved values")
+    func effectiveCapacity() {
+        #expect(ModelManagerPresentation.effectiveLimit(0) == 1)
+        #expect(ModelManagerPresentation.effectiveLimit(32) == 32)
+        #expect(ModelManagerPresentation.effectiveLimit(0, maximum: 8) == 1)
+        #expect(ModelManagerPresentation.effectiveLimit(32, maximum: 8) == 8)
+    }
+
+    @Test("model search accepts readable names and canonical identities")
+    func modelSearch() {
+        let value = item(isDownloaded: true)
+        #expect(ModelManagerPresentation.filtered([value], search: "model name") == [value])
+        #expect(ModelManagerPresentation.filtered([value], search: value.catalogID) == [value])
+        #expect(ModelManagerPresentation.filtered([value], search: "no-match").isEmpty)
+    }
+
+    @Test("running models lead the local comparison")
+    func modelOrder() {
+        let unloaded = item(isDownloaded: true)
+        let active = item(isDownloaded: true, liveState: .active)
+        let loaded = item(isDownloaded: true, liveState: .loadedIdle)
+        #expect(ModelManagerPresentation.filtered([unloaded, loaded, active], search: "").map(\.liveState)
+            == [.active, .loadedIdle, .unloaded])
+    }
+
+    @Test("model details separate RAM from catalog limits and mark provider requirements unverified")
+    func modelDetailsMetadata() {
+        let item = ModelInventoryItem(
+            catalogID: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+            localID: nil,
+            displayName: "Qwen 3.8 27B",
+            modelType: "text",
+            capabilities: ["chat", "tools", "vision"],
+            sizeGB: 16.3,
+            minimumRAMGB: 36,
+            requiredProviderCapabilities: ["apple_m5", "mlx_nax"],
+            quantization: "fp4",
+            maxContextLength: 262_144,
+            maxOutputLength: 32_768,
+            isDownloaded: false,
+            isEnabled: false,
+            isPreloaded: false,
+            liveState: .unloaded,
+            issue: nil
+        )
+
+        #expect(ModelFormatting.quantization(item) == "FP4")
+        #expect(ModelFormatting.catalogLimits(item)?.contains("262,144") == true)
+        #expect(ModelFormatting.catalogLimits(item)?.contains("32,768") == true)
+        #expect(ModelFormatting.catalogLimits(item)?.contains("not a per-machine guarantee") == true)
+        #expect(ModelFormatting.providerRequirements(item) ==
+            "Provider requirements: Apple M5 · MLX NAX · unverified (runtime evidence unavailable)")
+        #expect(ModelFormatting.capabilityAdvisories(item) == ["Chat", "Tool calling", "Vision input"])
     }
 
     @Test("download enable preload and delete stay independent")

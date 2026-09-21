@@ -68,3 +68,36 @@ private struct OpportunityUnusedSource: TelemetrySource {
     func readStatus() async throws -> StatusSnapshot { throw Unused() }
     func readLegacyEvents(limit: Int) async throws -> [LogEvent] { throw Unused() }
 }
+
+@Suite("Opportunity comparison labels")
+struct OpportunityComparisonTests {
+    @Test("waiting work leads, closed models follow, equal demand sorts deterministically")
+    func demandOrder() {
+        let waiting = model("waiting", active: 1, queued: 2)
+        let busy = model("busy", active: 8)
+        let quietA = model("a", active: 0)
+        let quietB = model("b", active: 0)
+        let closed = model("closed", active: 90, queued: 30, accepting: false)
+        #expect(OpportunityPresentation.ordered([closed, quietB, busy, quietA, waiting]).map(\.id)
+            == ["waiting", "busy", "a", "b", "closed"])
+        #expect(OpportunityPresentation.demand(waiting) == "Work waiting")
+        #expect(OpportunityPresentation.demand(closed) == "Not accepting")
+    }
+
+    @Test("display name only comes from matching metadata")
+    func matchedName() {
+        let value = model("organization/technical-id", active: 1)
+        let metadata = CatalogModel(id: value.id, displayName: "Readable model", family: "example", modelType: "text",
+            capabilities: [], sizeGB: 10, minimumRAMGB: 16, active: true)
+        #expect(OpportunityPresentation.name(value, metadata: metadata) == "Readable model")
+        #expect(OpportunityPresentation.name(model("different", active: 1), metadata: metadata) == "different")
+        #expect(OpportunityPresentation.name(value, metadata: nil) == value.id)
+    }
+
+    private func model(_ id: String, active: Int, queued: Int = 0, accepting: Bool = true) -> NetworkModelCapacity {
+        NetworkModelCapacity(id: id, ready: true, canAccept: accepting, routableProviders: 10,
+            warmProviders: 10, runningProviders: 1, coldProviders: 0, activeRequests: active,
+            queuedRequests: queued, queueLimit: 50, aggregateTokensPerSecond: 10,
+            estimatedTimeToFirstTokenMS: 1, tokenBudgetRemaining: 10, tokenBudgetTotal: 10)
+    }
+}

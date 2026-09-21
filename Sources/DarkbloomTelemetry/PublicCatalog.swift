@@ -24,6 +24,7 @@ public struct PublicCatalogSnapshot: Equatable, Sendable {
                       && $0.id.utf8.count <= 512
                       && $0.sizeGB.isFinite && $0.sizeGB >= 0
                       && $0.minimumRAMGB >= 0
+                      && CatalogModelMetadataValidation.isValid($0)
               }) else { throw PublicCatalogError.invalidCatalog }
         return Self(models: models, capturedAt: capturedAt)
     }

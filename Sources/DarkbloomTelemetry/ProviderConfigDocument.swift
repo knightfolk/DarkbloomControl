@@ -21,11 +21,16 @@ public struct ProviderConfigDocument: Equatable, Sendable {
     public let data: Data
     public let selection: ProviderModelSelection
     public let maxModelSlots: Int?
+    /// Box-wide concurrent request cap for each v2 engine slot. The CLI uses
+    /// the effective range 1...8 and falls back to its own default when the
+    /// key is absent.
+    public let engineV2MaxConcurrent: Int?
     public let revision: String
 
     private let enabledRange: Range<Int>
     private let preloadRange: Range<Int>
     private let maxModelSlotsRange: Range<Int>?
+    private let engineV2MaxConcurrentRange: Range<Int>?
     private let lineEnding: String
 
     public init(data: Data) throws {
@@ -43,29 +48,44 @@ public struct ProviderConfigDocument: Equatable, Sendable {
         self.data = data
         self.selection = selection
         self.maxModelSlots = scan.integers["max_model_slots"]?.value
+        self.engineV2MaxConcurrent = scan.integers["engine_v2_max_concurrent"]?.value
         self.revision = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         self.enabledRange = enabled.range
         self.preloadRange = preloaded.range
         self.maxModelSlotsRange = scan.integers["max_model_slots"]?.range
+        self.engineV2MaxConcurrentRange = scan.integers["engine_v2_max_concurrent"]?.range
         self.lineEnding = Self.detectLineEnding(in: data)
     }
 
     public func rendering(
         _ selection: ProviderModelSelection,
-        maxModelSlots requestedMaxModelSlots: Int? = nil
+        maxModelSlots requestedMaxModelSlots: Int? = nil,
+        engineV2MaxConcurrent requestedEngineV2MaxConcurrent: Int? = nil
     ) throws -> Data {
         try Self.validate(selection)
 
-        if let requestedMaxModelSlots, !(1...2).contains(requestedMaxModelSlots) {
+        // The CLI stores this as UInt64 and uses it as a positive resident
+        // slot ceiling; unlike concurrency it does not impose an eight-slot
+        // product clamp. The UI may offer a smaller practical picker, while
+        // the document layer must preserve valid operator values verbatim.
+        if let requestedMaxModelSlots, requestedMaxModelSlots < 1 {
             throw ProviderConfigError.unsupportedInteger(
                 "max_model_slots",
                 requestedMaxModelSlots
+            )
+        }
+        if let requestedEngineV2MaxConcurrent,
+           !(1...8).contains(requestedEngineV2MaxConcurrent) {
+            throw ProviderConfigError.unsupportedInteger(
+                "engine_v2_max_concurrent",
+                requestedEngineV2MaxConcurrent
             )
         }
         var replacements = [
             (range: enabledRange, value: Self.renderArray(selection.enabled, lineEnding: lineEnding)),
             (range: preloadRange, value: Self.renderArray(selection.preloaded, lineEnding: lineEnding)),
         ]
+        var insertions: [Int: Data] = [:]
         if let requestedMaxModelSlots {
             if let maxModelSlotsRange {
                 replacements.append((
@@ -80,11 +100,28 @@ public struct ProviderConfigDocument: Equatable, Sendable {
                     in: data,
                     lineEnding: lineEnding
                 )
-                replacements.append((
-                    range: insertion.index..<insertion.index,
-                    value: insertion.value
-                ))
+                insertions[insertion.index, default: Data()].append(insertion.value)
             }
+        }
+        if let requestedEngineV2MaxConcurrent {
+            if let engineV2MaxConcurrentRange {
+                replacements.append((
+                    range: engineV2MaxConcurrentRange,
+                    value: Data(String(requestedEngineV2MaxConcurrent).utf8)
+                ))
+            } else {
+                let insertion = Self.missingIntegerInsertion(
+                    key: "engine_v2_max_concurrent",
+                    value: requestedEngineV2MaxConcurrent,
+                    after: maxModelSlotsRange ?? enabledRange,
+                    in: data,
+                    lineEnding: lineEnding
+                )
+                insertions[insertion.index, default: Data()].append(insertion.value)
+            }
+        }
+        for (index, value) in insertions {
+            replacements.append((range: index..<index, value: value))
         }
         replacements.sort { $0.range.lowerBound > $1.range.lowerBound }
 
@@ -286,7 +323,7 @@ private struct ProviderConfigScanner {
                 let array = try parseStringArray(key: key)
                 result.arrays[key] = array
                 try consumeTargetStatementRemainder(arrayKey: key)
-            } else if key == "max_model_slots" {
+            } else if key == "max_model_slots" || key == "engine_v2_max_concurrent" {
                 guard result.integers[key] == nil else {
                     throw ProviderConfigError.duplicateInteger(key)
                 }

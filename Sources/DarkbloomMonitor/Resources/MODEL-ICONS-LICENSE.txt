@@ -1,8 +1,18 @@
-Model-family icons: Qwen, OpenAI and Google
+Model-family icons: Qwen, OpenAI, Google, NVIDIA and PrismML
+The LobeHub source and MIT terms below apply only to the Qwen, OpenAI and Google SVGs.
 Source: https://github.com/lobehub/lobe-icons/tree/a94750e3f5f8fc33757b839d85030e742284e43a/packages/static-svg/icons
-Unmodified SVGs. Logos identify the model family, not endorsement or affiliation.
-Trademark rights remain with their respective owners; the asset license below
-is not a trademark license.
+The NVIDIA mark is sourced from the Darkbloom upstream console asset at
+https://github.com/Layr-Labs/d-inference/blob/v0.9.7/console-ui/public/brand/nvidia.svg
+and the Bonsai mark is sourced from the same release at
+https://github.com/Layr-Labs/d-inference/blob/v0.9.7/console-ui/public/brand/bonsai.svg.
+The files are unmodified. Logos identify the model family, not endorsement or affiliation.
+The NVIDIA and Bonsai assets are upstream Darkbloom console references. The
+upstream repository license is at
+https://github.com/Layr-Labs/d-inference/blob/v0.9.7/LICENSE; its console brand
+README does not state a separate asset license. This notice makes no trademark
+or redistribution grant. Trademark rights remain with their respective owners.
+
+The MIT license below applies to the Qwen, OpenAI and Google assets only.
 
 MIT License
 

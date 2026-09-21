@@ -91,8 +91,50 @@ extension MenuPresentationStatus {
 }
 
 public extension ModelSlot {
+    /// A bounded operator description for the MTP posture. Unknown provider
+    /// codes remain safe and generic; no provider error prose is rendered.
+    var mtpReasonDescription: String {
+        guard let mtpReason else {
+            return TelemetryFormatting.unavailable("not reported by this daemon")
+        }
+        switch mtpReason {
+        case "config_disabled":
+            return "Disabled by configuration"
+        case "kill_switch_disabled":
+            return "Disabled by provider policy"
+        case "target_unsupported", "assistant_target_incompatible":
+            return "Target model does not support drafting"
+        case "assistant_memory_unavailable", "assistant_post_build_headroom":
+            return "Insufficient memory for drafting"
+        case "inert_kv_unsupported":
+            return "Enabled but inactive for this KV backend"
+        case "engine_inactive":
+            return "Drafting engine inactive"
+        case "unknown":
+            return "Reason unavailable"
+        default:
+            return "Drafting unavailable (\(mtpReason.replacingOccurrences(of: "_", with: " ")))"
+        }
+    }
+
+    /// Existing monitor views use this name; keep it as an alias while the
+    /// description itself reflects a missing observation rather than claiming
+    /// schema 1 cannot report the field.
     var displayMTPReason: String {
-        mtpReason ?? TelemetryFormatting.unavailable("not exposed by Darkbloom schema 1")
+        mtpReasonDescription
+    }
+
+    var kvFallbackReasonDescription: String? {
+        guard let kvFallbackReason else { return nil }
+        switch kvFallbackReason {
+        case "kill_switch": return "Provider policy"
+        case "crash_loop_guard": return "Crash-loop protection"
+        case "kernel_preflight": return "Kernel preflight"
+        case "physical_capacity", "pool_construction_capacity": return "Physical capacity"
+        case "ineligible": return "Runtime ineligible"
+        case "invalid_dtype": return "Unsupported data type"
+        default: return "Fallback reason unavailable"
+        }
     }
 }
 

@@ -10,6 +10,28 @@ private let providerControlTestNow = Date(timeIntervalSince1970: 1_750_000_000)
 @Suite("Provider control store")
 @MainActor
 struct ProviderControlStoreTests {
+    @Test("idle restart still confirms a different advertised set and rechecks changes")
+    func restartConfirmsSelectionChanges() async throws {
+        let now = Date()
+        let first = try selectionFixture(advertised: ["second-model"], now: now)
+        let controller = FakeProviderController.fixture(snapshot: first, activityRisks: [.idle, .idle, .idle])
+        let store = ProviderControlStore(controller: controller)
+        await store.refresh()
+        await store.request(.restart)
+        #expect(await controller.executedActions.isEmpty)
+        #expect(store.pendingConfirmation == .restartSelection(.idle,
+            ProviderSelectionComparison(saved: ["saved-model"], advertised: ["second-model"])))
+        let changed = try selectionFixture(advertised: ["available-model"], now: now)
+        await controller.replaceSnapshot(changed)
+        await store.confirmPendingLifecycle()
+        #expect(await controller.executedActions.isEmpty)
+        #expect(store.pendingConfirmation == .restartSelection(.idle,
+            ProviderSelectionComparison(saved: ["saved-model"], advertised: ["available-model"])))
+        await store.confirmPendingLifecycle()
+        #expect(await controller.executedActions.map(\.action) == [.restart])
+        #expect(store.pendingConfirmation == nil)
+    }
+
     @Test("model network context renders without changing staged configuration", arguments: [560, 900], ["light", "dark"])
     func renderModelContext(height: Int, appearance: String) async throws {
         let control = ProviderControlStore(controller: FakeProviderController.fixture())
@@ -106,9 +128,23 @@ struct ProviderControlStoreTests {
         await store.refresh()
 
         #expect(store.draft?.maxModelSlots == 1)
-        store.setMaxModelSlots(2)
+        store.setMaxModelSlots(3)
 
-        #expect(store.draft?.maxModelSlots == 2)
+        #expect(store.draft?.maxModelSlots == 3)
+        #expect(store.draft?.selection == store.draft?.original)
+        #expect(store.canSave)
+    }
+
+    @Test("stages the global concurrent request cap independently")
+    func stagesEngineV2MaxConcurrent() async throws {
+        let controller = FakeProviderController.fixture()
+        let store = ProviderControlStore(controller: controller)
+        await store.refresh()
+
+        #expect(store.draft?.engineV2MaxConcurrent == nil)
+        store.setEngineV2MaxConcurrent(8)
+
+        #expect(store.draft?.engineV2MaxConcurrent == 8)
         #expect(store.draft?.selection == store.draft?.original)
         #expect(store.canSave)
     }
@@ -1450,7 +1486,8 @@ private final class PostExitProviderGate: @unchecked Sendable {
         if shouldWait { releaseGate.wait() }
     }
 
-    func waitUntilStarted(timeout: Duration = .seconds(1)) async -> Bool {
+    // Native render cases share the main actor; this is a watchdog, not a timing assertion.
+    func waitUntilStarted(timeout: Duration = .seconds(10)) async -> Bool {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while !lock.withLock({ started }) {
@@ -1460,7 +1497,7 @@ private final class PostExitProviderGate: @unchecked Sendable {
         return true
     }
 
-    func waitUntilCancellation(timeout: Duration = .seconds(1)) async -> Bool {
+    func waitUntilCancellation(timeout: Duration = .seconds(10)) async -> Bool {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while !lock.withLock({ cancellationRecorded }) {
@@ -1787,6 +1824,8 @@ private actor FakeProviderController: ProviderControlling {
         return currentSnapshot
     }
 
+    func replaceSnapshot(_ snapshot: ProviderControlSnapshot) { currentSnapshot = snapshot }
+
     func failRefresh(with failure: Failure) {
         refreshFailure = failure
     }
@@ -2023,4 +2062,87 @@ private struct InertStoreTelemetrySource: TelemetrySource {
 
 private extension Optional where Wrapped == String {
     var orEmpty: String { self ?? "" }
+}
+
+
+extension ProviderControlStoreTests {
+    @Test("advanced setting writes preserve a dirty model draft and do not dispatch")
+    func extrasPreserveDraft() async {
+        let control = ProviderControlStore(controller: FakeProviderController.fixture())
+        await control.refresh()
+        control.setEnabled(true, modelID: "second-model")
+        let before = control.draft
+        let called = ExtraMutationCounter()
+        let result = await control.performSettingsMutation("idle") { await called.record() }
+        #expect(!result)
+        #expect(await called.count == 0)
+        #expect(control.draft == before)
+    }
+
+    @Test("advanced setting writes use the common mutation gate and reconcile")
+    func extrasSerialize() async {
+        let controller = FakeProviderController.fixture()
+        let control = ProviderControlStore(controller: controller)
+        await control.refresh()
+        let called = ExtraMutationCounter()
+        let result = await control.performSettingsMutation("idle") { await called.record() }
+        #expect(result)
+        #expect(await called.count == 1)
+        #expect(await controller.refreshCount == 2)
+        #expect(control.operation == .idle)
+    }
+
+    @Test("advanced setting failure does not leave actionable model evidence")
+    func extrasFailure() async {
+        let control = ProviderControlStore(controller: FakeProviderController.fixture())
+        await control.refresh()
+        let result = await control.performSettingsMutation("idle") { throw CancellationError() }
+        #expect(!result)
+        #expect(control.snapshot?.sources == .unknown)
+        #expect(control.operation == .idle)
+    }
+}
+
+private actor ExtraMutationCounter {
+    var count = 0
+    func record() { count += 1 }
+}
+
+extension ProviderControlStoreTests {
+    @Test("a CLI settings write blocks a second write and provider lifecycle")
+    func extrasGateConcurrentActions() async {
+        let controller = FakeProviderController.fixture()
+        let control = ProviderControlStore(controller: controller)
+        await control.refresh()
+        let gate = TelemetryRefreshGate()
+        let first = Task { await control.performSettingsMutation("idle") { await gate.refresh() } }
+        #expect(await gate.waitUntilStarted())
+        #expect(control.operation == .saving)
+        let called = ExtraMutationCounter()
+        let second = await control.performSettingsMutation("beta") { await called.record() }
+        await control.request(.start)
+        #expect(!second)
+        #expect(await called.count == 0)
+        #expect(await controller.executedActions.isEmpty)
+        await gate.release()
+        #expect(await first.value)
+        #expect(control.operation == .idle)
+    }
+}
+
+private func selectionFixture(advertised: [String], now: Date) throws -> ProviderControlSnapshot {
+    let base = fixtureSnapshot()
+    let raw: [String: Any] = [
+        "schema": 1, "version": "0.9.7", "current_model": "second-model",
+        "warm_models": ["second-model"], "advertised_models": advertised,
+        "stats": ["tokens_generated": 0, "requests_served": 0, "usage_gaps": 0],
+        "trust": ["trust_level": "hardware", "status": "online", "reason": "same_binary", "received_at": now.timeIntervalSince1970],
+        "capacity": ["total_memory_gb": 64, "gpu_memory_active_gb": 1, "gpu_memory_cache_gb": 0],
+        "slots": [], "inference_active": false,
+        "started_at": now.timeIntervalSince1970 - 100, "written_at": now.timeIntervalSince1970,
+        "pid": 42, "process_identity": ["pid": 42, "start_time_micros": 1234]
+    ]
+    let daemon = try DaemonStateParser.parse(JSONSerialization.data(withJSONObject: raw))
+    return ProviderControlSnapshot(inventory: base.inventory, draft: base.draft,
+        daemonState: daemon, capturedAt: now, sources: base.sources)
 }

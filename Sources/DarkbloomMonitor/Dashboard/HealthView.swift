@@ -24,9 +24,12 @@ struct HealthView: View {
                         Label("Mac thermal state: \(store.thermalState.displayName)", systemImage: "thermometer.medium")
                             .font(.headline)
                             .accessibilityLabel("Mac thermal state, \(store.thermalState.displayName), reported by macOS")
+                        if let extras = store.providerExtras { ProviderThermalView(store: extras) }
                         Text("Thermal state is reported by macOS, independently of provider health.")
                             .font(.caption).foregroundStyle(.secondary)
                         TimelineView(.periodic(from: .now, by: 5)) { context in
+                            ProviderVersionView(snapshot: store.snapshot, now: context.date)
+                            ProviderVerificationView(snapshot: store.snapshot, now: context.date)
                             if let warning = HealthPresentation.daemonWarning(store.snapshot.state, at: context.date) {
                                 Label(warning, systemImage: "exclamationmark.triangle")
                                     .font(.callout).foregroundStyle(.orange)
@@ -48,6 +51,7 @@ struct HealthView: View {
                             }
                             Text("Memory values are daemon-reported GPU allocations, not free system RAM. Reported slots are not a configured capacity limit.")
                                 .font(.caption).foregroundStyle(.secondary)
+                            ProviderLoadFailuresView(failures: state.modelLoadFailures)
                             if !state.slots.isEmpty {
                                 Text("Reported model slots").font(.headline)
                                 Text("KV is the attention-cache backend. MTP is multi-token prediction; enabled and active are separate daemon-reported states.")

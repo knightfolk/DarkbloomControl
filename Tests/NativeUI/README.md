@@ -46,3 +46,21 @@ to the text field did not update its SwiftUI binding and is not text-entry proof
 Do not issue keyboard events unless the fixture is confirmed foreground; prefer
 targeted accessibility actions. Actual keyboard search and failure injection
 remain separate checks.
+
+## CLI 0.9.7 settings fixture
+
+`CLI097Fixture.swift` hosts the production extras settings and slot explanation with an in-memory actor. It reads no provider files, starts no collectors, and its Save/Enable/Disable actions only alter synthetic data. It is not shipped.
+
+With the current Xcode SwiftPM build layout, after `swift test`, compile it with:
+
+```sh
+swiftc -target arm64-apple-macosx14.0 -parse-as-library -I .build/out/Products/Debug Tests/NativeUI/CLI097Fixture.swift Sources/DarkbloomMonitor/ProviderExtrasStore.swift Sources/DarkbloomMonitor/ProviderExtrasViews.swift Sources/DarkbloomMonitor/Components/SlotCard.swift .build/out/Products/Debug/libDarkbloomTelemetry.a -lsqlite3 -o /absolute/path/to/CLI097Fixture.app/Contents/MacOS/CLI097Fixture
+```
+
+Supply a normal local app Info.plist with executable `CLI097Fixture` and identifier `dev.darkbloom.cli097fixture`. Native review on September 21 verified the corrected single-line idle field, typed 60-minute draft, Save becoming enabled then disabled, reread summary and restart-required feedback, MTP automatic-to-enabled state, and unknown feature read-only presentation. All changes stayed in the synthetic actor. This proves those view interactions, not live provider setting writes or macOS removable-volume access.
+
+## Models and queued-stop fixture
+
+`ModelsFixture.swift` hosts the production model editor and queued-stop view with an in-memory controller. It never reads provider files. Its Save action changes only synthetic values; Finish simulated work changes only fake activity. Compile against the debug telemetry library with ModelManagerView, ProviderControlStore, ProviderLifecycleControls, and ProviderQueuedStop. Use a separate app identifier and keep the synthetic banner visible.
+
+Native review verified populated cards, Capacity selection, unsaved changes, refresh preserving the draft, synthetic save, queue waiting while active, cancellation, and stop completion after simulated work ended. This is interaction proof, separate from real CLI/configuration integration tests and live drive access.

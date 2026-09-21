@@ -16,9 +16,10 @@ struct SlotCard: View {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
                 slotRow("Effective KV", slot.kvBackend)
                 slotRow("Requested KV", slot.requestedKVBackend)
+                if let reason = slot.kvFallbackReasonDescription { slotRow("KV fallback", reason) }
                 slotRow("MTP enabled", slot.mtpEnabled ? "Yes" : "No")
-                slotRow("MTP active", slot.mtpActive ? "Yes" : "No")
-                slotRow("MTP reason", slot.displayMTPReason)
+                slotRow("Drafting", draftingDescription)
+                if slot.mtpReason != nil { slotRow("MTP reason", slot.mtpReasonDescription) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -26,8 +27,15 @@ struct SlotCard: View {
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            "Model slot \(slot.model), effective KV \(slot.kvBackend), requested KV \(slot.requestedKVBackend), MTP enabled \(slot.mtpEnabled ? "yes" : "no"), MTP active \(slot.mtpActive ? "yes" : "no"), MTP reason \(slot.displayMTPReason)"
+            "Model slot \(slot.model), effective KV \(slot.kvBackend), requested KV \(slot.requestedKVBackend), drafting \(draftingDescription)"
+                + (slot.mtpReason == nil ? "" : ", " + slot.mtpReasonDescription)
+                + (slot.kvFallbackReasonDescription.map { ", KV fallback: " + $0 } ?? "")
         )
+    }
+
+    private var draftingDescription: String {
+        if slot.mtpEnabled && slot.mtpActive && slot.mtpReason == nil { return "Active" }
+        return slot.mtpEnabled ? "Inactive" : "Disabled"
     }
 
     @ViewBuilder

@@ -1,25 +1,68 @@
 import DarkbloomTelemetry
 import SwiftUI
 
+/// Presentation order is a demand comparison, never an earnings recommendation.
+enum OpportunityPresentation {
+    static func ordered(_ models: [NetworkModelCapacity]) -> [NetworkModelCapacity] {
+        models.sorted {
+            let left = $0.ready && $0.canAccept, right = $1.ready && $1.canAccept
+            if left != right { return left }
+            if $0.queuedRequests != $1.queuedRequests { return $0.queuedRequests > $1.queuedRequests }
+            let a = $0.demandPerWarmProvider ?? ($0.activeRequests > 0 ? .infinity : 0)
+            let b = $1.demandPerWarmProvider ?? ($1.activeRequests > 0 ? .infinity : 0)
+            if a != b { return a > b }
+            return $0.id < $1.id
+        }
+    }
+
+    static func demand(_ model: NetworkModelCapacity) -> String {
+        guard model.ready && model.canAccept else { return "Not accepting" }
+        if model.queuedRequests > 0 { return "Work waiting" }
+        switch model.demandBand {
+        case .urgent, .high: return "Busy"
+        case .moderate: return "Steady"
+        case .low: return "Quiet"
+        }
+    }
+
+    static func name(_ model: NetworkModelCapacity, metadata: CatalogModel?) -> String {
+        guard let metadata, metadata.id == model.id, !metadata.displayName.isEmpty else { return model.id }
+        return metadata.displayName
+    }
+}
+
 struct OpportunityView: View {
     @ObservedObject var store: MonitorStore
     let controlStore: ProviderControlStore?
     @State private var showsHistory = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("View", selection: $showsHistory) {
-                Text("Model demand").tag(false)
-                Text("Network history").tag(true)
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Opportunity").font(.largeTitle.bold())
+                Text("See where the work is. Compare models for your Mac.")
+                    .font(.body).foregroundStyle(.secondary)
             }
-            .pickerStyle(.segmented)
-            .padding([.top, .horizontal], 24)
+            Picker("View", selection: $showsHistory) {
+                Text("Models").tag(false)
+                Text("Network activity").tag(true)
+            }.pickerStyle(.segmented)
             if showsHistory {
-                NetworkHistoryView(source: store.networkSeries).padding(24)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        NetworkHistoryView(source: store.networkSeries)
+                        DisclosureGroup("Network infrastructure") {
+                            NetworkCacheView(isVisible: store.dashboardVisible)
+                                .padding(.top, 8)
+                        }.font(.callout).foregroundStyle(.secondary)
+                    }
+                }
             } else {
                 OpportunityModelListView(store: store, controlStore: controlStore)
             }
         }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -27,129 +70,107 @@ private struct OpportunityModelListView: View {
     @ObservedObject var store: MonitorStore
     let controlStore: ProviderControlStore?
     @State private var search = ""
+    @State private var refreshing = false
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 10)) { context in
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Opportunity").font(.largeTitle.bold())
-                Text("Network demand, not an earnings forecast")
-                    .foregroundStyle(.secondary)
-                if let controlStore {
-                    OpportunityCatalogControls(controlStore: controlStore)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    TextField("Find a model", text: $search)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Filter network models")
+                    Button {
+                        refreshing = true
+                        Task {
+                            await store.refreshNetworkCapacity()
+                            await store.refreshPublicCatalog()
+                            refreshing = false
+                        }
+                    } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                    .disabled(refreshing)
                 }
-                if let catalog = store.publicCatalog.value {
-                    let stale = publicCatalogIsStale(at: context.date)
-                    HStack {
-                        Text(stale ? "Public metadata · stale" : "Public metadata")
-                        Spacer()
-                        Text(catalog.capturedAt, style: .relative)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(stale ? Color.orange : Color.secondary)
-                }
-                if let pricing = store.publicPricing.value {
-                    let stale = pricingIsStale(at: context.date)
-                    HStack {
-                        Text(stale ? "Customer prices · stale" : "Customer prices · not provider payout")
-                        Spacer()
-                        Text(pricing.capturedAt, style: .relative)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(stale ? Color.orange : Color.secondary)
-                }
-                TextField("Find a model", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("Filter network models")
                 if let capacity = store.networkCapacity.value {
-                    let stale = PopupNetworkDemandPresentation.freshness(of: store.networkCapacity, at: context.date) != .current
-                    HStack {
-                        Label(stale ? "Stale network snapshot" : "Current network snapshot",
-                              systemImage: stale ? "exclamationmark.triangle" : "checkmark.circle")
-                            .foregroundStyle(stale ? Color.orange : Color.secondary)
+                    let current = PopupNetworkDemandPresentation.freshness(of: store.networkCapacity, at: context.date) == .current
+                    HStack(spacing: 6) {
+                        Circle().fill(current ? Color.green : Color.orange).frame(width: 6, height: 6)
+                        Text(current ? "Live network" : "Last known demand")
+                        Text("·")
+                        Text(capacity.capturedAt, style: .relative)
                         Spacer()
-                        Text(capacity.capturedAt, style: .relative).monospacedDigit()
-                    }
-                    .font(.callout)
-                    if stale {
-                        Text("These are last-known values. Wait for a successful refresh before using them to choose a model.")
+                        Text("Demand first")
+                    }.font(.callout).foregroundStyle(.secondary)
+                    if !current {
+                        Label("Data is out of date. Refresh before choosing a model.", systemImage: "clock")
                             .font(.callout).foregroundStyle(.orange)
                     }
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(capacity.models.filter {
-                                search.isEmpty || $0.id.localizedCaseInsensitiveContains(search)
-                            }.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }) { model in
-                                if let controlStore {
-                                    OpportunityLocalModelCard(model: model, controlStore: controlStore, metadata: publicModel(model.id), price: store.publicPricing.value?.price(for: model.id), metadataIsCurrent: !publicCatalogIsStale(at: context.date))
-                                } else {
-                                    OpportunityModelCard(model: model, local: nil, metadata: publicModel(model.id), price: store.publicPricing.value?.price(for: model.id), metadataIsCurrent: !publicCatalogIsStale(at: context.date))
+                    if capacity.isDraining {
+                        ContentUnavailableView(current ? "Network maintenance" : "Last reported: maintenance",
+                            systemImage: "wrench.and.screwdriver", description: Text("Model capacity is temporarily withdrawn."))
+                    } else {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 12) {
+                                let models = OpportunityPresentation.ordered(capacity.models).filter { model in
+                                    search.isEmpty || model.id.localizedCaseInsensitiveContains(search)
+                                        || OpportunityPresentation.name(model, metadata: metadata(model.id)).localizedCaseInsensitiveContains(search)
                                 }
+                                if models.isEmpty {
+                                    ContentUnavailableView(search.isEmpty ? "No models reported" : "No matching models",
+                                        systemImage: "magnifyingglass", description: Text("Try a different search or refresh the network."))
+                                }
+                                ForEach(models) { model in
+                                    if let controlStore {
+                                        OpportunityLocalModelCard(model: model, controlStore: controlStore,
+                                            metadata: metadata(model.id), price: store.publicPricing.value?.price(for: model.id),
+                                            metadataIsCurrent: catalogCurrent(context.date), priceIsCurrent: pricingCurrent(context.date), networkIsCurrent: current)
+                                    } else {
+                                        OpportunityModelCard(model: model, local: nil, metadata: metadata(model.id),
+                                            price: store.publicPricing.value?.price(for: model.id), metadataIsCurrent: catalogCurrent(context.date),
+                                            priceIsCurrent: pricingCurrent(context.date), networkIsCurrent: current)
+                                    }
+                                }
+                                DisclosureGroup("How to read this") {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        Text("Work waiting comes first, then requests per loaded provider. These are network-wide signals, not a prediction of your earnings.")
+                                        Text("RAM compares installed memory with the catalog minimum. It does not confirm free memory or runtime compatibility.")
+                                        if let controlStore { OpportunityCatalogControls(controlStore: controlStore) }
+                                        if let catalog = store.publicCatalog.value {
+                                            Text("Model details last read \(catalog.capturedAt.formatted(date: .omitted, time: .shortened))\(catalogCurrent(context.date) ? "" : " · stale")")
+                                        }
+                                    }.font(.callout).foregroundStyle(.secondary).padding(.top, 8)
+                                }.padding(.top, 6)
                             }
                         }
                     }
-                    Text("Models are listed alphabetically. Demand bands use active requests per warm provider; any queued work is marked urgent. Customer pricing and expected provider income are not inferred from these counts.")
-                        .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    ContentUnavailableView("Network demand unavailable", systemImage: "network",
-                                           description: Text("The existing network collector has not returned a usable snapshot. Local monitoring continues independently."))
+                    ContentUnavailableView("Waiting for network demand", systemImage: "network",
+                        description: Text("Your local provider continues independently. Try Refresh to check again."))
                 }
             }
-            .padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
-    private func publicModel(_ id: String) -> CatalogModel? {
-        store.publicCatalog.value?.models.first { $0.id == id }
+    private func metadata(_ id: String) -> CatalogModel? { store.publicCatalog.value?.models.first { $0.id == id } }
+    private func catalogCurrent(_ date: Date) -> Bool {
+        guard case .available(let value, _) = store.publicCatalog else { return false }
+        return (0...1800).contains(date.timeIntervalSince(value.capturedAt))
     }
-
-    private func publicCatalogIsStale(at date: Date) -> Bool {
-        guard case .available(let catalog, _) = store.publicCatalog else { return true }
-        let age = date.timeIntervalSince(catalog.capturedAt)
-        return !age.isFinite || age < 0 || age > 1_800
-    }
-
-    private func pricingIsStale(at date: Date) -> Bool {
-        guard case .available(let pricing, _) = store.publicPricing else { return true }
-        let age = date.timeIntervalSince(pricing.capturedAt)
-        return !age.isFinite || age < 0 || age > 900
+    private func pricingCurrent(_ date: Date) -> Bool {
+        guard case .available(let value, _) = store.publicPricing else { return false }
+        return (0...900).contains(date.timeIntervalSince(value.capturedAt))
     }
 }
 
 struct OpportunityCatalogControls: View {
     @ObservedObject var controlStore: ProviderControlStore
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                if controlStore.operation == .refreshing {
-                    Text("Refreshing local catalog…")
-                } else if let snapshot = controlStore.snapshot {
-                    Text("Local catalog snapshot: \(snapshot.capturedAt.formatted(date: .abbreviated, time: .shortened))")
-                } else {
-                    Text("Local catalog unavailable")
-                }
-                Spacer()
-                Button {
-                    Task { await refreshCatalog() }
-                } label: {
-                    Label("Refresh catalog", systemImage: "arrow.clockwise")
-                }
-                .accessibilityLabel("Refresh local catalog")
+        HStack {
+            Text(controlStore.errorMessage == nil ? "Local model details" : "Local details need a refresh")
+            Spacer()
+            Button("Refresh local catalog") { Task { await refreshCatalog() } }
                 .disabled(controlStore.operation != .idle || controlStore.pendingConfirmation != nil)
-            }
-            if controlStore.errorMessage != nil {
-                Text("Local controls could not refresh. Last-known catalog details may be outdated; retry when the CLI is responding.")
-                    .foregroundStyle(.orange)
-            }
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
     }
-
-    func refreshCatalog() async {
-        await controlStore.refreshPreservingDraft()
-    }
+    func refreshCatalog() async { await controlStore.refreshPreservingDraft() }
 }
 
 private struct OpportunityLocalModelCard: View {
@@ -158,12 +179,13 @@ private struct OpportunityLocalModelCard: View {
     let metadata: CatalogModel?
     let price: CustomerModelPrice?
     let metadataIsCurrent: Bool
-
+    let priceIsCurrent: Bool
+    let networkIsCurrent: Bool
     var body: some View {
         let inventory = controlStore.snapshot?.inventory
-        let local = ((inventory?.myCatalog ?? []) + (inventory?.available ?? []))
-            .first { $0.catalogID == model.id }
-        OpportunityModelCard(model: model, local: local, metadata: metadata, price: price, metadataIsCurrent: metadataIsCurrent)
+        let local = ((inventory?.myCatalog ?? []) + (inventory?.available ?? [])).first { $0.catalogID == model.id }
+        OpportunityModelCard(model: model, local: local, metadata: metadata, price: price,
+            metadataIsCurrent: metadataIsCurrent, priceIsCurrent: priceIsCurrent, networkIsCurrent: networkIsCurrent)
     }
 }
 
@@ -173,118 +195,91 @@ struct OpportunityModelCard: View {
     var metadata: CatalogModel? = nil
     var price: CustomerModelPrice? = nil
     var metadataIsCurrent = false
+    var priceIsCurrent = false
+    var networkIsCurrent = true
     var installedMemoryBytes = ProcessInfo.processInfo.physicalMemory
+
+    private var tint: Color {
+        guard networkIsCurrent, model.ready, model.canAccept else { return .secondary }
+        return model.queuedRequests > 0 ? .orange : (model.demandBand == .low ? .secondary : .green)
+    }
+    private var ramFit: CatalogRAMFit {
+        CatalogRAMFit.evaluate(modelID: model.id, metadata: metadata, metadataIsCurrent: metadataIsCurrent,
+            installedMemoryBytes: installedMemoryBytes)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(model.id).font(.headline).textSelection(.enabled)
-            HStack {
-                Text(model.demandBand.rawValue.capitalized + " demand")
-                    .font(.caption.weight(.semibold))
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(OpportunityPresentation.name(model, metadata: metadata)).font(.headline).textSelection(.enabled)
+                    fitLabel.font(.callout)
+                }
+                Spacer(minLength: 4)
+                Text(OpportunityPresentation.demand(model))
+                    .font(.callout.weight(.semibold)).foregroundStyle(tint)
                     .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(.quaternary, in: Capsule())
-                Text(model.canAccept ? "Network accepting requests" : "Network not accepting requests")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .background(tint.opacity(0.10), in: Capsule())
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 95), alignment: .leading)], alignment: .leading, spacing: 10) {
-                metric("Active", model.activeRequests)
-                metric("Queued", model.queuedRequests)
-                metric("Warm providers", model.warmProviders)
-                metric("Routable", model.routableProviders)
+            HStack(spacing: 16) {
+                metric("In progress", model.activeRequests)
+                metric("Waiting", model.queuedRequests)
+                metric("Providers loaded", model.warmProviders)
             }
-            if let pressure = model.demandPerWarmProvider {
-                Text("\(pressure.formatted(.number.precision(.fractionLength(2)))) active + queued requests per warm provider")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            OpportunityFactorsView(model: model)
-            if let metadata {
-                Text("Public catalog: \(metadata.minimumRAMGB) GB minimum RAM · \(metadata.sizeGB.formatted(.number.precision(.fractionLength(1)))) GB model size")
-                    .font(.caption).foregroundStyle(.secondary)
-                ramFit
-            }
-            if let price {
-                Text("Customer USD / 1M tokens: \(price.inputUSDPerMillion.formatted(.number.precision(.fractionLength(2...6)))) input · \(price.outputUSDPerMillion.formatted(.number.precision(.fractionLength(2...6)))) output")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if let local {
-                Text("Catalog snapshot: \(local.isDownloaded ? "downloaded" : "not downloaded") · \(local.isEnabled ? "enabled" : "disabled") · \(local.minimumRAMGB) GB minimum RAM")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("Local catalog match unavailable").font(.caption).foregroundStyle(.secondary)
-            }
+            DisclosureGroup("Details") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(model.id).font(.callout).textSelection(.enabled)
+                    if let metadata {
+                        Text("\(metadata.sizeGB.formatted(.number.precision(.fractionLength(1)))) GB download · \(metadata.minimumRAMGB) GB minimum RAM\(metadataIsCurrent ? "" : " · last known")")
+                        if let requirements = metadata.requiredProviderCapabilities, !requirements.isEmpty {
+                            Text("Requires " + requirements.map {
+                                $0 == "apple_m5" ? "Apple M5" : ($0 == "mlx_nax" ? "MLX NAX" : $0)
+                            }.joined(separator: ", ") + ". Runtime support is not verified.")
+                        }
+                    }
+                    if let local {
+                        Text("Last catalog check: \(local.isDownloaded ? "downloaded" : "not downloaded") · \(local.isEnabled ? "enabled" : "not enabled")")
+                    }
+                    Text("\(model.routableProviders) routable providers · \(model.canAccept && model.ready ? "accepting requests" : "not accepting requests")")
+                    if let pressure = model.demandPerWarmProvider {
+                        Text("\(pressure.formatted(.number.precision(.fractionLength(2)))) active or waiting requests per loaded provider")
+                    }
+                    if let price {
+                        Text("Customer price per million tokens\(priceIsCurrent ? "" : " · last known")")
+                            .fontWeight(.medium)
+                        Text("$\(price.inputUSDPerMillion.formatted()) input · $\(price.outputUSDPerMillion.formatted()) output")
+                        Text("Customer prices are not your provider payout.")
+                    }
+                    Text("RAM minimum is one check, not a guarantee that this model can run alongside your current models.")
+                }.font(.callout).foregroundStyle(.secondary).padding(.top, 8)
+            }.font(.callout).foregroundStyle(.secondary)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
     }
 
+    @ViewBuilder private var fitLabel: some View {
+        switch ramFit {
+        case .minimumMet:
+            if metadata?.requiredProviderCapabilities?.isEmpty == false {
+                Label("RAM meets minimum · check runtime", systemImage: "memorychip").foregroundStyle(.secondary)
+            } else {
+                Label("RAM meets minimum", systemImage: "memorychip").foregroundStyle(.secondary)
+            }
+        case .belowMinimum:
+            Label("Needs more RAM", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+        case .unavailable:
+            Label("RAM check unavailable", systemImage: "questionmark.circle").foregroundStyle(.secondary)
+        }
+    }
+
     private func metric(_ title: String, _ value: Int) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(value, format: .number).font(.title2.bold()).monospacedDigit()
-            Text(title).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value, format: .number).font(.title2.weight(.semibold)).monospacedDigit()
+            Text(title).font(.callout).foregroundStyle(.secondary)
         }
-        .accessibilityElement(children: .combine)
-    }
-
-    @ViewBuilder
-    private var ramFit: some View {
-        let fit = CatalogRAMFit.evaluate(modelID: model.id, metadata: metadata,
-                                        metadataIsCurrent: metadataIsCurrent, installedMemoryBytes: installedMemoryBytes)
-        let installed = (Double(installedMemoryBytes) / 1_073_741_824).formatted(.number.precision(.fractionLength(0...1)))
-        VStack(alignment: .leading, spacing: 4) {
-            switch fit {
-            case .minimumMet:
-                Label("\(installed) GiB installed RAM · meets catalog minimum", systemImage: "memorychip")
-            case .belowMinimum:
-                Label("\(installed) GiB installed RAM · below catalog minimum", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-            case .unavailable:
-                Text("RAM check unavailable · needs current matching metadata")
-            }
-            Text("This does not establish free memory, slot availability or hardware-feature compatibility. Swap is not counted.")
-                .foregroundStyle(.secondary)
-        }
-        .font(.caption)
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct OpportunityFactorsView: View {
-    let model: NetworkModelCapacity
-
-    var body: some View {
-        let factors = OpportunityFactors(
-            activeRequests: model.activeRequests, queuedRequests: model.queuedRequests,
-            routableProviders: model.routableProviders, warmProviders: model.warmProviders,
-            queueLimit: model.queueLimit
-        )
-        VStack(alignment: .leading, spacing: 8) {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), alignment: .topLeading)],
-                      alignment: .leading, spacing: 10) {
-                factor("Demand pressure", value: factors.demandPressure.formatted(.number.precision(.fractionLength(2))),
-                       formula: "(active + queued) ÷ max(routable, 1)")
-                factor("Warm scarcity", value: factors.warmScarcity.formatted(.percent.precision(.fractionLength(0))),
-                       formula: "1 − warm ÷ max(routable, 1)")
-                factor("Queue pressure", value: factors.queuePressure.formatted(.percent.precision(.fractionLength(0))),
-                       formula: "queued ÷ max(queue limit, 1)")
-            }
-            if model.routableProviders == 0 || model.queueLimit == 0 {
-                Text("Zero denominators use 1. These ratios do not establish available capacity.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if factors.warmScarcity < 0 {
-                Text("Warm count exceeds routable count; provider populations are inconsistent for this ratio.")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-        }
-    }
-
-    private func factor(_ title: String, value: String, formula: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(value).font(.title3.weight(.semibold)).monospacedDigit()
-            Text(title).font(.caption.weight(.medium))
-            Text(formula).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
 }

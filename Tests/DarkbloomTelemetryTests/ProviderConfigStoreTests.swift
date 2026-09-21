@@ -16,6 +16,8 @@ struct ProviderConfigStoreTests {
         #expect(draft.selection == draft.original)
         #expect(draft.originalMaxModelSlots == 1)
         #expect(draft.maxModelSlots == 1)
+        #expect(draft.originalEngineV2MaxConcurrent == nil)
+        #expect(draft.engineV2MaxConcurrent == nil)
         #expect(!draft.hasChanges)
         #expect(draft.sourceRevision == (try ProviderConfigDocument(data: harness.originalData)).revision)
     }
@@ -35,6 +37,49 @@ struct ProviderConfigStoreTests {
         let document = try ProviderConfigDocument(data: Data(contentsOf: harness.configURL))
         #expect(document.maxModelSlots == 2)
         #expect(document.selection == draft.selection)
+    }
+
+    @Test("save stages a concurrency change with the model selection")
+    func savesEngineV2MaxConcurrent() async throws {
+        let source = Data("enabled_models = []\npreload_models = []\n".utf8)
+        let harness = try ConfigStoreHarness.make(mode: 0o600, sourceData: source)
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+
+        let saved = try await harness.store.save(draft.withEngineV2MaxConcurrent(8))
+
+        #expect(saved.restartRequired)
+        #expect(saved.draft.originalEngineV2MaxConcurrent == 8)
+        #expect(saved.draft.engineV2MaxConcurrent == 8)
+        #expect(!saved.draft.hasChanges)
+        let document = try ProviderConfigDocument(data: Data(contentsOf: harness.configURL))
+        #expect(document.engineV2MaxConcurrent == 8)
+        #expect(document.selection == draft.selection)
+    }
+
+    @Test("preserves existing operator ceilings when changing a different setting")
+    func preservesUnchangedOperatorCeilings() async throws {
+        let source = Data("""
+        enabled_models = ["old-model"]
+        max_model_slots = 32
+        engine_v2_max_concurrent = 8
+        preload_models = []
+
+        """.utf8)
+        let harness = try ConfigStoreHarness.make(mode: 0o600, sourceData: source)
+        defer { harness.cleanup() }
+        let draft = try await harness.store.load()
+
+        _ = try await harness.store.save(draft.withSelection(
+            ProviderModelSelection(enabled: ["new-model"], preloaded: [])
+        ))
+
+        let document = try ProviderConfigDocument(data: Data(contentsOf: harness.configURL))
+        #expect(document.maxModelSlots == 32)
+        #expect(document.engineV2MaxConcurrent == 8)
+        #expect(document.selection == ProviderModelSelection(
+            enabled: ["new-model"], preloaded: []
+        ))
     }
 
     @Test("save repairs a missing capacity key through the validated metadata-preserving transaction")

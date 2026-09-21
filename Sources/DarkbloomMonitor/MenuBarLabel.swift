@@ -7,7 +7,7 @@ enum DarkbloomLogoAsset {
     private static let menuBarMask = load(named: "dc-menubar")
     private static let modelMasks: [ModelFamilyIcon: NSImage] = {
         var masks: [ModelFamilyIcon: NSImage] = [:]
-        for family in [ModelFamilyIcon.qwen, .openai, .google] {
+        for family in ModelFamilyIcon.allCases where family != .darkbloom {
             masks[family] = load(named: "model-\(family.rawValue)")
         }
         return masks

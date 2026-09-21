@@ -93,10 +93,12 @@ public struct NetworkCapacitySnapshot: Equatable, Sendable {
 
     public let models: [NetworkModelCapacity]
     public let capturedAt: Date
+    public let isDraining: Bool
 
-    public init(models: [NetworkModelCapacity], capturedAt: Date) {
+    public init(models: [NetworkModelCapacity], capturedAt: Date, isDraining: Bool = false) {
         self.models = models
         self.capturedAt = capturedAt
+        self.isDraining = isDraining
     }
 
     public func isFresh(at now: Date) -> Bool {
@@ -132,6 +134,7 @@ extension NetworkCapacityError: LocalizedError {
 public enum NetworkCapacityParser {
     private struct Envelope: Decodable {
         let models: [NetworkModelCapacity]
+        let draining: Bool?
     }
 
     public static func parse(_ data: Data, capturedAt: Date) throws -> NetworkCapacitySnapshot {
@@ -141,13 +144,16 @@ public enum NetworkCapacityParser {
         } catch {
             throw NetworkCapacityError.invalidResponse
         }
+        guard envelope.draining != true || envelope.models.isEmpty else {
+            throw NetworkCapacityError.invalidResponse
+        }
         guard envelope.models.count <= 128,
               envelope.models.allSatisfy(\.isValid),
               Set(envelope.models.map(\.id)).count == envelope.models.count
         else {
             throw NetworkCapacityError.invalidResponse
         }
-        return NetworkCapacitySnapshot(models: envelope.models, capturedAt: capturedAt)
+        return NetworkCapacitySnapshot(models: envelope.models, capturedAt: capturedAt, isDraining: envelope.draining ?? false)
     }
 }
 

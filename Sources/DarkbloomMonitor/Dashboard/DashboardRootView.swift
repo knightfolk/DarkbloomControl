@@ -54,14 +54,14 @@ struct DashboardRootView: View {
             } else if selectedRaw == DashboardDestination.opportunity.rawValue {
                 OpportunityView(store: store, controlStore: controlStore)
             } else if selectedRaw == DashboardDestination.models.rawValue {
-                ModelsView(controlStore: controlStore) { modelID, date in
+                ModelsView(controlStore: controlStore, monitorStore: store) { modelID, date in
                     let network = ModelNetworkContext.labels(modelID: modelID, capacity: store.networkCapacity, pricing: store.publicPricing, now: date)
                     let performance = ModelNetworkContext.performanceLabel(modelID: modelID, averages: store.modelTokenRateAverages, now: date)
                     let work = ModelNetworkContext.workLabel(modelID: modelID, values: store.modelWorkEarnings, now: date)
                     return network + [performance, work].compactMap { $0 }
                 }
             } else if navigation.selected == .settings {
-                MonitorSettingsView()
+                MonitorSettingsView(extrasStore: store.providerExtras, controlStore: controlStore)
             } else {
                 HealthView(store: store)
             }

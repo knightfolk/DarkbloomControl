@@ -4,17 +4,23 @@ import SwiftUI
 /// not acquire data, reset edits, or create a second control service.
 struct ModelsView: View {
     let controlStore: ProviderControlStore?
+    var monitorStore: MonitorStore? = nil
     var networkContext: (String, Date) -> [String] = { _, _ in [] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Models").font(.largeTitle.bold())
-                Text("Enable, preload, and manage downloaded models. Save Changes applies your staged configuration.")
+                Text("Choose your models and how much work this Mac takes on.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             .padding(24)
             if let controlStore {
+                if let monitorStore {
+                    DisclosureGroup("Running and saved selection") {
+                        ProviderSelectionView(store: monitorStore, controlStore: controlStore)
+                    }.padding(.horizontal, 24).padding(.bottom, 16)
+                }
                 ModelManagerView(store: controlStore, networkContext: networkContext)
             } else {
                 ContentUnavailableView("Model controls unavailable", systemImage: "cpu",

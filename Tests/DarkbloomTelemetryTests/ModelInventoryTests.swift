@@ -38,6 +38,83 @@ struct ModelInventoryTests {
         #expect(local.models[0].sizeBytes == 13_421_772_800)
     }
 
+    @Test("decodes optional current catalog model details while preserving legacy absence")
+    func decodesCurrentCatalogDetails() throws {
+        let data = Data(#"""
+        [{
+          "id": "qwen3.8",
+          "display_name": "Qwen 3.8 27B",
+          "family": "Qwen3.8",
+          "model_type": "text",
+          "capabilities": ["chat", "tools", "vision"],
+          "size_gb": 16.3,
+          "min_ram_gb": 36,
+          "active": true,
+          "required_provider_capabilities": ["apple_m5", "mlx_nax"],
+          "quantization": "fp4",
+          "max_context_length": 262144,
+          "max_output_length": 32768
+        }]
+        """#.utf8)
+        let current = try ModelCatalogDecoder.decode(data).first
+        #expect(current?.requiredProviderCapabilities == ["apple_m5", "mlx_nax"])
+        #expect(current?.quantization == "fp4")
+        #expect(current?.maxContextLength == 262144)
+        #expect(current?.maxOutputLength == 32768)
+
+        let legacy = try ModelCatalogDecoder.decode(fixture("model-catalog.json"))
+        #expect(legacy.allSatisfy {
+            $0.requiredProviderCapabilities == nil && $0.quantization == nil
+                && $0.maxContextLength == nil && $0.maxOutputLength == nil
+        })
+    }
+
+    @Test("propagates catalog details to downloaded and available inventory rows")
+    func propagatesCatalogDetails() throws {
+        let catalog = [CatalogModel(
+            id: "qwen3.8",
+            displayName: "Qwen 3.8 27B",
+            family: "Qwen3.8",
+            modelType: "text",
+            capabilities: ["chat", "tools", "vision"],
+            sizeGB: 16.3,
+            minimumRAMGB: 36,
+            active: true,
+            requiredProviderCapabilities: ["apple_m5", "mlx_nax"],
+            quantization: "fp4",
+            maxContextLength: 262144,
+            maxOutputLength: 32768
+        )]
+        let inventory = ModelInventoryBuilder.build(
+            catalog: catalog,
+            local: [LocalModel(id: "qwen3.8", modelType: "text", sizeBytes: 1, estimatedMemoryGB: nil)],
+            selection: .init(enabled: [], preloaded: []),
+            daemon: nil,
+            loadedModels: []
+        )
+        let item = try #require(inventory.myCatalog.first)
+        #expect(item.requiredProviderCapabilities == ["apple_m5", "mlx_nax"])
+        #expect(item.quantization == "fp4")
+        #expect(item.maxContextLength == 262144)
+        #expect(item.maxOutputLength == 32768)
+    }
+
+    @Test("rejects malformed additive catalog metadata before it reaches inventory")
+    func rejectsMalformedCatalogDetails() {
+        let base = #"{"id":"model","display_name":"Model","family":"model","model_type":"text","capabilities":["chat"],"size_gb":1,"min_ram_gb":1,"active":true,"required_provider_capabilities":["mlx_nax"],"quantization":"fp4","max_context_length":4096,"max_output_length":1024}"#
+        let malformed = [
+            base.replacingOccurrences(of: "[\"mlx_nax\"]", with: "[\"\"]"),
+            base.replacingOccurrences(of: "\"fp4\"", with: "\"\""),
+            base.replacingOccurrences(of: "4096", with: "0"),
+            base.replacingOccurrences(of: "1024", with: "10000001"),
+        ]
+        for body in malformed {
+            #expect(throws: (any Error).self) {
+                try ModelCatalogDecoder.decode(Data("[\(body)]".utf8))
+            }
+        }
+    }
+
     @Test("download size comes only from one exact valid local inventory record")
     func downloadedSizeProvenance() throws {
         let catalog = try ModelCatalogDecoder.decode(fixture("model-catalog.json"))

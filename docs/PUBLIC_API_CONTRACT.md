@@ -11,6 +11,7 @@ All paths below use `https://api.darkbloom.dev`.
 | `/v1/models/catalog` | Public model metadata; not installed/enabled/warm state | 30 minutes | 6 hours |
 | `/v1/pricing` | Customer token prices; not provider payout | 15 minutes | 6 hours |
 | `/v1/models/capacity` | Per-model network routing pressure and capacity | 60 seconds with dashboard visible; 300 seconds hidden | 15 minutes |
+| `/v1/cache/status` | Aggregate network cache routing/planner health; not local cache performance | 60 seconds while Network history is visible | 16 minutes |
 | `/v1/network/series?window=24h` | Network-wide request and token history; not model-attributed or local work | 5 minutes, dashboard visible only | 1 hour |
 
 Collectors are independent. A pricing failure must not erase capacity or local telemetry. Failure retries use exponential backoff with nonnegative jitter bounded to 20%, limited by each source's cap. Successful requests restore the normal cadence. History retains its next-attempt deadline across dashboard close/reopen; hiding the dashboard cancels its polling task. Store shutdown cancels and joins owned tasks.
@@ -22,7 +23,7 @@ Collectors are independent. A pricing failure must not erase capacity or local t
 - HTTP response must be 2xx. Non-HTTP responses, decoding failures and invalid payloads fail the refresh.
 - Bodies are limited to 256 KiB by declared length and streamed-byte count; an unknown length is still bounded during streaming. The URLSession byte task is canceled when the fetch scope exits.
 - Requests bypass local and remote URL caching. Last-good snapshots are retained in app memory; these collectors do not implement persistent disk caching, ETags or conditional requests.
-- All four clients default to one dedicated ephemeral public session, with cookie storage, automatic cookies, credential storage and URL caching disabled. Its delegate rejects every redirect, including same-origin redirects, leaving the 3xx response for the client's HTTP-status rejection. Explicitly injected sessions remain caller-controlled and may not provide these guarantees. Tests inspect the actual default session configuration, exercise the redirect delegate, and use a synthetic loopback HTTP server to verify no redirect follow-up or server-cookie replay. This is not a production HTTPS or packet-capture audit.
+- All public clients default to one dedicated ephemeral public session, with cookie storage, automatic cookies, credential storage and URL caching disabled. Its delegate rejects every redirect, including same-origin redirects, leaving the 3xx response for the client's HTTP-status rejection. Explicitly injected sessions remain caller-controlled and may not provide these guarantees. Tests inspect the actual default session configuration, exercise the redirect delegate, and use a synthetic loopback HTTP server to verify no redirect follow-up or server-cookie replay. This is not a production HTTPS or packet-capture audit.
 
 ## Payload validation
 
@@ -42,7 +43,7 @@ A failed refresh retains any previous value as stale with its original capture t
 
 Public history's 24-hour window is intentionally separate from the user's calendar-date earnings and local activity. Public customer pricing cannot be multiplied into a claimed provider earning, hourly payout or profit. Opportunity factors are explanatory network ratios, not a guaranteed ranking or income forecast. None of these endpoints authorizes interrupting jobs, unloading models, or changing local residency. The official CLI remains the only supported path for model configuration and lifecycle actions.
 
-The displayed factors are `(active + queued) / max(routable, 1)` for demand pressure, `1 - warm / max(routable, 1)` for warm scarcity, and `queued / max(queueLimit, 1)` for queue pressure. These are app-derived formulas, not upstream scores. Negative scarcity or queue pressure above one is preserved rather than silently clamped; inconsistent populations and overload need explanation, not a fabricated clean value.
+Opportunity presents readable model names, a RAM-minimum check, demand status, and counts for work in progress, work waiting, and providers with the model loaded. Accepting models appear first, followed by queued work and demand per loaded provider; this is a demand comparison, not an earnings recommendation. Canonical IDs, runtime requirements, local catalog state, and customer prices live in expandable details. Stale demand is explicitly identified. Network history is a separate view with hourly data and infrastructure details collapsed by default. RAM minimums do not establish runtime compatibility or available capacity.
 
 ## Verification and remaining gaps
 
@@ -57,3 +58,13 @@ Live smoke check on September 4, 2026 at 16:30 America/Phoenix: capacity, catalo
 Repeat explicitly with `DARKBLOOM_LIVE_PUBLIC=1 swift test --filter livePublic`. The smoke test is disabled in ordinary runs so offline tests do not acquire public data.
 
 Still unproven: full-client midstream cancellation, hard real-time deadlines, adverse production HTTPS/proxy behavior, network timing stress, and future upstream availability/schema stability. Do not infer those from one successful live check, synthetic protocol, configuration/delegate or loopback HTTP tests. See MEGA_APP_PROGRESS_AUDIT.md for the broader incomplete implementation and release gates.
+
+## CLI 0.9.7 extension — September 21, 2026
+
+Capacity optionally includes `draining`. Missing means the older ordinary response; true means maintenance and requires an empty model list. The UI identifies maintenance instead of presenting zero demand.
+
+The cache client retains only `routing_mode` (`on`, `off`, `shadow`, or a fixed unknown label) and optional `sidecar.enabled`, `running`, and `ready` booleans. It uses the same isolated public transport, 256 KiB body limit and 15-second request bound. It does not retain or display request-level cache details. Cache observations expire after 120 seconds. `NetworkCacheStore` polls only while the Network history panel and dashboard are visible, cancels on disappearance, retains failures as stale, and backs off from 60 seconds to 16 minutes without jitter. Reopening starts a new visible observation loop. These semantics are separate from the older MonitorStore collectors above.
+
+Catalog metadata now includes optional `required_provider_capabilities`, `quantization`, `max_context_length`, and `max_output_length`. Capability strings and counts, quantization, and numeric limits are validated. Missing requirements are unverified; an explicitly empty list means no additional requirements are declared. The app has no supported runtime capability evidence and does not infer `mlx_nax` from a Mac's chip name. Catalog context/output limits describe the catalog, not a promise of this Mac's usable context.
+
+Additional coverage: NetworkMaintenanceTests, NetworkCacheStoreTests, and expanded catalog tests. Historical test totals above describe their dated runs.

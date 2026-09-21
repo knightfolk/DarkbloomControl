@@ -24,6 +24,16 @@ struct CatalogRAMFitTests {
         }
     }
 
+    @Test("provider capability fit remains unverified without explicit runtime evidence")
+    func providerCapabilityEvidence() {
+        #expect(CatalogProviderCapabilityFit.evaluate(required: nil, observed: nil) == .unverified)
+        #expect(CatalogProviderCapabilityFit.evaluate(required: [], observed: nil) == .noRequirements)
+        #expect(CatalogProviderCapabilityFit.evaluate(required: ["apple_m5", "mlx_nax"], observed: nil) == .unverified)
+        #expect(CatalogProviderCapabilityFit.evaluate(required: ["apple_m5", "mlx_nax"], observed: ["apple_m5"]) == .unsupported(missing: ["mlx_nax"]))
+        #expect(CatalogProviderCapabilityFit.evaluate(required: ["apple_m5", "mlx_nax", "mlx_nax"], observed: ["apple_m5", "mlx_nax"]) == .supported)
+        #expect(CatalogProviderCapabilityFit.evaluate(required: ["  mlx_nax  ", ""], observed: ["mlx_nax"]) == .supported)
+    }
+
     private func fit(bytes: UInt64) -> CatalogRAMFit {
         .evaluate(modelID: "Example/Model", metadata: model(), metadataIsCurrent: true, installedMemoryBytes: bytes)
     }

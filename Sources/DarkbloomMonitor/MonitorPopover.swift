@@ -331,6 +331,10 @@ struct MonitorPopover: View {
                         compactEarnings
                     }
                     compactJobs
+                    if case .available(let capacity, _) = store.networkCapacity, capacity.isDraining, capacity.isFresh(at: currentTime) {
+                        Label("Network maintenance", systemImage: "wrench.and.screwdriver")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     if UserDefaults.standard.bool(forKey: "electricity.enabled") {
                         EnergySummaryView(reading: store.currentEnergyReading,
                                           earnings: store.currentEnergyEarnings, now: currentTime,

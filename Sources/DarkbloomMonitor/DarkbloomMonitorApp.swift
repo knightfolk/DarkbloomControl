@@ -90,6 +90,7 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
         let monitorStore = MonitorStore(
             service: service,
             initial: .unavailable(now: Date()),
+            providerExtras: ProviderExtrasStore(),
             earningsClient: earningsClient,
             uptimeRecorder: observedUptimeDatabase,
             tokenRateRecorder: tokenRateDatabase,

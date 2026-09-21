@@ -2,11 +2,19 @@ import DarkbloomTelemetry
 import SwiftUI
 
 struct MonitorSettingsView: View {
+    var extrasStore: ProviderExtrasStore? = nil
+    var controlStore: ProviderControlStore? = nil
     @AppStorage("menuBarDisplayMode") private var displayModeRaw =
         MenuBarDisplayMode.automatic.rawValue
 
     var body: some View {
-        GeneralSettingsView(displayModeRaw: $displayModeRaw)
+        Form {
+            GeneralSettingsView(displayModeRaw: $displayModeRaw)
+            if let extrasStore, let controlStore {
+                ProviderAdvancedSettingsHost(extras: extrasStore, control: controlStore)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -16,7 +24,7 @@ private struct GeneralSettingsView: View {
     @AppStorage("electricity.enabled") private var electricityEnabled = false
 
     var body: some View {
-        Form {
+        Group {
             Section("Electricity") {
                 Toggle("Track estimated adapter energy", isOn: $electricityEnabled)
                     .accessibilityIdentifier("settings.electricity.enabled")
@@ -45,7 +53,6 @@ private struct GeneralSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .formStyle(.grouped)
     }
 
     private var displayModeBinding: Binding<MenuBarDisplayMode> {
@@ -53,5 +60,29 @@ private struct GeneralSettingsView: View {
             get: { MenuBarDisplayMode(rawValue: displayModeRaw) ?? .automatic },
             set: { displayModeRaw = $0.rawValue }
         )
+    }
+}
+
+
+private struct ProviderAdvancedSettingsHost: View {
+    @ObservedObject var extras: ProviderExtrasStore
+    @ObservedObject var control: ProviderControlStore
+    var body: some View {
+        if control.draft?.hasChanges == true {
+            Section {
+                Text("Save or discard your model edits before changing idle-memory or beta settings.")
+                    .foregroundStyle(.orange)
+            }
+        }
+        ProviderAdvancedSettingsView(store: extras, performMutation: { label, mutation in
+            await control.performSettingsMutation(label, mutation: mutation)
+        })
+        .disabled(control.operation != .idle
+            || control.pendingConfirmation != nil
+            || control.queuedStopState != nil
+            || control.draft?.hasChanges == true)
+        if let error = control.errorMessage {
+            Section { Text(error).foregroundStyle(.orange) }
+        }
     }
 }
