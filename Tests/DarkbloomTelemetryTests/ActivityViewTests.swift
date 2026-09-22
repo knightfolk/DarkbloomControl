@@ -41,10 +41,45 @@ struct ActivityViewTests {
 
 private struct ActivityFixtureClient: AccountEarningsFetching {
     func fetch(now: Date) async throws -> EarningsPresentationValue { .unavailable(reason: "Render fixture") }
+    func activityModels(in range: DateInterval) async throws -> [String] { ["gemma", "qwen"] }
+
+    func activityByModel(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ModelActivityBucket]? {
+        try ActivityCalendar.intervals(in: range, unit: unit, calendar: calendar).enumerated().flatMap { index, interval -> [ModelActivityBucket] in
+            guard index != 3 else { return [] }
+            let gemma = Int64((index % 5 + 1) * 25_000)
+            let qwen = Int64((index % 3 + 1) * 15_000)
+            return [
+                ModelActivityBucket(interval: interval, model: "gemma", workMicroUSD: gemma),
+                ModelActivityBucket(interval: interval, model: "qwen", workMicroUSD: qwen),
+            ]
+        }
+    }
+
+    func modelHourlyEarningsAverages(in range: DateInterval) async throws -> [ModelHourlyEarningsAverage]? {
+        [
+            ModelHourlyEarningsAverage(model: "gemma", workMicroUSD: 100_000, earningHours: 4),
+            ModelHourlyEarningsAverage(model: "qwen", workMicroUSD: 120_000, earningHours: 3),
+        ]
+    }
+
+    func modelActivity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar, model: String?) async throws -> [ActivityBucket]? {
+        guard let model else { return try await activity(in: range, unit: unit, calendar: calendar) }
+        return try ActivityCalendar.intervals(in: range, unit: unit, calendar: calendar).enumerated().map { index, interval in
+            let work: Int64 = model == "gemma"
+                ? Int64((index % 5 + 1) * 25_000)
+                : Int64((index % 3 + 1) * 15_000)
+            return ActivityBucket(interval: interval, totals: index == 3 ? nil : ActivityTotals(
+                workMicroUSD: work, rewardMicroUSD: 0, jobs: 1, promptTokens: 100, completionTokens: 200
+            ), coverage: index == 3 ? .unavailable : .recorded)
+        }
+    }
+
     func activity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ActivityBucket]? {
         try ActivityCalendar.intervals(in: range, unit: unit, calendar: calendar).enumerated().map { index, interval in
-            ActivityBucket(interval: interval, totals: index == 3 ? nil : ActivityTotals(
-                workMicroUSD: Int64((index % 5 + 1) * 25_000),
+            let gemma = Int64((index % 5 + 1) * 25_000)
+            let qwen = Int64((index % 3 + 1) * 15_000)
+            return ActivityBucket(interval: interval, totals: index == 3 ? nil : ActivityTotals(
+                workMicroUSD: gemma + qwen,
                 rewardMicroUSD: 10_000, jobs: Int64(index + 1), promptTokens: 100, completionTokens: 200
             ), coverage: index == 3 ? .unavailable : .recorded)
         }

@@ -8,6 +8,9 @@ struct ActivityView: View {
     @State private var selectedDate = Date()
     @State private var endDate = Date()
     @State private var buckets: [ActivityBucket] = []
+    @State private var modelWorkByBucket: [Date: [String: Int64]] = [:]
+    @State private var modelHourlyAverages: [ModelHourlyEarningsAverage] = []
+    @State private var showsModelHourlyAverages = true
     @State private var message: String?
     @State private var loading = false
     @State private var refreshID = 0
@@ -48,14 +51,14 @@ struct ActivityView: View {
                 .foregroundStyle(.secondary)
             if !models.isEmpty || model != nil {
                 Picker("Model", selection: $model) {
-                    Text("All models + rewards").tag(String?.none)
+                    Text("All models by color + rewards").tag(String?.none)
                     ForEach(models, id: \.self) { Text($0).tag(Optional($0)) }
                     if let model, !models.contains(model) { Text(model).tag(Optional(model)) }
                 }
                 .frame(maxWidth: 400, alignment: .leading)
             }
             Text(model == nil
-                 ? "Work and base rewards are separate. Gaps mean no verified measurement, not zero. Recorded totals may be incomplete."
+                 ? "Each model has its own color; base rewards are separate. Gaps mean no verified measurement, not zero. Recorded totals may be incomplete."
                  : "Work attributed to the selected model only; account base rewards are excluded. Gaps are unknown, and totals may be incomplete.")
                 .font(.callout).foregroundStyle(.secondary)
             if loading {
@@ -63,21 +66,86 @@ struct ActivityView: View {
             } else if let message {
                 ContentUnavailableView("History unavailable", systemImage: "chart.bar", description: Text(message))
             } else if let range = query.range {
-                Chart(buckets) { bucket in
-                    if let totals = bucket.totals {
-                        RectangleMark(xStart: .value("Start", bucket.interval.start.addingTimeInterval(bucket.interval.duration * 0.1)), xEnd: .value("End", bucket.interval.end.addingTimeInterval(-bucket.interval.duration * 0.1)), yStart: .value("USD", 0.0), yEnd: .value("USD", Double(totals.workMicroUSD) / 1_000_000))
-                            .foregroundStyle(by: .value("Earnings", "Work"))
-                        if model == nil {
-                            RectangleMark(xStart: .value("Start", bucket.interval.start.addingTimeInterval(bucket.interval.duration * 0.1)), xEnd: .value("End", bucket.interval.end.addingTimeInterval(-bucket.interval.duration * 0.1)), yStart: .value("USD", Double(totals.workMicroUSD) / 1_000_000), yEnd: .value("USD", Double(totals.workMicroUSD) / 1_000_000 + Double(totals.rewardMicroUSD) / 1_000_000))
-                                .foregroundStyle(by: .value("Earnings", "Base rewards"))
+                let yAxis = ActivityChartAxis.yAxis(maximum: chartSegments.map(\.endUSD).max() ?? 0)
+                Chart(chartSegments) { segment in
+                    RectangleMark(
+                        xStart: .value("Start", segment.interval.start.addingTimeInterval(segment.interval.duration * 0.1)),
+                        xEnd: .value("End", segment.interval.end.addingTimeInterval(-segment.interval.duration * 0.1)),
+                        yStart: .value("USD", segment.startUSD),
+                        yEnd: .value("USD", segment.endUSD)
+                    )
+                    .foregroundStyle(by: .value("Earnings", segment.series))
+                }
+                .chartXScale(domain: range.start...range.end)
+                .chartYScale(domain: 0...yAxis.upperBound)
+                .chartXAxis {
+                    AxisMarks(values: ActivityChartAxis.xValues(in: range, unit: query.unit, calendar: query.calendar)) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.7, dash: [3, 3]))
+                            .foregroundStyle(Color.secondary.opacity(0.22))
+                        AxisTick(stroke: StrokeStyle(lineWidth: 0.7))
+                        AxisValueLabel {
+                            if let date = value.as(Date.self) {
+                                if query.unit == .hour {
+                                    Text(date, format: .dateTime.hour())
+                                } else {
+                                    Text(date, format: .dateTime.month(.abbreviated).day())
+                                }
+                            }
                         }
                     }
                 }
-                .chartXScale(domain: range.start...range.end)
-                .chartForegroundStyleScale(["Work": Color.green, "Base rewards": Color.blue])
+                .chartYAxis {
+                    AxisMarks(position: .trailing, values: yAxis.values) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.7, dash: [3, 3]))
+                            .foregroundStyle(Color.secondary.opacity(0.25))
+                        AxisTick(stroke: StrokeStyle(lineWidth: 0.7))
+                        AxisValueLabel {
+                            if let amount = value.as(Double.self) {
+                                Text(amount, format: .currency(code: "USD").precision(.fractionLength(yAxis.fractionDigits)))
+                            }
+                        }
+                    }
+                }
+                .chartForegroundStyleScale(domain: chartStyleDomain, range: chartStyleRange)
                 .chartLegend(model == nil ? .visible : .hidden)
-                .frame(height: 180)
+                .frame(height: 205)
                 .accessibilityLabel("Recorded earnings. Full values and coverage are available in the table below.")
+                if !visibleModelHourlyAverages.isEmpty {
+                    DisclosureGroup(isExpanded: $showsModelHourlyAverages) {
+                        ScrollView {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading, spacing: 8) {
+                                ForEach(visibleModelHourlyAverages) { average in
+                                    HStack(spacing: 8) {
+                                        Circle().fill(modelColor(average.model)).frame(width: 8, height: 8)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            HStack(spacing: 8) {
+                                                Text(average.model).lineLimit(1).truncationMode(.middle)
+                                                Spacer(minLength: 4)
+                                                Text(average.averageWorkUSDPerEarningHour
+                                                    .formatted(.currency(code: "USD").precision(.fractionLength(4))) + " / hr")
+                                                    .monospacedDigit()
+                                            }
+                                            Text("\(average.earningHours.formatted()) recorded earning \(average.earningHours == 1 ? "hour" : "hours")")
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .padding(.horizontal, 10).padding(.vertical, 7)
+                                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
+                                    .help("Gross recorded model work divided by hours with earnings ledger entries. Electricity and idle hours are not included.")
+                                    .accessibilityElement(children: .combine)
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 128)
+                        .padding(.top, 8)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Average work earnings per model-hour").font(.headline)
+                            Text("Gross recorded work; excludes electricity and hours without earnings.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
                 Table(buckets) {
                     TableColumn("Period") { bucket in
                         Text(bucket.interval.start, format: .dateTime.month().day().hour().timeZone())
@@ -109,11 +177,60 @@ struct ActivityView: View {
         .task(id: query) { await load(query: query) }
     }
 
+    private var chartSegments: [ActivityChartSegment] {
+        ActivityChartData.segments(
+            buckets: buckets,
+            models: models,
+            modelWorkByBucket: modelWorkByBucket,
+            selectedModel: model
+        )
+    }
+
+    private var visibleModelHourlyAverages: [ModelHourlyEarningsAverage] {
+        guard let model else { return modelHourlyAverages }
+        return modelHourlyAverages.filter { $0.model == model }
+    }
+
+    private var chartColors: [String: Color] {
+        if model != nil {
+            return ["Work": .green]
+        }
+        var colors = Dictionary(uniqueKeysWithValues: models.map { name in
+            (name, modelColor(name))
+        })
+        colors["Work"] = .green
+        colors["Base rewards"] = .blue
+        return colors
+    }
+
+    private var chartStyleDomain: [String] {
+        guard model == nil else { return ["Work"] }
+        var series = models
+        if chartSegments.contains(where: { $0.series == "Work" }) { series.append("Work") }
+        series.append("Base rewards")
+        return series
+    }
+
+    private var chartStyleRange: [Color] {
+        chartStyleDomain.map { chartColors[$0] ?? .green }
+    }
+
+    private func modelColor(_ model: String) -> Color {
+        // FNV-1a keeps a model's color stable when the visible date range changes.
+        let hash = model.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { value, byte in
+            (value ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        let hue = Double(hash % 10_000_019) / 10_000_019
+        return Color(hue: hue, saturation: 0.72, brightness: 0.9)
+    }
+
     private func load(query: ActivityQuery) async {
         guard !Task.isCancelled else { return }
         loading = true
         message = nil
         buckets = []
+        modelWorkByBucket = [:]
+        modelHourlyAverages = []
         tokenRates = [:]
         guard let range = query.range else {
             message = "Choose an end date on or after the start date, with no more than 366 calendar days."
@@ -123,12 +240,19 @@ struct ActivityView: View {
         do {
             let availableModels = try await store.activityModels(in: range)
             let result = try await store.activity(in: range, unit: query.unit, calendar: query.calendar, model: query.model)
+            let modelHistory = try await store.activityByModel(in: range, unit: query.unit, calendar: query.calendar) ?? []
+            let averages = (try? await store.modelHourlyEarningsAverages(in: range)) ?? []
+            let perModel = Dictionary(grouping: modelHistory, by: \.interval.start).mapValues { values in
+                Dictionary(uniqueKeysWithValues: values.map { ($0.model, $0.workMicroUSD) })
+            }
             let rates: [ModelRateBucket]?
             if let model = query.model {
                 rates = try? await store.activityTokenRates(in: range, unit: query.unit, calendar: query.calendar, model: model)
             } else { rates = nil }
             guard !Task.isCancelled else { return }
             models = availableModels
+            modelWorkByBucket = perModel
+            modelHourlyAverages = averages
             tokenRates = Dictionary(uniqueKeysWithValues: (rates ?? []).map { ($0.id, $0) })
             if let result { buckets = result } else { message = "Local earnings storage is unavailable." }
         } catch {

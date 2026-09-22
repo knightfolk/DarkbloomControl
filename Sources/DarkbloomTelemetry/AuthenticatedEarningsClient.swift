@@ -53,6 +53,8 @@ public protocol AccountEarningsFetching: Sendable {
     func activity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ActivityBucket]?
     func modelActivity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar, model: String?) async throws -> [ActivityBucket]?
     func activityModels(in range: DateInterval) async throws -> [String]
+    func activityByModel(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ModelActivityBucket]?
+    func modelHourlyEarningsAverages(in range: DateInterval) async throws -> [ModelHourlyEarningsAverage]?
 }
 
 public extension AccountEarningsFetching {
@@ -62,6 +64,8 @@ public extension AccountEarningsFetching {
         return try await activity(in: range, unit: unit, calendar: calendar)
     }
     func activityModels(in range: DateInterval) async throws -> [String] { [] }
+    func activityByModel(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ModelActivityBucket]? { nil }
+    func modelHourlyEarningsAverages(in range: DateInterval) async throws -> [ModelHourlyEarningsAverage]? { nil }
     func activity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ActivityBucket]? { nil }
     func jobCompletionSummary(now: Date, calendar: Calendar) async throws -> JobCompletionSummary? {
         nil
@@ -97,6 +101,12 @@ public struct AuthenticatedEarningsClient: AccountEarningsFetching, Sendable {
     }
     public func activityModels(in range: DateInterval) async throws -> [String] {
         try await database?.activityModels(in: range) ?? []
+    }
+    public func activityByModel(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ModelActivityBucket]? {
+        try await database?.activityByModel(in: range, unit: unit, calendar: calendar)
+    }
+    public func modelHourlyEarningsAverages(in range: DateInterval) async throws -> [ModelHourlyEarningsAverage]? {
+        try await database?.modelHourlyEarningsAverages(in: range)
     }
     public func activity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ActivityBucket]? {
         try await database?.activity(in: range, unit: unit, calendar: calendar)

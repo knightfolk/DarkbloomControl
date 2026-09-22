@@ -246,6 +246,14 @@ final class MonitorStore: ObservableObject {
         try await earningsClient.activityModels(in: range)
     }
 
+    func activityByModel(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ModelActivityBucket]? {
+        try await earningsClient.activityByModel(in: range, unit: unit, calendar: calendar)
+    }
+
+    func modelHourlyEarningsAverages(in range: DateInterval) async throws -> [ModelHourlyEarningsAverage]? {
+        try await earningsClient.modelHourlyEarningsAverages(in: range)
+    }
+
     func activityTokenRates(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar, model: String) async throws -> [ModelRateBucket]? {
         try await tokenRateRecorder?.history(in: range, unit: unit, calendar: calendar, model: model)
     }

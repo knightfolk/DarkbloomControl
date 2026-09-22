@@ -27,6 +27,10 @@ struct MonitorPopoverLayoutTests {
         #expect(rows.first?.activeRequests == 5)
         #expect(rows.first?.queuedRequests == 1)
         #expect(rows.first?.warmProviders == 4)
+
+        #expect(PopupNetworkDemandPresentation.row(for: "urgent", in: capacity) == rows.first)
+        #expect(PopupNetworkDemandPresentation.row(for: "disabled", in: capacity)?.band == .urgent)
+        #expect(PopupNetworkDemandPresentation.row(for: "missing", in: capacity) == nil)
     }
 
     @Test("network demand presentation ages an available sample without a refresh")
@@ -101,7 +105,7 @@ struct MonitorPopoverLayoutTests {
         #expect(ModelOptionToggle.groupSpacing > ModelOptionToggle.labelSpacing * 3)
     }
 
-    @Test("popup keeps enabled non-downloaded models separate from two warm models")
+    @Test("popup excludes catalog-only models from the provider filter")
     func popupShowsAllEnabledModels() throws {
         let modelIDs = ["qwen-new-a", "qwen-new-b", "model-c", "model-d", "model-e", "model-f"]
         let selection = ProviderModelSelection(enabled: modelIDs, preloaded: Array(modelIDs.prefix(2)))
@@ -155,9 +159,9 @@ struct MonitorPopoverLayoutTests {
             return
         }
 
-        #expect(Set(models.map(\.name)) == Set(modelIDs))
+        #expect(Set(models.map(\.name)) == Set(modelIDs.prefix(5)))
         #expect(models.filter { $0.state == .loadedIdle }.map(\.name) == Array(modelIDs.prefix(2)))
-        #expect(models.filter { $0.state == .availableUnloaded }.count == 4)
+        #expect(models.filter { $0.state == .availableUnloaded }.count == 3)
     }
 
     @Test("DC monogram loads as a tintable vector asset")

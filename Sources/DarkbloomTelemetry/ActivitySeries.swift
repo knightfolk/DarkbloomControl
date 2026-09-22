@@ -23,6 +23,29 @@ public struct ActivityBucket: Equatable, Sendable, Identifiable {
     public var id: Date { interval.start }
 }
 
+/// Work recorded for one model inside a displayed calendar bucket.
+public struct ModelActivityBucket: Equatable, Sendable, Identifiable {
+    public let interval: DateInterval
+    public let model: String
+    public let workMicroUSD: Int64
+
+    public var id: String { "\(interval.start.timeIntervalSince1970)-\(model)" }
+}
+
+/// Average observed work earnings for hours with at least one model ledger row.
+/// This is gross work revenue, not net profit or an estimate of idle-hour output.
+public struct ModelHourlyEarningsAverage: Equatable, Sendable, Identifiable {
+    public let model: String
+    public let workMicroUSD: Int64
+    public let earningHours: Int
+
+    public var id: String { model }
+    public var averageWorkUSDPerEarningHour: Double {
+        guard earningHours > 0 else { return 0 }
+        return Double(workMicroUSD) / 1_000_000 / Double(earningHours)
+    }
+}
+
 /// Observed work only, never a complete payout or account-wide reward claim.
 public struct ModelWorkEarnings: Equatable, Sendable {
     public let model: String

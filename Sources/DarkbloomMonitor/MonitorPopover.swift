@@ -157,10 +157,10 @@ enum PopupModelPresentation: Equatable {
         fallback: String?
     ) -> String? {
         guard let snapshot else { return fallback }
-        // Enabled is independent from Downloaded. Include enabled rows from
-        // both settings sections so a configured model does not disappear
-        // from the popup merely because its weights are not local yet.
-        let catalogModels = (snapshot.inventory.myCatalog + snapshot.inventory.available)
+        // The popup represents this provider's saved local selection. The
+        // available section is the broader catalog and must not expand the
+        // provider filter with models the user did not enable locally.
+        let catalogModels = snapshot.inventory.myCatalog
             .filter(\.isEnabled)
             .map(\.catalogID)
         if !catalogModels.isEmpty {
@@ -288,6 +288,22 @@ enum PopupNetworkDemandPresentation {
             }
     }
 
+    static func row(
+        for modelID: String,
+        in capacity: NetworkCapacitySnapshot
+    ) -> PopupNetworkDemandRow? {
+        guard let model = capacity.models.first(where: { $0.id == modelID }) else {
+            return nil
+        }
+        return PopupNetworkDemandRow(
+            id: model.id,
+            band: model.demandBand,
+            activeRequests: model.activeRequests,
+            queuedRequests: model.queuedRequests,
+            warmProviders: model.warmProviders
+        )
+    }
+
     private static func rank(_ band: NetworkDemandBand) -> Int {
         switch band {
         case .urgent: 0
@@ -375,6 +391,15 @@ struct MonitorPopover: View {
                 ForEach(models) { model in
                     HStack(spacing: 8) {
                         ModelStatusPill(model: model)
+                        if let demand = inlineNetworkDemand(for: model.name) {
+                            InlineNetworkDemandBadge(
+                                row: demand,
+                                isStale: PopupNetworkDemandPresentation.freshness(
+                                    of: store.networkCapacity,
+                                    at: currentTime
+                                ) == .stale
+                            )
+                        }
                         Spacer(minLength: 4)
                         if let average = store.currentModelTokenRateAverages.first(where: { $0.model == model.name }) {
                             VStack(alignment: .trailing, spacing: 1) {
@@ -705,9 +730,16 @@ struct MonitorPopover: View {
 
     private var enabledNetworkModelIDs: [String] {
         if let inventory = controlStore.snapshot?.inventory.myCatalog {
-            return inventory.filter(\.isEnabled).map(\.catalogID)
+            let downloaded = Set(inventory.filter(\.isEnabled).map(\.catalogID))
+            let configured = Set(controlStore.snapshot?.draft.original.enabled ?? [])
+            return Array(downloaded.union(configured)).sorted()
         }
         return models.map(\.name)
+    }
+
+    private func inlineNetworkDemand(for modelID: String) -> PopupNetworkDemandRow? {
+        guard let capacity = store.networkCapacity.value else { return nil }
+        return PopupNetworkDemandPresentation.row(for: modelID, in: capacity)
     }
 
     private var averageTokenRate: Double? {
@@ -906,6 +938,32 @@ private struct NetworkDemandRow: View {
         case .moderate: .blue
         case .high: .orange
         case .urgent: .red
+        }
+    }
+}
+
+private struct InlineNetworkDemandBadge: View {
+    let row: PopupNetworkDemandRow
+    let isStale: Bool
+
+    var body: some View {
+        Text("\(row.band.rawValue.capitalized) demand")
+            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.14), in: Capsule())
+            .foregroundStyle(color)
+            .help(isStale ? "Last known network demand; sample is stale" : "Current network demand")
+            .accessibilityLabel("\(row.band.rawValue) network demand for \(row.id)\(isStale ? ", stale sample" : "")")
+    }
+
+    private var color: Color {
+        if isStale { return .secondary }
+        switch row.band {
+        case .low: return .secondary
+        case .moderate: return .blue
+        case .high: return .orange
+        case .urgent: return .red
         }
     }
 }

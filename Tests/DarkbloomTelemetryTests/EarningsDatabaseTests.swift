@@ -65,6 +65,69 @@ struct EarningsDatabaseTests {
         #expect(clientValues == [summary])
     }
 
+    @Test("model activity returns distinct work series and leaves rewards out")
+    func activityByModelSeparatesWork() async throws {
+        let database = try EarningsDatabase(url: temporaryDatabaseURL())
+        let firstHour = Date(timeIntervalSince1970: 3_600)
+        let response = AccountEarningsResponse(
+            accountID: "unused", earnings: [
+                earning(id: 1, model: "gemma", microUSD: 100_000, at: firstHour),
+                earning(id: 2, model: "qwen", microUSD: 200_000, at: firstHour),
+                earning(id: 3, model: "base_reward", microUSD: 25_000, promptTokens: 0, completionTokens: 0, at: firstHour),
+                earning(id: 4, model: "gemma", microUSD: 50_000, at: firstHour.addingTimeInterval(3_600)),
+            ], count: 4, historyLimit: 1_000, recentCount: 4,
+            totalMicroUSD: 375_000, availableBalanceMicroUSD: 375_000, withdrawableBalanceMicroUSD: 375_000
+        )
+        try await database.ingest(response, capturedAt: firstHour.addingTimeInterval(7_200))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let hours = try await database.activityByModel(
+            in: DateInterval(start: firstHour, duration: 7_200), unit: .hour, calendar: calendar
+        )
+        #expect(hours.map(\.model) == ["gemma", "qwen", "gemma"])
+        #expect(hours.map(\.workMicroUSD) == [100_000, 200_000, 50_000])
+        #expect(hours.map(\.interval.start) == [firstHour, firstHour, firstHour.addingTimeInterval(3_600)])
+
+        let day = try await database.activityByModel(
+            in: DateInterval(start: firstHour, duration: 7_200), unit: .day, calendar: calendar
+        )
+        #expect(day.map(\.model) == ["gemma", "qwen"])
+        #expect(day.map(\.workMicroUSD) == [150_000, 200_000])
+    }
+
+    @Test("hourly average query counts only distinct hours with model ledger rows")
+    func modelHourlyEarningsAverages() async throws {
+        let database = try EarningsDatabase(url: temporaryDatabaseURL())
+        let firstHour = Date(timeIntervalSince1970: 3_600)
+        let response = AccountEarningsResponse(
+            accountID: "unused", earnings: [
+                earning(id: 1, model: "gemma", microUSD: 100_000, at: firstHour),
+                earning(id: 2, model: "gemma", microUSD: 50_000, at: firstHour.addingTimeInterval(120)),
+                earning(id: 3, model: "gemma", microUSD: 300_000, at: firstHour.addingTimeInterval(3_600)),
+                earning(id: 4, model: "qwen", microUSD: 400_000, at: firstHour),
+                earning(id: 5, model: "base_reward", microUSD: 25_000, promptTokens: 0, completionTokens: 0, at: firstHour),
+            ], count: 5, historyLimit: 1_000, recentCount: 5,
+            totalMicroUSD: 875_000, availableBalanceMicroUSD: 875_000, withdrawableBalanceMicroUSD: 875_000
+        )
+        try await database.ingest(response, capturedAt: firstHour.addingTimeInterval(7_200))
+
+        let values = try await database.modelHourlyEarningsAverages(
+            in: DateInterval(start: firstHour, duration: 366 * 86_400)
+        )
+        #expect(values == [
+            ModelHourlyEarningsAverage(model: "gemma", workMicroUSD: 450_000, earningHours: 2),
+            ModelHourlyEarningsAverage(model: "qwen", workMicroUSD: 400_000, earningHours: 1),
+        ])
+        #expect(abs(values[0].averageWorkUSDPerEarningHour - 0.225) < 0.000_001)
+
+        let client = AuthenticatedEarningsClient(homeDirectory: temporaryDatabaseURL().deletingLastPathComponent(), database: database)
+        #expect(try await client.modelHourlyEarningsAverages(in: DateInterval(start: firstHour, duration: 86_400)) == [
+            ModelHourlyEarningsAverage(model: "gemma", workMicroUSD: 450_000, earningHours: 2),
+            ModelHourlyEarningsAverage(model: "qwen", workMicroUSD: 400_000, earningHours: 1),
+        ])
+    }
+
     @Test("hourly model buckets stay compact while payout samples remain queryable")
     func persistsEarningsAndPayoutSamples() async throws {
         let databaseURL = temporaryDatabaseURL()

@@ -555,6 +555,107 @@ public actor EarningsDatabase {
         return models
     }
 
+    /// Reads all per-model work for the requested range in one local query.
+    /// Rewards are stored separately and are intentionally not included.
+    public func activityByModel(
+        in range: DateInterval,
+        unit: ActivityCalendarUnit,
+        calendar: Calendar
+    ) throws -> [ModelActivityBucket] {
+        let intervals = try ActivityCalendar.intervals(in: range, unit: unit, calendar: calendar)
+        guard !intervals.isEmpty else { return [] }
+        let statement = try prepare("""
+            SELECT hour_start, model, amount_micro_usd
+            FROM earnings_hourly
+            WHERE hour_start >= ? AND hour_start < ?
+            ORDER BY hour_start, model
+            """)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, range.start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 2, range.end.timeIntervalSince1970)
+
+        var totalsByInterval: [Date: [String: Int64]] = [:]
+        var intervalIndex = 0
+        var result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            let hourStart = Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
+            while intervalIndex < intervals.count, hourStart >= intervals[intervalIndex].end {
+                intervalIndex += 1
+            }
+            if intervalIndex < intervals.count,
+               hourStart >= intervals[intervalIndex].start,
+               let modelCString = sqlite3_column_text(statement, 1) {
+                let interval = intervals[intervalIndex]
+                if interval.start.timeIntervalSince1970.truncatingRemainder(dividingBy: 3600) == 0,
+                   interval.end.timeIntervalSince1970.truncatingRemainder(dividingBy: 3600) == 0 {
+                    let model = String(cString: modelCString)
+                    let amount = sqlite3_column_int64(statement, 2)
+                    let previous = totalsByInterval[interval.start]?[model] ?? 0
+                    let (total, overflow) = previous.addingReportingOverflow(amount)
+                    guard !overflow else {
+                        throw EarningsDatabaseError.sqlite(message: "activity work total overflow")
+                    }
+                    totalsByInterval[interval.start, default: [:]][model] = total
+                }
+            }
+            result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else {
+            throw lastError()
+        }
+
+        return intervals.flatMap { interval in
+            (totalsByInterval[interval.start] ?? [:]).keys.sorted().compactMap { model in
+                guard let amount = totalsByInterval[interval.start]?[model] else { return nil }
+                return ModelActivityBucket(interval: interval, model: model, workMicroUSD: amount)
+            }
+        }
+    }
+
+    /// Returns gross work totals divided by distinct hours with model ledger rows.
+    /// It does not treat missing rows as idle hours or allocate device electricity.
+    public func modelHourlyEarningsAverages(
+        in range: DateInterval
+    ) throws -> [ModelHourlyEarningsAverage] {
+        guard range.start.timeIntervalSince1970.isFinite,
+              range.end.timeIntervalSince1970.isFinite,
+              range.end >= range.start else {
+            throw ActivityCalendarError.invalidInterval
+        }
+        let statement = try prepare("""
+            SELECT model, SUM(amount_micro_usd), COUNT(DISTINCT hour_start)
+            FROM earnings_hourly
+            WHERE hour_start >= ? AND hour_start < ?
+            GROUP BY model
+            ORDER BY model
+            LIMIT 129
+            """)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, range.start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 2, range.end.timeIntervalSince1970)
+
+        var values: [ModelHourlyEarningsAverage] = []
+        var result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            guard let modelCString = sqlite3_column_text(statement, 0) else {
+                result = sqlite3_step(statement)
+                continue
+            }
+            let earningHours = sqlite3_column_int64(statement, 2)
+            guard earningHours > 0, earningHours <= Int64(Int.max) else {
+                throw ActivityCalendarError.invalidInterval
+            }
+            values.append(ModelHourlyEarningsAverage(
+                model: String(cString: modelCString),
+                workMicroUSD: sqlite3_column_int64(statement, 1),
+                earningHours: Int(earningHours)
+            ))
+            result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else { throw lastError() }
+        return values
+    }
+
     public func earningsByModel(since: Date) throws -> [ModelEarnings] {
         let statement = try prepare("""
             SELECT model, SUM(amount_micro_usd), SUM(jobs)
