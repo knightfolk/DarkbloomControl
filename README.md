@@ -6,8 +6,10 @@ Darkbloom Control is a native macOS menu-bar companion for a local Darkbloom
 provider. It turns provider telemetry into a compact infographic popup and
 keeps model and lifecycle controls behind explicit safety checks.
 
-**v1.1** adds clearer settings, a cleaner popup, visible provider startup progress,
-and signed automatic/manual updates for Control. Previously named Darkbloom Monitor.
+**v1.2** adds per-model chart colors, clearer chart scales, per-model average
+gross recorded earnings per earning-hour, and per-model network demand. It
+builds on v1.1's clearer settings, provider startup progress, and signed Control
+updates. Previously named Darkbloom Monitor.
 
 ## Download
 
@@ -27,6 +29,8 @@ release bundle; no Gatekeeper-disable or quarantine-removal workaround is needed
   breakdown once more than one model has measured samples
 - Calendar-day earnings, average earnings per observed hour, and a local
   calendar-week total
+- Per-model average gross recorded work earnings per earning-hour, with its
+  observed-hour count; this does not subtract electricity
 - Completed jobs today and the prior seven-day daily average when enough local
   history exists
 - Green active, yellow loaded-idle, and gray available-model pills that remain
