@@ -11,6 +11,9 @@ struct DarkbloomMonitorApp: App {
             EmptyView()
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                ControlAppUpdateMenuItem()
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {
                     appDelegate.showSettings()
@@ -118,6 +121,19 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
             homeDirectory: home,
             refreshTelemetry: { [weak monitorStore] in
                 await monitorStore?.refreshTelemetryImmediately()
+            },
+            awaitStartup: { [weak monitorStore] requestedAt in
+                for _ in 0..<45 {
+                    try Task.checkCancellation()
+                    guard let monitorStore else { throw CancellationError() }
+                    await monitorStore.refreshTelemetryImmediately()
+                    if case .available(let daemon, _) = monitorStore.snapshot.state,
+                       daemon.writtenAt >= requestedAt.timeIntervalSince1970 {
+                        return
+                    }
+                    try await Task.sleep(for: .seconds(2))
+                }
+                throw ProviderStartupTimeout()
             }
         )
         store = monitorStore
@@ -126,6 +142,13 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
             store: monitorStore,
             controlStore: providerControlStore
         )
+        ControlAppUpdater.shared.canRelaunch = { [weak providerControlStore] in
+            guard let control = providerControlStore else { return true }
+            return control.operation == .idle && control.draft?.hasChanges != true
+                && control.pendingConfirmation == nil && control.queuedStopState == nil
+        }
+        ControlAppUpdater.shared.start()
+        CLIUpdateStatusStore.shared.start()
         monitorStore.start()
         Task { @MainActor [weak providerControlStore] in
             await providerControlStore?.refresh()
@@ -136,7 +159,10 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
         statusItemController?.invalidate()
         controlStore?.cancelCurrentOperation()
         guard let store else { return }
-        Task { await store.stop() }
+        Task {
+            await CLIUpdateStatusStore.shared.stop()
+            await store.stop()
+        }
     }
 }
 
@@ -162,3 +188,12 @@ struct ProviderSettingsRoot: View {
             .environmentObject(controlStore)
     }
 }
+
+private struct ControlAppUpdateMenuItem: View {
+    @ObservedObject var updater = ControlAppUpdater.shared
+    var body: some View {
+        Button("Check for Updates…", action: updater.check).disabled(!updater.canCheck)
+    }
+}
+
+private struct ProviderStartupTimeout: Error {}

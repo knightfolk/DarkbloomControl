@@ -9,6 +9,16 @@ struct MonitorSettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Settings").font(.largeTitle.bold())
+                    Text("App preferences apply immediately. Provider settings below show saved choices.")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 8)
+            }
+            ControlAppUpdateSettings()
+            CLIUpdateNoticeView(store: CLIUpdateStatusStore.shared)
             GeneralSettingsView(displayModeRaw: $displayModeRaw)
             if let extrasStore, let controlStore {
                 ProviderAdvancedSettingsHost(extras: extrasStore, control: controlStore)
@@ -26,20 +36,30 @@ private struct GeneralSettingsView: View {
     var body: some View {
         Group {
             Section("Electricity") {
-                Toggle("Track estimated adapter energy", isOn: $electricityEnabled)
-                    .accessibilityIdentifier("settings.electricity.enabled")
+                Toggle(isOn: $electricityEnabled) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Estimate electricity use")
+                        Text(electricityEnabled ? "On · Records available readings locally" : "Off · Not recording")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityLabel("Estimate electricity use")
+                .accessibilityIdentifier("settings.electricity.enabled")
                 TextField("Price (USD / kWh)", text: $electricityRate)
                     .accessibilityIdentifier("settings.electricity.rate")
+                    .disabled(!electricityEnabled)
                 if !electricityRate.isEmpty && ElectricityCost.rate(electricityRate) == nil {
                     Text("Enter a non-negative dollar amount, such as 0.15.")
                         .foregroundStyle(.red)
                 }
-                Text("Use dollars, not cents. Samples are stored locally every 10 seconds while enabled. This is estimated DC adapter input for the whole Mac, not wall power or Darkbloom-only consumption. Unplugged or missing readings leave gaps. Earnings after electricity requires matching coverage.")
+                DisclosureGroup("About electricity estimates") {
+                    Text("Enter dollars, not cents. Estimates cover the whole Mac’s DC adapter input, not wall power or Darkbloom alone. Readings are stored locally every 10 seconds. Unplugged or missing readings leave gaps; net earnings require matching coverage.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            Section("Menu bar") {
+            Section("Menu bar · Applies immediately") {
                 Picker("Displayed metric", selection: displayModeBinding) {
                     ForEach(MenuBarDisplayMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
@@ -68,6 +88,22 @@ private struct ProviderAdvancedSettingsHost: View {
     @ObservedObject var extras: ProviderExtrasStore
     @ObservedObject var control: ProviderControlStore
     var body: some View {
+        Section {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Provider settings").font(.title2.bold())
+                    if let capturedAt = extras.snapshot?.capturedAt {
+                        Text("Last checked \(capturedAt.formatted(date: .omitted, time: .shortened))")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button(extras.isRefreshing ? "Refreshing…" : "Refresh") {
+                    Task { await extras.refresh() }
+                }
+                .disabled(extras.isRefreshing || extras.mutationInFlight)
+            }
+        }
         if control.draft?.hasChanges == true {
             Section {
                 Text("Save or discard your model edits before changing idle-memory or beta settings.")

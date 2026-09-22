@@ -149,14 +149,14 @@ struct ProviderConfigDocumentTests {
         let rendered = try document.rendering(
             document.selection,
             maxModelSlots: 5,
-            engineV2MaxConcurrent: 8
+            engineV2MaxConcurrent: 24
         )
         let text = String(decoding: rendered, as: UTF8.self)
-        #expect(text.contains("engine_v2_max_concurrent = 8 # operator choice"))
+        #expect(text.contains("engine_v2_max_concurrent = 24 # operator choice"))
         #expect(text.contains("max_model_slots = 5"))
         #expect(text.contains("private_value = \"preserve\""))
         let reparsed = try ProviderConfigDocument(data: rendered)
-        #expect(reparsed.engineV2MaxConcurrent == 8)
+        #expect(reparsed.engineV2MaxConcurrent == 24)
         #expect(reparsed.maxModelSlots == 5)
     }
 
@@ -177,7 +177,7 @@ struct ProviderConfigDocumentTests {
         #expect(repaired.engineV2MaxConcurrent == 6)
     }
 
-    @Test("validates the CLI concurrency range")
+    @Test("validates the selectable concurrency range")
     func validatesConcurrency() throws {
         let document = try ProviderConfigDocument(data: Data(
             "enabled_models = []\npreload_models = []\n".utf8
@@ -185,8 +185,8 @@ struct ProviderConfigDocumentTests {
         #expect(throws: ProviderConfigError.unsupportedInteger("engine_v2_max_concurrent", 0)) {
             try document.rendering(document.selection, engineV2MaxConcurrent: 0)
         }
-        #expect(throws: ProviderConfigError.unsupportedInteger("engine_v2_max_concurrent", 9)) {
-            try document.rendering(document.selection, engineV2MaxConcurrent: 9)
+        #expect(throws: ProviderConfigError.unsupportedInteger("engine_v2_max_concurrent", 25)) {
+            try document.rendering(document.selection, engineV2MaxConcurrent: 25)
         }
     }
 

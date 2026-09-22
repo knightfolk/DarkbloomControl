@@ -21,9 +21,9 @@ public struct ProviderConfigDocument: Equatable, Sendable {
     public let data: Data
     public let selection: ProviderModelSelection
     public let maxModelSlots: Int?
-    /// Box-wide concurrent request cap for each v2 engine slot. The CLI uses
-    /// the effective range 1...8 and falls back to its own default when the
-    /// key is absent.
+    /// Saved concurrent request cap for each v2 engine slot. The app accepts
+    /// 1...24; CLI versions may impose a lower runtime limit. An absent key
+    /// leaves the CLI default unchanged.
     public let engineV2MaxConcurrent: Int?
     public let revision: String
 
@@ -65,7 +65,7 @@ public struct ProviderConfigDocument: Equatable, Sendable {
         try Self.validate(selection)
 
         // The CLI stores this as UInt64 and uses it as a positive resident
-        // slot ceiling; unlike concurrency it does not impose an eight-slot
+        // slot ceiling; unlike the app concurrency picker it does not impose a fixed
         // product clamp. The UI may offer a smaller practical picker, while
         // the document layer must preserve valid operator values verbatim.
         if let requestedMaxModelSlots, requestedMaxModelSlots < 1 {
@@ -75,7 +75,7 @@ public struct ProviderConfigDocument: Equatable, Sendable {
             )
         }
         if let requestedEngineV2MaxConcurrent,
-           !(1...8).contains(requestedEngineV2MaxConcurrent) {
+           !(1...24).contains(requestedEngineV2MaxConcurrent) {
             throw ProviderConfigError.unsupportedInteger(
                 "engine_v2_max_concurrent",
                 requestedEngineV2MaxConcurrent

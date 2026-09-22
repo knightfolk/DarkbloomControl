@@ -114,14 +114,11 @@ struct ProviderAdvancedSettingsView: View {
 
     var body: some View {
         Group {
-            Section("Memory when idle") {
+            Section("Provider · Memory when idle") {
                 idleSection
             }
-            Section("Beta features") {
+            Section("Provider · Experimental features") {
                 betaSection
-            }
-            Section("Automatic updates") {
-                autoUpdateSection
             }
             if let feedback {
                 Text(feedback)
@@ -143,24 +140,31 @@ struct ProviderAdvancedSettingsView: View {
         switch store.snapshot?.idlePolicy {
         case .available(let policy, _), .stale(let policy, _, _):
             VStack(alignment: .leading, spacing: 8) {
-                Text(policy.summary)
-                    .font(.callout)
+                HStack {
+                    Text("Saved idle policy").font(.headline)
+                    Spacer()
+                    SettingsStateBadge(policy.idleTimeoutMinutes == 0
+                        ? "No idle timeout" : "After \(policy.idleTimeoutMinutes) min")
+                }
+                Text("Controls timed unloading only. Models can still unload to make room for other work.")
+                    .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Text("Idle minutes")
+                    Text("Unload after")
                     TextField("Minutes", text: idleTextBinding)
                         .labelsHidden()
                         .accessibilityLabel("Idle minutes")
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 90)
                         .monospacedDigit()
-                    Button("Save") { saveIdle() }
+                    Text("minutes").foregroundStyle(.secondary)
+                    Button(idleSaveInFlight ? "Saving…" : "Save") { saveIdle() }
                         .disabled(!canSaveIdle)
                 }
-                Text("0 keeps models loaded; 1–10,080 unloads after that many idle minutes.")
+                Text(idleDraftDirty ? "Unsaved change · Enter 0 to disable timed unloading, or 1–10,080 minutes." : "Enter 0 to disable timed unloading, or 1–10,080 minutes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Changes apply after Darkbloom restarts.")
+                Text("Saved configuration · Applies on restart. The running value is not reported by the CLI.")
                     .font(.caption)
                     .foregroundStyle(.orange)
                 if case .stale = store.snapshot?.idlePolicy {
@@ -170,7 +174,7 @@ struct ProviderAdvancedSettingsView: View {
                 }
             }
         case .unavailable, nil:
-            Text("Idle-memory policy is unavailable from this Darkbloom CLI.")
+            Text("Unable to read the saved idle policy. Refresh to try again.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -179,6 +183,8 @@ struct ProviderAdvancedSettingsView: View {
     private var betaSection: some View {
         switch store.snapshot?.betaFeatures {
         case .available(let features, _), .stale(let features, _, _):
+            Text("Saved choices, not proof a feature is active. Automatic depends on the model and runtime support.")
+                .font(.callout).foregroundStyle(.secondary)
             if features.isEmpty {
                 Text("No configurable beta features are available in this build.")
                     .foregroundStyle(.secondary)
@@ -193,27 +199,7 @@ struct ProviderAdvancedSettingsView: View {
                 }
             }
         case .unavailable, nil:
-            Text("Beta features are unavailable from this Darkbloom CLI.")
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    @ViewBuilder
-    private var autoUpdateSection: some View {
-        switch store.snapshot?.autoUpdateStatus {
-        case .available(let status, _):
-            Label(
-                status.enabled ? "Automatic updates enabled" : "Automatic updates disabled",
-                systemImage: status.enabled ? "arrow.down.circle" : "pause.circle"
-            )
-        case .stale(let status, _, _):
-            Label(
-                status.enabled ? "Automatic updates enabled (stale)" : "Automatic updates disabled (stale)",
-                systemImage: "exclamationmark.triangle"
-            )
-            .foregroundStyle(.orange)
-        case .unavailable, nil:
-            Text("Automatic-update status is unavailable from this Darkbloom CLI.")
+            Text("Unable to read experimental feature settings. Refresh to try again.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -226,32 +212,38 @@ struct ProviderAdvancedSettingsView: View {
         return HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(feature.title).font(.body.weight(.medium))
-                Text(feature.summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(feature.stateLabel)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                DisclosureGroup("What this does") {
+                    Text(feature.summary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 if feature.requiresRestart {
-                    Text("Restart required after a change.")
+                    Text("Changes apply on restart")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
             }
             Spacer(minLength: 8)
-            if canChange {
-                VStack(alignment: .trailing, spacing: 4) {
-                    Button("Enable") { setBeta(feature, enabled: true) }
-                        .disabled(store.mutationInFlight || saving)
-                    Button("Disable") { setBeta(feature, enabled: false) }
-                        .disabled(store.mutationInFlight || saving)
+            VStack(alignment: .trailing, spacing: 8) {
+                SettingsStateBadge(saving ? "Saving…" : feature.stateLabel)
+                if !sourceIsFresh {
+                    Text("Last known value").font(.caption).foregroundStyle(.orange)
                 }
-                .buttonStyle(.borderless)
-            } else {
-                Text("Read-only")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if canChange {
+                    Menu("Change…") {
+                        Button("Enable") { setBeta(feature, enabled: true) }
+                            .disabled(feature.state == .on)
+                        Button("Disable") { setBeta(feature, enabled: false) }
+                            .disabled(feature.state == .off)
+                    }
+                    .disabled(store.mutationInFlight || saving)
+                    .accessibilityLabel("Change \(feature.title), saved \(feature.stateLabel)")
+                } else {
+                    Text(sourceIsFresh ? "Read-only" : "Needs refresh")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -330,8 +322,24 @@ struct ProviderAdvancedSettingsView: View {
             }
             betaSaveIDs.remove(feature.id)
             feedback = succeeded
-                ? "Saved \(feature.title). Restart Darkbloom to apply it."
+                ? (feature.requiresRestart
+                    ? "Saved \(feature.title). Restart Darkbloom to apply it."
+                    : "Saved \(feature.title).")
                 : (store.errorMessage ?? "The beta setting was not saved.")
         }
+    }
+}
+
+/// Text remains the primary state cue, including automatic and unknown states.
+struct SettingsStateBadge: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+    var body: some View {
+        Text(title)
+            .font(.callout.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(.quaternary, in: Capsule())
+            .fixedSize()
     }
 }

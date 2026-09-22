@@ -353,6 +353,16 @@ struct ProviderLifecycleControls: View {
     private func controls(currentTime: Date) -> some View {
         let presentation = presentation(currentTime: currentTime)
         return VStack(alignment: .trailing, spacing: 4) {
+            if case .lifecycle(let action) = store.operation {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(action == .stop ? "Stopping…" : action == .restart ? "Restarting…" : "Starting…")
+                        .font(.callout.weight(.semibold))
+                }
+                Text(action == .stop ? "Waiting for the provider to stop." : "Waiting for the provider. Models may take a moment to load.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 6) {
                 ForEach(ProviderLifecycleControl.allCases, id: \.self) { control in
                     Button {
@@ -378,7 +388,7 @@ struct ProviderLifecycleControls: View {
                 }
             }
 
-            if let reason = ProviderLifecycleUnavailableReasonPresentation.make(
+            if store.operation == .idle, let reason = ProviderLifecycleUnavailableReasonPresentation.make(
                 from: presentation
             ) {
                 Label(reason.message, systemImage: reason.systemImage)

@@ -299,6 +299,7 @@ enum PopupNetworkDemandPresentation {
 }
 
 struct MonitorPopover: View {
+    @ObservedObject var cliUpdates = CLIUpdateStatusStore.shared
     @ObservedObject var store: MonitorStore
     @EnvironmentObject private var controlStore: ProviderControlStore
     let openSettings: () -> Void
@@ -323,11 +324,26 @@ struct MonitorPopover: View {
     private func content(currentTime: Date) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             header
+            if case .available(.updateAvailable(_, let latest), let checkedAt) = cliUpdates.status,
+               currentTime.timeIntervalSince(checkedAt) < 6 * 60 * 60 {
+                Button(action: openSettings) {
+                    Label("CLI \(latest) available · Details", systemImage: "arrow.down.circle")
+                        .font(.callout)
+                }.buttonStyle(.plain).foregroundStyle(.orange)
+            }
+            Divider()
             providerHeader(currentTime: currentTime)
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 12) {
+                    Divider()
+                    HStack {
+                        Text("Models").font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text("Today’s average speed").font(.caption).foregroundStyle(.secondary)
+                    }
                     compactModels(currentTime: currentTime)
                     if earningsMetrics != nil || weekEarningsMetric != nil {
+                        Divider()
                         compactEarnings
                     }
                     compactJobs
@@ -345,7 +361,7 @@ struct MonitorPopover: View {
                 .padding(.trailing, 4)
             }
         }
-        .padding(12)
+        .padding(16)
         .frame(width: 420, alignment: .topLeading)
         .fixedSize(horizontal: false, vertical: true)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -359,24 +375,13 @@ struct MonitorPopover: View {
                 ForEach(models) { model in
                     HStack(spacing: 8) {
                         ModelStatusPill(model: model)
-                        if PopupNetworkDemandPresentation.freshness(of: store.networkCapacity, at: currentTime) == .current,
-                           let demand = networkDemandRows(at: currentTime).first(where: { $0.id == model.name }) {
-                            Text(demand.band.rawValue.capitalized)
-                                .font(.system(size: 11, weight: .semibold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .foregroundStyle(demandColor(demand.band))
-                                .background(demandColor(demand.band).opacity(0.15), in: Capsule())
-                                .help("Current network demand")
-                                .accessibilityLabel("\(demand.band.rawValue) network demand")
-                        }
                         Spacer(minLength: 4)
                         if let average = store.currentModelTokenRateAverages.first(where: { $0.model == model.name }) {
                             VStack(alignment: .trailing, spacing: 1) {
                             if model.state == .active {
                                 Text("Working").font(.caption).foregroundStyle(.primary)
                             }
-                            Text("\(average.tokensPerSecond, specifier: "%.1f") t/s avg")
+                            Text("\(average.tokensPerSecond, specifier: "%.1f") tok/s")
                                 .help("Today's average tokens per second")
                             }
                         } else if model.state == .active {
@@ -454,18 +459,13 @@ struct MonitorPopover: View {
 
             Spacer()
 
-            Button(action: openDashboard) {
-                Image(systemName: "rectangle.split.2x1")
-            }
-            .buttonStyle(.bordered)
-            .help("Open Dashboard")
-            .accessibilityLabel("Open Dashboard")
-
             Button(action: openSettings) {
-                Label("Settings", systemImage: "gearshape")
+                Image(systemName: "gearshape")
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
+            .help("Settings")
+            .accessibilityLabel("Settings")
             .accessibilityIdentifier("dashboard.settings")
 
             Button(role: .destructive) {
@@ -496,7 +496,7 @@ struct MonitorPopover: View {
                 if let feedback = ProviderLifecycleFeedbackPresentation.make(
                     operation: controlStore.operation,
                     errorMessage: controlStore.errorMessage
-                ) {
+                ), feedback.isError {
                     Text(feedback.message)
                         .font(.caption)
                         .foregroundStyle(feedback.isError ? Color.red : Color.secondary)

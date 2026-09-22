@@ -449,8 +449,8 @@ struct ModelManagerView: View {
         if let draft = store.draft {
             VStack(alignment: .leading, spacing: 20) {
                 capacityCard("Simultaneous requests", icon: "arrow.triangle.branch",
-                    value: draft.engineV2MaxConcurrent, defaultValue: 4, effectiveMaximum: 8,
-                    explanation: "Maximum concurrent requests per model engine. Higher limits use more memory; model-specific overrides can differ.",
+                    value: draft.engineV2MaxConcurrent, defaultValue: 4, selectableMaximum: 24,
+                    explanation: "Maximum concurrent requests per model engine. Choose 1–24. Higher limits use more memory; CLI 0.9.7 caps actual per-model concurrency at 8. Model-specific overrides may also reduce it.",
                     set: store.setEngineV2MaxConcurrent)
                 capacityCard("Models kept in memory", icon: "memorychip",
                     value: draft.maxModelSlots, defaultValue: 3,
@@ -465,7 +465,7 @@ struct ModelManagerView: View {
         }
     }
 
-    private func capacityCard(_ title: String, icon: String, value: Int?, defaultValue: Int, effectiveMaximum: Int? = nil,
+    private func capacityCard(_ title: String, icon: String, value: Int?, defaultValue: Int, effectiveMaximum: Int? = nil, selectableMaximum: Int = 8,
                               explanation: String, set: @escaping @MainActor @Sendable (Int) -> Void) -> some View {
         let effective = ModelManagerPresentation.effectiveLimit(value ?? defaultValue, maximum: effectiveMaximum)
         return VStack(alignment: .leading, spacing: 12) {
@@ -476,8 +476,8 @@ struct ModelManagerView: View {
                     .font(.callout).foregroundStyle(.secondary)
                 Spacer()
                 Picker(title, selection: Binding(get: { value ?? defaultValue }, set: set)) {
-                    ForEach(Array(1...8), id: \.self) { Text(String($0)).tag($0) }
-                    if let value, !(1...8).contains(value) {
+                    ForEach(Array(1...selectableMaximum), id: \.self) { Text(String($0)).tag($0) }
+                    if let value, !(1...selectableMaximum).contains(value) {
                         Text("\(value) · existing setting").tag(value)
                     }
                 }

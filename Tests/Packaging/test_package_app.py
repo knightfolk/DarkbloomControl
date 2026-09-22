@@ -1,11 +1,15 @@
+import base64
 import hashlib
 import json
 import pathlib
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import importlib.util
+from unittest.mock import patch
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[2] / 'tools/package_app.py'
 
@@ -28,6 +32,37 @@ class PackagingTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(SCRIPT), '--executable', str(self.exe),
             '--resources', str(self.resources), '--output', str(self.output),
             '--version', '0.1.0', '--build-number', '1', *extra], capture_output=True, text=True)
+
+    def load_packager(self):
+        spec = importlib.util.spec_from_file_location('packager_under_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_linked_sparkle_requires_embedded_framework(self):
+        module = self.load_packager()
+        with patch.object(module, '_macho_details', return_value=(True, [])):
+            with self.assertRaisesRegex(ValueError, 'requires --sparkle-framework'):
+                module.assemble(self.exe, self.resources, self.output, '1.0.0', '1')
+        self.assertFalse(self.output.exists())
+
+    def test_portable_lookup_removes_build_path_and_preserves_bundle_path(self):
+        module = self.load_packager()
+        bundle_path = '@executable_path/../Frameworks'
+        with patch.object(module.subprocess, 'run') as run, patch.object(
+            module, '_macho_details', return_value=(True, [bundle_path])):
+            module._make_framework_lookup_portable(self.exe, ['/private/build/PackageFrameworks', bundle_path])
+            self.assertEqual(run.call_args.args[0], ['/usr/bin/install_name_tool',
+                '-delete_rpath', '/private/build/PackageFrameworks', str(self.exe)])
+
+    def make_sparkle_framework(self):
+        framework = self.root / 'Sparkle.framework'
+        version = framework / 'Versions/A'
+        version.mkdir(parents=True)
+        (version / 'Sparkle').write_bytes(b'fixture-framework-binary')
+        (framework / 'Versions/Current').symlink_to('A')
+        (framework / 'Sparkle').symlink_to('Versions/Current/Sparkle')
+        return framework
 
     def test_bundle_and_manifest(self):
         result = self.run_packager()
@@ -88,6 +123,108 @@ class PackagingTests(unittest.TestCase):
     def test_nonexecutable_rejected(self):
         self.exe.chmod(0o644)
         self.assertNotEqual(self.run_packager().returncode, 0)
+        self.assertFalse(self.output.exists())
+
+    def test_embeds_sparkle_with_safe_framework_symlinks_and_update_settings(self):
+        framework = self.make_sparkle_framework()
+        public_key = base64.b64encode(bytes(range(32))).decode('ascii')
+        feed_url = 'https://updates.example.com/darkbloom/appcast.xml'
+
+        result = self.run_packager('--sparkle-framework', str(framework),
+            '--update-public-key', public_key, '--update-feed-url', feed_url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        app = self.output / 'Darkbloom Control.app'
+        embedded = app / 'Contents/Frameworks/Sparkle.framework'
+        self.assertEqual((embedded / 'Versions/A/Sparkle').read_bytes(), b'fixture-framework-binary')
+        self.assertTrue((embedded / 'Versions/Current').is_symlink())
+        self.assertEqual((embedded / 'Versions/Current').readlink(), pathlib.Path('A'))
+        self.assertTrue((embedded / 'Sparkle').is_symlink())
+        self.assertEqual((embedded / 'Sparkle').readlink(), pathlib.Path('Versions/Current/Sparkle'))
+
+        info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+        self.assertEqual(info['SUFeedURL'], feed_url)
+        self.assertEqual(info['SUPublicEDKey'], public_key)
+        self.assertFalse(info['SUEnableAutomaticChecks'])
+        self.assertFalse(info['SUAutomaticallyUpdate'])
+        self.assertTrue(info['SUAllowsAutomaticUpdates'])
+
+        manifest = json.loads((self.output / 'artifact-manifest.json').read_text())
+        framework_relative = 'Contents/Frameworks/Sparkle.framework/'
+        symlinks = [item for item in manifest['files']
+                    if item['path'].startswith(framework_relative) and item.get('type') == 'symlink']
+        self.assertEqual({item['path'] for item in symlinks}, {
+            framework_relative + 'Sparkle',
+            framework_relative + 'Versions/Current',
+        })
+        self.assertEqual({item['target'] for item in symlinks}, {
+            'Versions/Current/Sparkle', 'A',
+        })
+        framework_binary = next(item for item in manifest['files']
+                               if item['path'] == framework_relative + 'Versions/A/Sparkle')
+        self.assertEqual(framework_binary['size_bytes'], len(b'fixture-framework-binary'))
+        self.assertEqual(framework_binary['sha256'], hashlib.sha256(b'fixture-framework-binary').hexdigest())
+        self.assertNotIn(str(self.root), json.dumps(manifest))
+
+    def test_framework_without_release_configuration_is_allowed_but_has_no_feed(self):
+        framework = self.make_sparkle_framework()
+
+        result = self.run_packager('--sparkle-framework', str(framework))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = plistlib.loads((self.output / 'Darkbloom Control.app/Contents/Info.plist').read_bytes())
+        self.assertNotIn('SUFeedURL', info)
+        self.assertNotIn('SUPublicEDKey', info)
+        self.assertFalse(info['SUEnableAutomaticChecks'])
+        self.assertFalse(info['SUAutomaticallyUpdate'])
+        self.assertTrue(info['SUAllowsAutomaticUpdates'])
+
+    def test_update_metadata_must_be_complete_and_belong_to_embedded_sparkle(self):
+        public_key = base64.b64encode(bytes(range(32))).decode('ascii')
+        cases = [
+            ('--update-public-key', public_key),
+            ('--update-feed-url', 'https://updates.example.com/appcast.xml'),
+            ('--update-public-key', public_key, '--update-feed-url', 'https://updates.example.com/appcast.xml'),
+        ]
+        for extra in cases:
+            with self.subTest(extra=extra):
+                self.assertNotEqual(self.run_packager(*extra).returncode, 0)
+                self.assertFalse(self.output.exists())
+
+    def test_invalid_update_key_and_feed_are_rejected_before_output(self):
+        framework = self.make_sparkle_framework()
+        cases = [
+            ('not-base64', 'https://updates.example.com/appcast.xml'),
+            (base64.b64encode(b'short').decode('ascii'), 'https://updates.example.com/appcast.xml'),
+            (base64.b64encode(bytes(range(32))).decode('ascii'), 'http://updates.example.com/appcast.xml'),
+            (base64.b64encode(bytes(range(32))).decode('ascii'), 'https:///missing-host.xml'),
+            (base64.b64encode(bytes(range(32))).decode('ascii'), 'https://user:password@updates.example.com/feed.xml'),
+        ]
+        for public_key, feed_url in cases:
+            with self.subTest(feed_url=feed_url):
+                result = self.run_packager('--sparkle-framework', str(framework),
+                    '--update-public-key', public_key, '--update-feed-url', feed_url)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.output.exists())
+
+    def test_framework_rejects_external_and_dangling_symlink_targets(self):
+        for link_target in [self.exe, pathlib.Path('../../outside')]:
+            with self.subTest(link_target=link_target):
+                framework = self.make_sparkle_framework()
+                (framework / 'Versions/Current').unlink()
+                (framework / 'Versions/Current').symlink_to(link_target)
+                result = self.run_packager('--sparkle-framework', str(framework))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.output.exists())
+                shutil.rmtree(framework)
+
+    def test_framework_path_must_be_absolute_and_a_sparkle_framework_directory(self):
+        result = self.run_packager('--sparkle-framework', 'relative/Sparkle.framework')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.output.exists())
+
+        result = self.run_packager('--sparkle-framework', str(self.resources))
+        self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.output.exists())
 
 

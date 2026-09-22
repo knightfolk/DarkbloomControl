@@ -8,6 +8,9 @@ let package = Package(
         .library(name: "DarkbloomTelemetry", targets: ["DarkbloomTelemetry"]),
         .executable(name: "DarkbloomMonitor", targets: ["DarkbloomMonitor"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6"),
+    ],
     targets: [
         .target(
             name: "DarkbloomTelemetry",
@@ -15,7 +18,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "DarkbloomMonitor",
-            dependencies: ["DarkbloomTelemetry"],
+            dependencies: ["DarkbloomTelemetry", .product(name: "Sparkle", package: "Sparkle")],
             exclude: ["Resources/DarkbloomLogo.svg", "Resources/darkbloom-mark.svg", "Resources/darkbloom-menubar.svg"],
             resources: [
                 .copy("Resources/dc-mark.svg"),
@@ -27,7 +30,8 @@ let package = Package(
                 .copy("Resources/model-nvidia.svg"),
                 .copy("Resources/model-prismml.svg"),
                 .copy("Resources/MODEL-ICONS-LICENSE.txt"),
-            ]
+            ],
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
         ),
         .testTarget(
             name: "DarkbloomTelemetryTests",

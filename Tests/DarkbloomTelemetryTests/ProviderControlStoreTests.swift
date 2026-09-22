@@ -142,9 +142,11 @@ struct ProviderControlStoreTests {
         await store.refresh()
 
         #expect(store.draft?.engineV2MaxConcurrent == nil)
-        store.setEngineV2MaxConcurrent(8)
+        store.setEngineV2MaxConcurrent(24)
 
-        #expect(store.draft?.engineV2MaxConcurrent == 8)
+        #expect(store.draft?.engineV2MaxConcurrent == 24)
+        store.setEngineV2MaxConcurrent(25)
+        #expect(store.draft?.engineV2MaxConcurrent == 24)
         #expect(store.draft?.selection == store.draft?.original)
         #expect(store.canSave)
     }
@@ -1032,6 +1034,52 @@ struct ProviderControlStoreTests {
 
         #expect(store.pendingConfirmation == nil)
         #expect(await controller.executedActions.isEmpty)
+    }
+
+    @Test("startup stays busy after command completion and ignores a second start")
+    func startupConfirmationBlocksDuplicateStart() async throws {
+        let gate = TelemetryRefreshGate()
+        let controller = FakeProviderController.fixture()
+        let store = ProviderControlStore(controller: controller, awaitStartup: { _ in
+            await gate.refresh()
+        })
+        await store.refresh()
+        let first = Task { await store.request(.start) }
+        #expect(await gate.waitUntilStarted())
+        #expect(store.operation == .lifecycle(.start))
+        await store.request(.start)
+        #expect(await controller.executedActions.count == 1)
+        let host = NSHostingController(rootView: ProviderLifecycleControls(
+            store: store, snapshot: .unavailable(now: Date())))
+        let size = host.sizeThatFits(in: NSSize(width: 260, height: 200))
+        #expect(size.width <= 260)
+        if ProcessInfo.processInfo.environment["DARKBLOOM_STARTUP_RENDER"] == "1" {
+            let window = NSWindow(contentViewController: host)
+            window.isReleasedWhenClosed = false
+            window.setContentSize(size)
+            window.orderBack(nil)
+            defer { window.close() }
+            host.view.layoutSubtreeIfNeeded()
+            let bitmap = try #require(host.view.bitmapImageRepForCachingDisplay(in: host.view.bounds))
+            host.view.cacheDisplay(in: host.view.bounds, to: bitmap)
+            try #require(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: "/tmp/darkbloom-starting.png"))
+        }
+        await gate.release()
+        await first.value
+        #expect(store.operation == .idle)
+        #expect(store.errorMessage == nil)
+    }
+
+    @Test("startup confirmation timeout is visible instead of reporting success")
+    func startupTimeoutIsVisible() async {
+        struct Timeout: Error {}
+        let store = ProviderControlStore(controller: FakeProviderController.fixture(),
+            awaitStartup: { _ in throw Timeout() })
+        await store.refresh()
+        await store.request(.start)
+        #expect(store.operation == .idle)
+        #expect(store.errorMessage?.contains("Startup is taking longer") == true)
     }
 
     @Test("start skips impact reads and passes saved selectors not staged selectors")

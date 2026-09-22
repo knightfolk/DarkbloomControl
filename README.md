@@ -6,8 +6,8 @@ Darkbloom Control is a native macOS menu-bar companion for a local Darkbloom
 provider. It turns provider telemetry into a compact infographic popup and
 keeps model and lifecycle controls behind explicit safety checks.
 
-**v1.0** brings a clearer dashboard, Darkbloom 0.9.7 support, staged capacity
-settings, and Stop when idle. Previously named Darkbloom Monitor.
+**v1.1** adds clearer settings, a cleaner popup, visible provider startup progress,
+and signed automatic/manual updates for Control. Previously named Darkbloom Monitor.
 
 ## Download
 
@@ -15,7 +15,7 @@ Download the Apple Silicon build from [Releases](https://github.com/knightfolk/D
 unzip it, move **Darkbloom Control.app** to Applications, then open it.
 Quit an older monitor copy before launching the new one. macOS may still ask
 for first-launch confirmation or permission to read your external model drive.
-The v1.0 Apple Silicon app is Developer ID–signed, notarized by Apple, and
+The release Apple Silicon app is Developer ID–signed, notarized by Apple, and
 includes a stapled notarization ticket. Gatekeeper verification passed on the
 release bundle; no Gatekeeper-disable or quarantine-removal workaround is needed.
 
@@ -36,7 +36,10 @@ release bundle; no Gatekeeper-disable or quarantine-removal workaround is needed
 - Model catalog management with separate Download, Delete, Enable, and Preload
   actions
 - Models organized into On this Mac, Available, and Capacity, with search and expandable details
-- Concurrency and resident-model limits staged together with model selections
+- Concurrency selections from 1–24 and resident-model limits staged together with model selections
+- Clear saved-state labels for idle-memory, beta, and electricity settings
+- Starting/Restarting progress that blocks repeated clicks until fresh telemetry arrives
+- Signed automatic and manual Control updates, plus a separate read-only CLI update notice
 - Stop when idle with fresh activity checks, a visible pending state, and cancellation
 - Opportunity cards with readable names, RAM checks, demand badges, and workload counts
 - Separate network-history charts with technical details available on demand
@@ -92,7 +95,7 @@ swift build -c release
 
 You can also open `Package.swift` in Xcode and run the `DarkbloomMonitor`
 scheme. The app appears only in the menu bar and intentionally has no Dock icon
-by default. Open Dashboard from its popup to access the resizable app window.
+by default. Use the gear in its popup to access the resizable Settings window.
 
 Each launch claims one user-scoped kernel lock before creating a status item.
 A duplicate build using this same lock exits only the new process and does not
@@ -141,8 +144,10 @@ applies the saved selection; it can differ from the models the daemon currently
 advertises. The comparison is shown separately from loaded models and unsaved edits. Saving
 configuration does not silently restart the provider.
 
-**Models → Capacity** controls simultaneous requests per model engine (1–8)
-and how many models the provider may keep in memory. The CLI 0.9.7 defaults are
+**Models → Capacity** lets you save a concurrency limit from 1–24
+and choose how many models the provider may keep in memory. Darkbloom CLI 0.9.7
+currently caps effective concurrency at 8 per model engine, even when a higher
+value is saved. The CLI 0.9.7 defaults are
 4 requests and 3 resident models. Existing per-model concurrency overrides are
 preserved and may differ from the global setting. Actual capacity depends on memory.
 Changes remain staged until **Save Changes**; **Refresh** preserves edits and
@@ -214,7 +219,8 @@ python3 tools/package_app.py \
   --executable /absolute/checkout/.build/arm64-apple-macosx/release/DarkbloomMonitor \
   --resources /absolute/checkout/.build/arm64-apple-macosx/release/DarkbloomMonitor_DarkbloomMonitor.bundle \
   --output /absolute/checkout/.build/new-local-review \
-  --version 1.0.0 --build-number 100
+  --sparkle-framework /absolute/checkout/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework \
+  --version 1.1.0 --build-number 110
 ```
 
 The new directory contains `Darkbloom Control.app` and a SHA-256 file manifest.
@@ -239,3 +245,20 @@ internal `DarkbloomMonitor` target name. The Git history and old release notes
 retain the original project name for traceability.
 
 See [Branding](docs/BRANDING.md) for editable icon sources and packaging details.
+
+## App updates
+
+v1.0 users need to download v1.1 manually once to gain the built-in updater.
+
+Settings includes separate controls for automatically checking for **Darkbloom
+Control** updates and automatically downloading/installing them on quit. Use
+**Check for Updates…** for a manual check; Sparkle’s update window offers the
+signed download and installation when a newer Control release is available.
+Updating Control does not restart the provider. Unfinished model edits or pending
+provider actions postpone an updater-requested relaunch.
+
+The CLI update notice is separate and read-only. Control can announce a newer
+CLI release, but does not install it or change the CLI’s automatic-update policy.
+Local review bundles without an update feed/key show updating as unavailable.
+See [release preparation](docs/RELEASING.md) for the signed feed and packaging
+steps required before publishing an updater-enabled release.

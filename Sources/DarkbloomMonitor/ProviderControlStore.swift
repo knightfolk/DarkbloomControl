@@ -44,6 +44,7 @@ final class ProviderControlStore: ObservableObject {
     private let controller: any ProviderControlling
     private let diagnosticSanitizer: UserDiagnosticSanitizer
     private let refreshTelemetry: @MainActor @Sendable () async -> Void
+    private let awaitStartup: @MainActor @Sendable (Date) async throws -> Void
     private let now: @Sendable () -> Date
     private let queuedStopWait: @Sendable () async throws -> Void
     private var currentTask: Task<Void, Never>?
@@ -56,10 +57,12 @@ final class ProviderControlStore: ObservableObject {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         refreshTelemetry: @escaping @MainActor @Sendable () async -> Void = {},
         now: @escaping @Sendable () -> Date = { Date() },
+        awaitStartup: @escaping @MainActor @Sendable (Date) async throws -> Void = { _ in },
         queuedStopWait: @escaping @Sendable () async throws -> Void = {
             try await Task.sleep(for: .seconds(2))
         }
     ) {
+        self.awaitStartup = awaitStartup
         self.controller = controller
         diagnosticSanitizer = UserDiagnosticSanitizer(homeDirectory: homeDirectory)
         self.refreshTelemetry = refreshTelemetry
@@ -195,7 +198,7 @@ final class ProviderControlStore: ObservableObject {
     /// overrides remain untouched and continue to take precedence at runtime.
     func setEngineV2MaxConcurrent(_ engineV2MaxConcurrent: Int) {
         guard queuedStopState == nil else { return }
-        guard var draft, (1...8).contains(engineV2MaxConcurrent) else { return }
+        guard var draft, (1...24).contains(engineV2MaxConcurrent) else { return }
         draft.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.draft = draft
     }
@@ -649,6 +652,7 @@ final class ProviderControlStore: ObservableObject {
         enabledModels: [String],
         generation: UInt64
     ) async throws {
+        let requestedAt = now()
         let completion: ProviderMutationCompletion
         do {
             completion = try await controller.performLifecycle(
@@ -678,6 +682,15 @@ final class ProviderControlStore: ObservableObject {
                 ? "Provider \(action.rawValue) outcome could not be confirmed; current state could not refresh."
                 : "Provider \(action.rawValue) completed, but current state could not be confirmed."
             return
+        }
+        if action == .start || action == .restart {
+            do {
+                try await awaitStartup(requestedAt)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                errorMessage = "Startup is taking longer than expected. Check Health & Logs before trying again."
+            }
         }
     }
 
