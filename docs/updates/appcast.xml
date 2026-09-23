@@ -3,6 +3,33 @@
     <channel>
         <title>Darkbloom Control</title>
         <item>
+            <title>1.4.0</title>
+            <pubDate>Wed, 23 Sep 2026 15:40:15 -0700</pubDate>
+            <sparkle:version>115</sparkle:version>
+            <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Darkbloom Control v1.4.0
+
+- Replace the model list with responsive, branded cards showing measured speed,
+  live demand, average net profit per active hour, local opportunity grade, and
+  catalog hardware fit.
+- Add per-model daily compute-allocation scenarios with a shared 24-hour budget.
+  Projections extrapolate from measured serving activity and clearly separate
+  estimated gross payout from incremental whole-Mac adapter power cost.
+- Require at least two hours of observed active serving before showing a
+  model's profit projection; serving allocation estimates compute time and is
+  separate from the number of models resident in memory.
+]]></description>
+            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.4.0/Darkbloom-Control-1.4.0-mac-arm64.zip" length="5689208" type="application/octet-stream" sparkle:edSignature="CMoRfwdHbVG22UmXfsmXmoF1vMujr9ryoayn10IyrgKzjDIdK+EPAVGVfirXRBAXfQm8OXL0g4oZCrAivp9iCg=="/>
+            <sparkle:deltas>
+                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.4.0/Darkbloom.Control115-114.delta" sparkle:deltaFrom="114" length="490790" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="0u2BFMAtsLlS3UG1iRgPzZwcs2yYJJV88ix8784/gyWGvoxFaSVVZ5Wr/4waqalNfTIvJEJbuQbUAkz6GfPwCA=="/>
+                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.4.0/Darkbloom.Control115-113.delta" sparkle:deltaFrom="113" length="562678" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="GPnEYUJm9kVyYFkK7GfMDYe6IJJKzIfgg89Svz7Q5mTcOPIHMJgMwP5fCPBsEra7amNo5Yusoq6T46oDK3a7Cg=="/>
+                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.4.0/Darkbloom.Control115-112.delta" sparkle:deltaFrom="112" length="679402" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="r63Kg/WatribkpQPpeAx1V3NNDVsEOoICupTauSHqoCaj4vr5eYzYsWiUWqFqwjvVA2CiOE1RTf7UIPiWdPCCg=="/>
+                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.4.0/Darkbloom.Control115-110.delta" sparkle:deltaFrom="110" length="723786" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="X7i+eXo249m8ql9OEs04l7N4PafYVQf9PouLslXNBij6pqP4SP2C2pGqhg8oWa1PhQBZNJX2+1T0BhmwoJr2Cw=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>1.3.1</title>
             <pubDate>Wed, 23 Sep 2026 11:48:50 -0700</pubDate>
             <sparkle:version>114</sparkle:version>
