@@ -1,7 +1,26 @@
-<?xml version="1.0" standalone="yes"?>
+<?xml version='1.0' encoding='utf-8'?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>Darkbloom Control</title>
+        <item>
+            <title>1.3.1</title>
+            <pubDate>Wed, 23 Sep 2026 11:48:50 -0700</pubDate>
+            <sparkle:version>114</sparkle:version>
+            <sparkle:shortVersionString>1.3.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"># Darkbloom Control v1.3.1
+
+- Fix a crash when filtering Activity charts by clicking a model pill.
+- Align Activity controls and keep model names readable across window sizes.
+</description>
+            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.3.1/Darkbloom-Control-1.3.1-mac-arm64.zip" length="5691965" type="application/octet-stream" sparkle:edSignature="fmqMVilp4PlGdWO4h8gLchKFv8M1KEI449q/5GesnOWgRbyj7pFdVC3gujFJgDoxh3/CudHGNGpvE9lge5OXDw==" />
+            <sparkle:deltas>
+                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.3.1/Darkbloom.Control114-113.delta" sparkle:deltaFrom="113" length="327358" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="9t/foZUBa25ZyfhhWbMTvtf3bxRB2lUfr4e5H39ZEOUXqc75BXYgyRzQz/AfTJdgfMOjHVV850/ZPZLl9VaxAg==" />
+                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.3.1/Darkbloom.Control114-112.delta" sparkle:deltaFrom="112" length="547006" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="ZjZjmWwekz72DISAmaNypAaLB9WZrVMOHHVIi6A0veca87SZftO9IboM/g/6Cm+EqrAcJDtcW3XCktEGAqc6Cg==" />
+                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.3.1/Darkbloom.Control114-110.delta" sparkle:deltaFrom="110" length="592410" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="LWr0aZV56m6JxGH89M33IzQnxt1WBIMA8mlYA64NX7DHpV2ORs6QxcPTWHabK4yRNo/X/yKTbWYglV2TyTLpCw==" />
+            </sparkle:deltas>
+        </item>
         <item>
             <title>1.3.0</title>
             <pubDate>Tue, 22 Sep 2026 21:04:33 -0700</pubDate>
@@ -9,9 +28,9 @@
             <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.3.0/Darkbloom-Control-1.3.0-mac-arm64.zip" length="5671351" type="application/octet-stream" sparkle:edSignature="iudTXU2GreH2HfW3Be/c0hGAaZnBHmtvTFTWc5pnv6drgLeMCMgaB5Q7rYPmBNfh4q/LX/IFzI84LZjhWFvrBA=="/>
+            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.3.0/Darkbloom-Control-1.3.0-mac-arm64.zip" length="5671351" type="application/octet-stream" sparkle:edSignature="iudTXU2GreH2HfW3Be/c0hGAaZnBHmtvTFTWc5pnv6drgLeMCMgaB5Q7rYPmBNfh4q/LX/IFzI84LZjhWFvrBA==" />
             <sparkle:deltas>
-                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.3.0/Darkbloom.Control113-112.delta" sparkle:deltaFrom="112" length="527670" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="m8z8QTN/TzuHLQOGISjq8zj1rDOWKK3vJ0bzHs+Tc/ikfpcHSudNBcySbQqdx0Pcl/tzFuaVifPGT3x9aPc1CA=="/>
+                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.3.0/Darkbloom.Control113-112.delta" sparkle:deltaFrom="112" length="527670" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="m8z8QTN/TzuHLQOGISjq8zj1rDOWKK3vJ0bzHs+Tc/ikfpcHSudNBcySbQqdx0Pcl/tzFuaVifPGT3x9aPc1CA==" />
             </sparkle:deltas>
         </item>
         <item>
@@ -21,9 +40,9 @@
             <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.2.0/Darkbloom-Control-1.2.0-mac-arm64.zip" length="5535587" type="application/octet-stream" sparkle:edSignature="qA9P9WaDSZBl03mwpHgqXvgMa23mrIrQVTas0tY3QWvRJIcRHMufi4Ztl+faPWFYiw5p1X4N6vG8g1tf7Jj1CQ=="/>
+            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.2.0/Darkbloom-Control-1.2.0-mac-arm64.zip" length="5535587" type="application/octet-stream" sparkle:edSignature="qA9P9WaDSZBl03mwpHgqXvgMa23mrIrQVTas0tY3QWvRJIcRHMufi4Ztl+faPWFYiw5p1X4N6vG8g1tf7Jj1CQ==" />
             <sparkle:deltas>
-                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.2.0/Darkbloom.Control112-110.delta" sparkle:deltaFrom="110" length="409202" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="GxLIwHFwVdxUi6sgdNSCZq2meUVwNEeIuYkmoSXJU4nLYRTTeffwYUDSzFTJJ00MgYXpF8SY/dfnlfDFzNw9BQ=="/>
+                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.2.0/Darkbloom.Control112-110.delta" sparkle:deltaFrom="110" length="409202" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="GxLIwHFwVdxUi6sgdNSCZq2meUVwNEeIuYkmoSXJU4nLYRTTeffwYUDSzFTJJ00MgYXpF8SY/dfnlfDFzNw9BQ==" />
             </sparkle:deltas>
         </item>
         <item>
@@ -33,7 +52,7 @@
             <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.1.0/Darkbloom-Control-1.1.0-mac-arm64.zip" length="5477945" type="application/octet-stream" sparkle:edSignature="Wqj3S2zS39ElUXLXZ/INlbR7uQrpMmn+CNWiKs3jTOuhqYgrrkQAxXsX73Wacssx9/lPP43ndRfw0HGd8tWHDQ=="/>
+            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.1.0/Darkbloom-Control-1.1.0-mac-arm64.zip" length="5477945" type="application/octet-stream" sparkle:edSignature="Wqj3S2zS39ElUXLXZ/INlbR7uQrpMmn+CNWiKs3jTOuhqYgrrkQAxXsX73Wacssx9/lPP43ndRfw0HGd8tWHDQ==" />
         </item>
     </channel>
 </rss>
