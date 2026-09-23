@@ -21,12 +21,23 @@ struct ModelsView: View {
                         ProviderSelectionView(store: monitorStore, controlStore: controlStore)
                     }.padding(.horizontal, 24).padding(.bottom, 16)
                 }
-                ModelManagerView(store: controlStore, networkContext: networkContext)
+                ModelManagerView(
+                    store: controlStore,
+                    networkContext: networkContext,
+                    telemetry: ModelManagerTelemetry(
+                        tokenRates: monitorStore?.currentModelTokenRateAverages ?? [],
+                        servingAverages: monitorStore?.modelServingProfitAverages ?? [],
+                        networkCapacity: monitorStore?.networkCapacity.value
+                    )
+                )
             } else {
                 ContentUnavailableView("Model controls unavailable", systemImage: "cpu",
                                        description: Text("The provider control service is not available. Monitoring continues independently."))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task {
+            await monitorStore?.refreshModelServingProfitability()
+        }
     }
 }

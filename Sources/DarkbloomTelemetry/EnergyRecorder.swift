@@ -19,7 +19,12 @@ public actor EnergyRecorder {
         self.readPower = readPower
     }
 
-    public func sample(enabled: Bool, rate: Double?, now: Date) -> EnergyRecordingSnapshot {
+    public func sample(
+        enabled: Bool,
+        rate: Double?,
+        now: Date,
+        modelActivity: ModelPowerActivity? = nil
+    ) -> EnergyRecordingSnapshot {
         guard enabled else {
             history?.breakContinuity()
             return .init(reading: nil, intervals: [], issue: nil)
@@ -37,7 +42,7 @@ public actor EnergyRecorder {
             history?.breakContinuity()
             return .init(reading: nil, intervals: history?.intervals ?? [], issue: "Adapter power unavailable; measurement gap.")
         }
-        history?.append(reading, usdPerKWh: rate)
+        history?.append(reading, usdPerKWh: rate, modelActivity: modelActivity)
         do {
             if let history { try EnergyHistoryFile.write(history, to: file) }
             return .init(reading: reading, intervals: history?.intervals ?? [], issue: nil)

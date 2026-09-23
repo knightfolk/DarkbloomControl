@@ -21,7 +21,43 @@ public struct EnergyInterval: Codable, Equatable, Sendable {
     public let usdPerKWh: Double
     public let source: String
     public let estimated: Bool
+    /// Provider model attributed to the beginning of this measured interval, when fresh.
+    public let activeModelID: String?
+    /// Whether that provider model was generating during this measured interval.
+    /// `nil` means the provider state was unavailable or stale.
+    public let inferenceActive: Bool?
     public var costUSD: Double { kWh * usdPerKWh }
+
+    public init(
+        start: Date,
+        end: Date,
+        kWh: Double,
+        usdPerKWh: Double,
+        source: String,
+        estimated: Bool,
+        activeModelID: String? = nil,
+        inferenceActive: Bool? = nil
+    ) {
+        self.start = start
+        self.end = end
+        self.kWh = kWh
+        self.usdPerKWh = usdPerKWh
+        self.source = source
+        self.estimated = estimated
+        self.activeModelID = activeModelID
+        self.inferenceActive = inferenceActive
+    }
+}
+
+public struct ModelPowerActivity: Equatable, Sendable {
+    public let modelID: String?
+    public let inferenceActive: Bool
+
+    public init(modelID: String?, inferenceActive: Bool) {
+        let cleaned = modelID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.modelID = cleaned?.isEmpty == false ? cleaned : nil
+        self.inferenceActive = inferenceActive
+    }
 }
 
 /// Bounded measured intervals. A new process starts a new sample chain, never
@@ -30,6 +66,7 @@ public struct EnergyHistory: Sendable {
     public private(set) var intervals: [EnergyInterval] = []
     private var previous: EnergyReading?
     private var previousRate: Double?
+    private var previousActivity: ModelPowerActivity?
     public static let maximumIntervals = 60_480
 
     public init() {}
@@ -45,7 +82,9 @@ public struct EnergyHistory: Sendable {
                   end.map({ interval.start >= $0 }) ?? true,
                   interval.kWh.isFinite, interval.kWh >= 0,
                   interval.usdPerKWh.isFinite, interval.usdPerKWh >= 0,
-                  interval.costUSD.isFinite, !interval.source.isEmpty else {
+                  interval.costUSD.isFinite, !interval.source.isEmpty,
+                  interval.activeModelID?.utf8.count ?? 0 <= 512,
+                  interval.inferenceActive != true || interval.activeModelID?.isEmpty == false else {
                 throw EnergyHistoryError.invalidHistory
             }
             end = interval.end
@@ -56,9 +95,14 @@ public struct EnergyHistory: Sendable {
     public mutating func breakContinuity() {
         previous = nil
         previousRate = nil
+        previousActivity = nil
     }
 
-    public mutating func append(_ reading: EnergyReading, usdPerKWh: Double) {
+    public mutating func append(
+        _ reading: EnergyReading,
+        usdPerKWh: Double,
+        modelActivity: ModelPowerActivity? = nil
+    ) {
         guard reading.date.timeIntervalSince1970.isFinite, reading.watts.isFinite,
               reading.watts >= 0, usdPerKWh.isFinite, usdPerKWh >= 0,
               !reading.source.isEmpty else { breakContinuity(); return }
@@ -69,14 +113,26 @@ public struct EnergyHistory: Sendable {
             breakContinuity()
             return
         }
-        defer { previous = reading; previousRate = usdPerKWh }
+        defer {
+            previous = reading
+            previousRate = usdPerKWh
+            previousActivity = modelActivity
+        }
         guard let last = previous, previousRate == usdPerKWh,
               last.source == reading.source, last.estimated == reading.estimated,
               let energy = ElectricityCost.kilowattHours(startWatts: last.watts,
                   endWatts: reading.watts, seconds: reading.date.timeIntervalSince(last.date)),
               (energy * usdPerKWh).isFinite else { return }
-        intervals.append(EnergyInterval(start: last.date, end: reading.date, kWh: energy,
-            usdPerKWh: usdPerKWh, source: reading.source, estimated: reading.estimated))
+        intervals.append(EnergyInterval(
+            start: last.date,
+            end: reading.date,
+            kWh: energy,
+            usdPerKWh: usdPerKWh,
+            source: reading.source,
+            estimated: reading.estimated,
+            activeModelID: previousActivity?.modelID,
+            inferenceActive: previousActivity?.inferenceActive
+        ))
         if intervals.count > Self.maximumIntervals {
             intervals.removeFirst(intervals.count - Self.maximumIntervals)
         }

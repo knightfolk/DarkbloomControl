@@ -31,6 +31,55 @@ struct ModelManagerPresentationTests {
             == [.active, .loadedIdle, .unloaded])
     }
 
+    @Test("model cards group vendor colors and report only evidence-backed fit")
+    func modelCardIdentityAndFit() {
+        #expect(ModelManagerPresentation.vendor(for: "google/gemma-4") == .google)
+        #expect(ModelManagerPresentation.vendor(for: "google/gemma-4") ==
+            ModelManagerPresentation.vendor(for: "google/gemma-2"))
+        #expect(ModelManagerPresentation.vendor(for: "mlx-community/Llama-3.1") == .meta)
+        #expect(ModelManagerPresentation.vendor(for: "mistralai/Mistral-Large") == .mistral)
+        #expect(ModelManagerPresentation.hardwareFit(item(isDownloaded: true), installedMemoryGB: 64) ==
+            "Meets catalog minimum")
+        #expect(ModelManagerPresentation.hardwareFit(item(isDownloaded: true), installedMemoryGB: 4) ==
+            "Below catalog minimum")
+        let unverified = ModelInventoryItem(
+            catalogID: "qwen/model", localID: "qwen/model", displayName: "Model Name",
+            modelType: "llm", capabilities: ["text"], sizeGB: 4.5, minimumRAMGB: 8,
+            requiredProviderCapabilities: ["mlx_nax"], isDownloaded: true, isEnabled: true,
+            isPreloaded: false, liveState: .unloaded, issue: nil)
+        #expect(ModelManagerPresentation.hardwareFit(unverified, installedMemoryGB: 64) ==
+            "Meets catalog minimum · provider features unverified")
+    }
+
+    @Test("mixed model schedules fit within a single twenty-four-hour budget")
+    func mixedModelScheduleBudget() {
+        let selected = ["gemma": 45, "qwen": 40, "openai": 15]
+        #expect(ModelManagerPresentation.maximumRunPercent(modelID: "gemma", selected: selected) == 45)
+        #expect(ModelManagerPresentation.maximumRunPercent(modelID: "qwen", selected: ["gemma": 45, "openai": 15]) == 40)
+        #expect(ModelManagerPresentation.totalRunPercent(selected) == 100)
+        #expect(ModelManagerPresentation.runHoursPerDay(percent: 50) == 12)
+        #expect(ModelManagerPresentation.runHoursPerDay(percent: 15) == 3.6)
+    }
+
+    @Test("opportunity grade waits for measured serving history and compares speed demand and net profit")
+    func opportunityGrade() {
+        let fast = ModelOpportunitySignal(modelID: "fast", tokensPerSecond: 40, activeHours: 2.5,
+            demand: .urgent, netProfitUSDPerActiveHour: 1.20)
+        let slow = ModelOpportunitySignal(modelID: "slow", tokensPerSecond: 20, activeHours: 3,
+            demand: .moderate, netProfitUSDPerActiveHour: 0.60)
+        #expect(ModelManagerPresentation.opportunityGrade(modelID: "fast", peers: [fast, slow]) == "A")
+        #expect(ModelManagerPresentation.opportunityGrade(modelID: "slow", peers: [fast, slow]) == "F")
+        let uncalibrated = ModelOpportunitySignal(modelID: "new", tokensPerSecond: 40, activeHours: 1.9,
+            demand: .urgent, netProfitUSDPerActiveHour: 1.20)
+        #expect(ModelManagerPresentation.opportunityGrade(modelID: "new", peers: [uncalibrated, fast]) == nil)
+        let loss = ModelOpportunitySignal(modelID: "loss", tokensPerSecond: 40, activeHours: 4,
+            demand: .urgent, netProfitUSDPerActiveHour: -0.01)
+        #expect(ModelManagerPresentation.opportunityGrade(modelID: "loss", peers: [loss, fast]) == "F")
+        let breakEven = ModelOpportunitySignal(modelID: "break-even", tokensPerSecond: 40, activeHours: 4,
+            demand: .urgent, netProfitUSDPerActiveHour: 0)
+        #expect(ModelManagerPresentation.opportunityGrade(modelID: "break-even", peers: [breakEven, fast]) == "F")
+    }
+
     @Test("model details separate RAM from catalog limits and mark provider requirements unverified")
     func modelDetailsMetadata() {
         let item = ModelInventoryItem(

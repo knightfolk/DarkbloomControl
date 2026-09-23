@@ -43,6 +43,7 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var modelTokenRateAverages: [ModelTokenRateAverage]
     @Published private(set) var modelEarnings: [ModelEarnings]
     @Published private(set) var modelWorkEarnings: [ModelWorkEarnings] = []
+    @Published private(set) var modelServingProfitAverages: [ModelServingProfitAverage] = []
     @Published private(set) var networkCapacity: SourceAvailability<NetworkCapacitySnapshot>
     @Published private(set) var publicCatalog: SourceAvailability<PublicCatalogSnapshot> = .unavailable(reason: "Waiting for public catalog")
     @Published private(set) var publicPricing: SourceAvailability<PublicPricingSnapshot> = .unavailable(reason: "Waiting for customer pricing")
@@ -149,7 +150,14 @@ final class MonitorStore: ObservableObject {
                 guard let self else { return }
                 let enabled = UserDefaults.standard.bool(forKey: "electricity.enabled")
                 let rate = ElectricityCost.rate(UserDefaults.standard.string(forKey: "electricity.usdPerKWh") ?? "")
-                let result = await self.energyRecorder.sample(enabled: enabled, rate: rate, now: Date())
+                let sampleTime = Date()
+                let activity = self.modelPowerActivity(at: sampleTime)
+                let result = await self.energyRecorder.sample(
+                    enabled: enabled,
+                    rate: rate,
+                    now: sampleTime,
+                    modelActivity: activity
+                )
                 guard !Task.isCancelled else { return }
                 self.energy = enabled ? result : nil
                 self.energyEarnings = nil
@@ -252,6 +260,33 @@ final class MonitorStore: ObservableObject {
         try await earningsClient.activityByModel(in: range, unit: unit, calendar: calendar)
     }
 
+    func refreshModelServingProfitability() async {
+        guard UserDefaults.standard.bool(forKey: "electricity.enabled"),
+              ElectricityCost.rate(UserDefaults.standard.string(forKey: "electricity.usdPerKWh") ?? "") != nil,
+              let first = energy?.intervals.first?.start,
+              let last = energy?.intervals.last?.end,
+              last > first else {
+            modelServingProfitAverages = []
+            return
+        }
+
+        let end = min(last, now())
+        let start = max(first, end.addingTimeInterval(-7 * 86_400))
+        let range = DateInterval(start: start, end: end)
+        guard let activity = try? await earningsClient.activityByModel(
+            in: range,
+            unit: .hour,
+            calendar: .current
+        ) else {
+            modelServingProfitAverages = []
+            return
+        }
+        modelServingProfitAverages = ModelProfitability.servingAverages(
+            activity: activity,
+            energy: energy?.intervals ?? []
+        )
+    }
+
     func modelHourlyEarningsAverages(in range: DateInterval) async throws -> [ModelHourlyEarningsAverage]? {
         try await earningsClient.modelHourlyEarningsAverages(in: range)
     }
@@ -287,6 +322,7 @@ final class MonitorStore: ObservableObject {
                 )
             }
             jobSummary = refresh.jobSummary
+            await refreshModelServingProfitability()
             return
         }
 
@@ -384,6 +420,7 @@ final class MonitorStore: ObservableObject {
         }
         jobSummary = refresh.jobSummary
         earningsRefreshTask = nil
+        await refreshModelServingProfitability()
         // Invalidate local history queries even if the displayed account total
         // is unchanged: ingestion may have filled older buckets or rewards.
         activityRevision &+= 1
@@ -656,6 +693,20 @@ final class MonitorStore: ObservableObject {
                 self?.thermalState = SystemThermalState(ProcessInfo.processInfo.thermalState)
             }
         }
+    }
+
+    private func modelPowerActivity(at date: Date) -> ModelPowerActivity? {
+        guard case .available(let state, _) = snapshot.state else { return nil }
+        let age = date.timeIntervalSince(Date(timeIntervalSince1970: state.writtenAt))
+        guard age.isFinite, (0...15).contains(age) else { return nil }
+        if state.inferenceActive {
+            guard !state.currentModel.isEmpty else { return nil }
+            return ModelPowerActivity(modelID: state.currentModel, inferenceActive: true)
+        }
+        return ModelPowerActivity(
+            modelID: nil,
+            inferenceActive: false
+        )
     }
 
     private func accept(_ snapshot: TelemetrySnapshot) async {

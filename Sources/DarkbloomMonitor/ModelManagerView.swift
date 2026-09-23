@@ -8,8 +8,110 @@ struct ModelActionPresentation: Equatable {
     let isEnabled: Bool
 }
 
+struct ModelOpportunitySignal: Equatable {
+    let modelID: String
+    let tokensPerSecond: Double?
+    let activeHours: Double
+    let demand: NetworkDemandBand?
+    let netProfitUSDPerActiveHour: Double?
+}
+
+enum ModelCompany: Equatable {
+    case google, qwen, openai, nvidia, meta, mistral, deepseek, microsoft, ibm, cohere, xai, prismml, other
+}
+
 @MainActor
 enum ModelManagerPresentation {
+    static func vendor(for modelID: String) -> ModelCompany {
+        let normalized = modelID.lowercased()
+        let namespace = normalized.split(separator: "/").first.map(String.init) ?? ""
+        let slug = normalized.split(separator: "/").last.map(String.init) ?? normalized
+        if namespace == "google" || slug.hasPrefix("gemma") { return .google }
+        if namespace == "qwen" || slug.hasPrefix("qwen") { return .qwen }
+        if namespace == "openai" || slug.hasPrefix("gpt-oss") { return .openai }
+        if namespace == "nvidia" || slug.contains("nemotron") { return .nvidia }
+        if namespace == "meta" || slug.hasPrefix("llama") { return .meta }
+        if namespace == "mistralai" || slug.hasPrefix("mistral") || slug.hasPrefix("mixtral") { return .mistral }
+        if namespace == "deepseek-ai" || slug.hasPrefix("deepseek") { return .deepseek }
+        if namespace == "microsoft" || slug.hasPrefix("phi-") { return .microsoft }
+        if namespace == "ibm" || slug.hasPrefix("granite") { return .ibm }
+        if namespace == "cohere" || slug.hasPrefix("command-") { return .cohere }
+        if namespace == "xai" || slug.hasPrefix("grok") { return .xai }
+        if namespace == "prismml" || slug.contains("bonsai") { return .prismml }
+        return .other
+    }
+
+    static func hardwareFit(_ item: ModelInventoryItem, installedMemoryGB: Double) -> String {
+        let ramFit: String
+        if item.minimumRAMGB <= 0 || !installedMemoryGB.isFinite || installedMemoryGB <= 0 {
+            ramFit = "RAM requirement unavailable"
+        } else if installedMemoryGB >= Double(item.minimumRAMGB) {
+            ramFit = "Meets catalog minimum"
+        } else {
+            ramFit = "Below catalog minimum"
+        }
+        guard let requirements = item.requiredProviderCapabilities, !requirements.isEmpty else {
+            return ramFit
+        }
+        return ramFit == "RAM requirement unavailable"
+            ? "RAM and provider requirements unverified"
+            : "\(ramFit) · provider features unverified"
+    }
+
+    static func maximumRunPercent(modelID: String, selected: [String: Int]) -> Int {
+        let assignedElsewhere = selected.reduce(into: 0) { total, item in
+            guard item.key != modelID else { return }
+            total += min(100, max(0, item.value))
+        }
+        return max(0, 100 - assignedElsewhere)
+    }
+
+    static func totalRunPercent(_ selected: [String: Int]) -> Int {
+        min(100, selected.values.reduce(0) { $0 + min(100, max(0, $1)) })
+    }
+
+    static func runHoursPerDay(percent: Int) -> Double {
+        24 * Double(min(100, max(0, percent))) / 100
+    }
+
+    static func opportunityGrade(modelID: String, peers: [ModelOpportunitySignal]) -> String? {
+        let calibrated = peers.filter { signal in
+            guard signal.activeHours >= 2,
+                  let speed = signal.tokensPerSecond, speed.isFinite, speed > 0,
+                  let demand = signal.demand,
+                  let profit = signal.netProfitUSDPerActiveHour, profit.isFinite else { return false }
+            return demandScore(demand) > 0
+        }
+        guard let target = calibrated.first(where: { $0.modelID == modelID }),
+              let targetSpeed = target.tokensPerSecond,
+              let targetDemand = target.demand,
+              let targetProfit = target.netProfitUSDPerActiveHour,
+              let fastest = calibrated.compactMap(\.tokensPerSecond).max(), fastest > 0 else { return nil }
+        guard targetProfit > 0 else { return "F" }
+        let bestProfit = calibrated.compactMap(\.netProfitUSDPerActiveHour).filter({ $0 > 0 }).max() ?? 0
+
+        let speedPoints = targetSpeed / fastest * 40
+        let demandPoints = demandScore(targetDemand) * 30
+        let profitPoints = targetProfit == 0 || bestProfit == 0 ? 0 : targetProfit / bestProfit * 30
+        let score = speedPoints + demandPoints + min(30, profitPoints)
+        switch score {
+        case 90...: return "A"
+        case 80..<90: return "B"
+        case 70..<80: return "C"
+        case 60..<70: return "D"
+        default: return "F"
+        }
+    }
+
+    private static func demandScore(_ band: NetworkDemandBand) -> Double {
+        switch band {
+        case .low: 0.25
+        case .moderate: 0.5
+        case .high: 0.75
+        case .urgent: 1
+        }
+    }
+
     static func effectiveLimit(_ value: Int, maximum: Int? = nil) -> Int {
         min(maximum ?? Int.max, max(1, value))
     }
@@ -49,6 +151,12 @@ enum ModelManagerPresentation {
             sanitize: store.sanitizedDiagnostic
         )
     }
+}
+
+struct ModelManagerTelemetry {
+    var tokenRates: [ModelTokenRateAverage] = []
+    var servingAverages: [ModelServingProfitAverage] = []
+    var networkCapacity: NetworkCapacitySnapshot?
 }
 
 struct ModelRowPresentation: Equatable {
@@ -340,9 +448,12 @@ struct ModelRowPresentation: Equatable {
 struct ModelManagerView: View {
     @ObservedObject var store: ProviderControlStore
     var networkContext: (String, Date) -> [String] = { _, _ in [] }
+    var telemetry = ModelManagerTelemetry()
     @State private var deletion: ModelDeletionConfirmation?
     @State private var section = 0
     @State private var search = ""
+    @State private var runPercentByModel: [String: Int] = [:]
+    @AppStorage("models.daily-serving-schedule-v1") private var savedRunSchedule = ""
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -363,6 +474,11 @@ struct ModelManagerView: View {
                 },
                 secondaryButton: .cancel()
             )
+        }
+        .onAppear(perform: restoreRunSchedule)
+        .onChange(of: runPercentByModel) { _, schedule in
+            guard let data = try? JSONEncoder().encode(schedule) else { return }
+            savedRunSchedule = String(decoding: data, as: UTF8.self)
         }
     }
 
@@ -385,6 +501,8 @@ struct ModelManagerView: View {
             if section == 0 {
                 Text("Enable models to receive work. Load at startup requests them after a restart, subject to memory.")
                     .font(.callout).foregroundStyle(.secondary)
+                Text("Scheduled serving: \(ModelManagerPresentation.runHoursPerDay(percent: ModelManagerPresentation.totalRunPercent(enabledSchedule)).formatted(.number.precision(.fractionLength(0...1)))) of 24 hours/day. This estimates active work time, not models kept in memory.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if section != 2 {
                 TextField("Find a model", text: $search)
@@ -405,26 +523,11 @@ struct ModelManagerView: View {
                                 systemImage: "cpu", description: Text(store.snapshot == nil
                                     ? "Refresh to load the model catalog." : "Try another view or search."))
                         }
-                        ForEach(items) { item in
-                            VStack(alignment: .leading, spacing: 12) {
-                                if item.isDownloaded, let snapshot = store.snapshot {
-                                    DownloadedModelRow(item: item, draft: store.draft,
-                                        operation: store.operation, sources: snapshot.sources,
-                                        currentTime: currentTime, sanitize: store.sanitizedDiagnostic,
-                                        setEnabled: { store.setEnabled($0, modelID: $1) },
-                                        setPreloaded: { store.setPreloaded($0, modelID: $1) },
-                                        requestDelete: { item in
-                                            guard let localID = item.localID else { return }
-                                            deletion = ModelDeletionConfirmation(localID: localID,
-                                                displayName: item.displayName, sizeGB: item.sizeGB)
-                                        }).disabled(store.queuedStopState != nil)
-                                } else {
-                                    AvailableModelRow(item: item, store: store).disabled(store.queuedStopState != nil)
-                                }
-                                modelDetails(item, at: currentTime)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 260, maximum: 440), spacing: 12)],
+                                  alignment: .leading, spacing: 12) {
+                            ForEach(items) { item in
+                                modelCard(item, at: currentTime)
                             }
-                            .padding(16)
-                            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 16))
                         }
                     }
                     if let issues = store.snapshot?.inventory.issues, !issues.isEmpty {
@@ -442,6 +545,120 @@ struct ModelManagerView: View {
     private var visibleModels: [ModelInventoryItem] {
         let items = section == 0 ? store.snapshot?.inventory.myCatalog : store.snapshot?.inventory.available
         return ModelManagerPresentation.filtered(items ?? [], search: search)
+    }
+
+    private var enabledSchedule: [String: Int] {
+        let enabled = (store.snapshot?.inventory.myCatalog ?? []).filter(isEffectivelyEnabled)
+            .sorted { $0.catalogID < $1.catalogID }
+        var result: [String: Int] = [:]
+        for item in enabled {
+            let remaining = ModelManagerPresentation.maximumRunPercent(modelID: item.catalogID, selected: result)
+            result[item.catalogID] = min(remaining, max(0, runPercentByModel[item.catalogID] ?? 0))
+        }
+        return result
+    }
+
+    private func isEffectivelyEnabled(_ item: ModelInventoryItem) -> Bool {
+        guard let draft = store.draft else { return item.isEnabled }
+        return ModelRowPresentation.contains(item, in: draft.selection.enabled, selector: item.enabledSelector)
+    }
+
+    private func restoreRunSchedule() {
+        guard !savedRunSchedule.isEmpty,
+              let decoded = try? JSONDecoder().decode([String: Int].self, from: Data(savedRunSchedule.utf8))
+        else { return }
+        var sanitized: [String: Int] = [:]
+        for (id, value) in decoded.sorted(by: { $0.key < $1.key }).prefix(128) {
+            guard !id.isEmpty, id.utf8.count <= 512, (0...100).contains(value) else { continue }
+            sanitized[id] = value
+        }
+        runPercentByModel = sanitized
+    }
+
+    private func setRunPercent(_ value: Int, for item: ModelInventoryItem) {
+        var selected = enabledSchedule
+        let limit = ModelManagerPresentation.maximumRunPercent(modelID: item.catalogID, selected: selected)
+        selected[item.catalogID] = min(limit, max(0, value))
+        runPercentByModel[item.catalogID] = selected[item.catalogID]
+    }
+
+    private func tokenRate(for item: ModelInventoryItem) -> ModelTokenRateAverage? {
+        telemetry.tokenRates.first { $0.model == item.catalogID || $0.model == item.localID }
+    }
+
+    private func servingAverage(for item: ModelInventoryItem) -> ModelServingProfitAverage? {
+        telemetry.servingAverages.first { $0.model == item.catalogID || $0.model == item.localID }
+    }
+
+    private func demand(for item: ModelInventoryItem, at date: Date) -> NetworkModelCapacity? {
+        guard let capacity = telemetry.networkCapacity, capacity.isFresh(at: date) else { return nil }
+        return capacity.models.first { $0.id == item.catalogID }
+    }
+
+    private func opportunitySignals(at date: Date) -> [ModelOpportunitySignal] {
+        (store.snapshot?.inventory.myCatalog ?? []).filter(isEffectivelyEnabled).compactMap { item in
+            let rate = tokenRate(for: item)
+            let serving = servingAverage(for: item)
+            return ModelOpportunitySignal(
+                modelID: item.catalogID,
+                tokensPerSecond: rate?.tokensPerSecond,
+                activeHours: serving?.activeHours ?? 0,
+                demand: demand(for: item, at: date)?.demandBand,
+                netProfitUSDPerActiveHour: serving?.profitUSDPerActiveHour
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func modelCard(_ item: ModelInventoryItem, at date: Date) -> some View {
+        let rate = tokenRate(for: item)
+        let serving = servingAverage(for: item)
+        let calibratedServing = serving.flatMap { $0.activeHours >= 2 ? $0 : nil }
+        let capacity = demand(for: item, at: date)
+        let runPercent = enabledSchedule[item.catalogID] ?? 0
+        let forecast = ModelRunForecast.calculate(runPercent: runPercent, serving: calibratedServing, tokenRate: rate)
+        let peers = opportunitySignals(at: date)
+        let grade = ModelManagerPresentation.opportunityGrade(modelID: item.catalogID, peers: peers)
+        VStack(alignment: .leading, spacing: 14) {
+            ModelCardSummary(
+                item: item,
+                installedMemoryGB: Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824,
+                rate: rate,
+                capacity: capacity,
+                serving: serving,
+                grade: grade,
+                forecast: forecast,
+                runPercent: runPercent,
+                isScheduleEnabled: item.isDownloaded && isEffectivelyEnabled(item),
+                maximumRunPercent: ModelManagerPresentation.maximumRunPercent(
+                    modelID: item.catalogID, selected: enabledSchedule
+                ),
+                setRunPercent: { setRunPercent($0, for: item) }
+            )
+            if item.isDownloaded, let snapshot = store.snapshot {
+                DownloadedModelRow(item: item, draft: store.draft,
+                    operation: store.operation, sources: snapshot.sources,
+                    currentTime: date, sanitize: store.sanitizedDiagnostic,
+                    setEnabled: { store.setEnabled($0, modelID: $1) },
+                    setPreloaded: { store.setPreloaded($0, modelID: $1) },
+                    requestDelete: { item in
+                        guard let localID = item.localID else { return }
+                        deletion = ModelDeletionConfirmation(localID: localID,
+                            displayName: item.displayName, sizeGB: item.sizeGB)
+                    }).disabled(store.queuedStopState != nil)
+            } else {
+                AvailableModelRow(item: item, store: store).disabled(store.queuedStopState != nil)
+            }
+            modelDetails(item, at: date)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 2).fill(ModelCardSummary.companyColor(for: item.catalogID))
+                .frame(width: 40, height: 4).padding(.leading, 16)
+        }
+        .accessibilityIdentifier("model.\(item.catalogID).card")
     }
 
     @ViewBuilder
@@ -537,6 +754,283 @@ struct ModelManagerView: View {
 
 }
 
+struct ModelCardSummary: View {
+    let item: ModelInventoryItem
+    let installedMemoryGB: Double
+    let rate: ModelTokenRateAverage?
+    let capacity: NetworkModelCapacity?
+    let serving: ModelServingProfitAverage?
+    let grade: String?
+    let forecast: ModelRunForecast
+    let runPercent: Int
+    let isScheduleEnabled: Bool
+    let maximumRunPercent: Int
+    let setRunPercent: (Int) -> Void
+
+    private var company: ModelCompany { ModelManagerPresentation.vendor(for: item.catalogID) }
+    private var accent: Color { Self.companyColor(for: item.catalogID) }
+    private var ramFit: String { ModelManagerPresentation.hardwareFit(item, installedMemoryGB: installedMemoryGB) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(alignment: .top, spacing: 11) {
+                Image(systemName: modelSymbol)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .frame(width: 38, height: 38)
+                    .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item.displayName)
+                        .font(.headline)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .help(item.displayName)
+                    HStack(spacing: 6) {
+                        Text(companyName).font(.caption.weight(.semibold)).foregroundStyle(accent)
+                        Text("·").foregroundStyle(.tertiary)
+                        Text(item.modelType.uppercased()).font(.caption).foregroundStyle(.secondary)
+                        Text("·").foregroundStyle(.tertiary)
+                        Text(ModelFormatting.size(item.sizeGB)).font(.caption).foregroundStyle(.secondary)
+                    }.fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                if item.isDownloaded {
+                    LiveStatePill(state: item.liveState)
+                } else {
+                    Text("Available")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.quaternary, in: Capsule())
+                }
+            }
+
+            Label(ramFit, systemImage: ramFit.hasPrefix("Below") ? "exclamationmark.circle" : (ramFit.contains("unverified") ? "questionmark.circle" : "checkmark.circle"))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(ramFit.hasPrefix("Below") ? .orange : (ramFit.contains("unverified") ? .orange : .secondary))
+                .fixedSize(horizontal: false, vertical: true)
+                .help("RAM is compared with the catalog minimum. Provider requirements are not verified by this machine fit check.")
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                      alignment: .leading, spacing: 8) {
+                ModelMetricTile(icon: "speedometer", title: "Measured speed", accent: accent) {
+                    if let rate, rate.tokensPerSecond.isFinite, rate.tokensPerSecond > 0, rate.sampleCount > 0 {
+                        ModelMetricCopy(
+                            value: "\(rate.tokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tok/s",
+                            detail: "\(rate.sampleCount) recent samples"
+                        )
+                    } else {
+                        ModelMetricCopy(value: "Collecting speed samples", detail: "Run this model to measure it")
+                    }
+                }
+                ModelMetricTile(icon: "chart.line.uptrend.xyaxis", title: "Live demand", accent: accent) {
+                    if let capacity {
+                        ModelMetricCopy(
+                            value: demandTitle(capacity.demandBand),
+                            detail: "\(capacity.activeRequests) active · \(capacity.queuedRequests) queued · \(capacity.warmProviders) warm"
+                        )
+                    } else {
+                        ModelMetricCopy(value: "Demand unavailable", detail: "Waiting for a fresh network reading")
+                    }
+                }
+                ModelMetricTile(icon: "dollarsign.circle", title: "Average profit", accent: accent) {
+                    if let serving, serving.activeHours < 2 {
+                        ModelMetricCopy(
+                            value: "Calibrating",
+                            detail: "\(serving.activeHours.formatted(.number.precision(.fractionLength(1)))) / 2 active hours · provisional gross \(money(serving.grossUSDPerActiveHour))/hr"
+                        )
+                    } else if let net = serving?.profitUSDPerActiveHour {
+                        ModelMetricCopy(
+                            value: "\(money(net)) net / active hour",
+                            detail: "\(serving?.activeHours.formatted(.number.precision(.fractionLength(1))) ?? "0") measured active hours"
+                        )
+                    } else if let gross = serving?.grossUSDPerActiveHour {
+                        ModelMetricCopy(value: "\(money(gross)) gross / active hour", detail: "Net estimate needs an idle-power baseline")
+                    } else {
+                        ModelMetricCopy(value: "Calibrating payout and power", detail: "Needs complete earnings and activity data")
+                    }
+                }
+                ModelMetricTile(icon: "seal", title: "Opportunity grade", accent: accent) {
+                    if let grade {
+                        ModelMetricCopy(value: grade, detail: "Local score · speed 40% · demand 30% · profit 30%", emphasis: true)
+                    } else if let serving, serving.activeHours < 2 {
+                        ModelMetricCopy(value: "Calibrating", detail: "Needs 2 hours of measured serving")
+                    } else {
+                        ModelMetricCopy(value: "Not rated yet", detail: "Waiting for speed, demand, and net profit")
+                    }
+                }
+            }
+
+            if isScheduleEnabled {
+                Divider()
+                scheduleControl
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var scheduleControl: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Daily serving allocation", systemImage: "clock")
+                    .font(.callout.weight(.semibold))
+                Spacer(minLength: 5)
+                Text("\(runPercent)% · \(hours(runPercent)) h/day")
+                    .font(.callout.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(accent)
+            }
+            Slider(value: Binding(
+                get: { Double(runPercent) },
+                set: { setRunPercent(Int($0.rounded())) }
+            ), in: 0...Double(maximumRunPercent), step: 5)
+                .tint(accent)
+                .accessibilityLabel("Daily serving allocation for \(item.displayName)")
+                .accessibilityValue("\(runPercent) percent, \(hours(runPercent)) hours per day")
+                .accessibilityHint("Shares one 24-hour daily serving budget across enabled models. This does not control memory residency.")
+
+            if runPercent > 0, let profit = forecast.profitUSDPerDay {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "sparkline")
+                        .foregroundStyle(accent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Estimated net \(money(profit))/day · \(money(forecast.profitUSDPerClockHour ?? 0))/clock hour")
+                            .font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                        if let gross = forecast.grossUSDPerDay,
+                           let electricity = forecast.incrementalElectricityUSDPerDay {
+                            Text("Gross \(money(gross)) · incremental adapter power estimate \(money(electricity)) per day")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let tokens = forecast.tokensPerDay {
+                            Text("About \(tokens.formatted(.number.notation(.compactName).precision(.fractionLength(1)))) tokens/day at recent measured speed")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("model.\(item.catalogID).forecast")
+            } else if runPercent > 0, let serving, serving.activeHours < 2 {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("Calibrating payout and power · \(serving.activeHours.formatted(.number.precision(.fractionLength(1)))) of 2 active hours measured", systemImage: "hourglass")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if let tokens = forecast.tokensPerDay {
+                        Text("Speed-only projection: about \(tokens.formatted(.number.notation(.compactName).precision(.fractionLength(1)))) tokens/day.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            } else if runPercent > 0, let gross = forecast.grossUSDPerDay {
+                Label("Estimated gross \(money(gross))/day; net awaits a measured idle-power baseline and electricity price.", systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if runPercent > 0 {
+                Label("Projection appears after this model has measured earning, serving-time, and power data.", systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("No serving time scheduled. At 50%, this model would be estimated at 12 hours/day.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Estimate from recent model activity, local token speed, and whole-Mac adapter draw above idle. Serving allocation is separate from loaded-model slots.")
+                .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    static func companyColor(for modelID: String) -> Color {
+        switch ModelManagerPresentation.vendor(for: modelID) {
+        case .google: Color(red: 0.36, green: 0.55, blue: 0.72)
+        case .qwen: Color(red: 0.32, green: 0.60, blue: 0.56)
+        case .openai, .xai: Color(red: 0.38, green: 0.59, blue: 0.47)
+        case .nvidia: Color(red: 0.53, green: 0.62, blue: 0.36)
+        case .meta, .deepseek: Color(red: 0.38, green: 0.53, blue: 0.65)
+        case .mistral: Color(red: 0.70, green: 0.47, blue: 0.30)
+        case .microsoft: Color(red: 0.34, green: 0.57, blue: 0.68)
+        case .ibm, .cohere: Color(red: 0.47, green: 0.50, blue: 0.65)
+        case .prismml: Color(red: 0.57, green: 0.48, blue: 0.68)
+        case .other: Color(red: 0.48, green: 0.52, blue: 0.56)
+        }
+    }
+
+    private var companyName: String {
+        switch company {
+        case .google: "Google"
+        case .qwen: "Qwen"
+        case .openai: "OpenAI"
+        case .nvidia: "NVIDIA"
+        case .meta: "Meta"
+        case .mistral: "Mistral"
+        case .deepseek: "DeepSeek"
+        case .microsoft: "Microsoft"
+        case .ibm: "IBM"
+        case .cohere: "Cohere"
+        case .xai: "xAI"
+        case .prismml: "PrismML"
+        case .other: "Other"
+        }
+    }
+
+    private var modelSymbol: String {
+        let capabilities = Set(item.capabilities.map { $0.lowercased() })
+        if capabilities.contains("vision") || capabilities.contains("image") { return "eye" }
+        if capabilities.contains("video") { return "video" }
+        if capabilities.contains("tools") || capabilities.contains("tool_calling") { return "wrench.and.screwdriver" }
+        if capabilities.contains("code") { return "chevron.left.forwardslash.chevron.right" }
+        return "cpu"
+    }
+
+    private func demandTitle(_ band: NetworkDemandBand) -> String {
+        switch band {
+        case .low: "Low demand"
+        case .moderate: "Moderate demand"
+        case .high: "High demand"
+        case .urgent: "Urgent demand"
+        }
+    }
+
+    private func hours(_ percent: Int) -> String {
+        ModelManagerPresentation.runHoursPerDay(percent: percent)
+            .formatted(.number.precision(.fractionLength(0...1)))
+    }
+
+    private func money(_ value: Double) -> String {
+        let cleaned = value.isFinite ? value : 0
+        return (cleaned < 0 ? "−$" : "$") + abs(cleaned).formatted(.number.precision(.fractionLength(2)))
+    }
+}
+
+private struct ModelMetricTile<Content: View>: View {
+    let icon: String
+    let title: String
+    let accent: Color
+    let content: Content
+
+    init(icon: String, title: String, accent: Color, @ViewBuilder content: () -> Content) {
+        self.icon = icon
+        self.title = title
+        self.accent = accent
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(title, systemImage: icon)
+                .font(.caption.weight(.semibold)).foregroundStyle(accent)
+            content
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+        .padding(10)
+        .background(accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+private struct ModelMetricCopy: View {
+    let value: String
+    let detail: String
+    var emphasis = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(emphasis ? .title2.weight(.bold) : .callout.weight(.medium)).foregroundStyle(.primary)
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 private struct ModelDetailsDisclosureStyle: DisclosureGroupStyle {
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -587,18 +1081,10 @@ private struct DownloadedModelRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(item.displayName)
-                    .font(.headline)
-                Spacer(minLength: 8)
-                LiveStatePill(state: item.liveState)
-            }
-
-            HStack(spacing: ModelOptionToggle.groupSpacing) {
-                Text(ModelFormatting.size(item.sizeGB))
-                    .font(.callout).foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-
+            Text(ModelFormatting.size(item.sizeGB) + " · \(item.minimumRAMGB) GB catalog minimum RAM")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 1) {
                 if presentation.showsEnableToggle {
                     ModelOptionToggle(title: "Enabled", isOn: enabledBinding)
                         .disabled(presentation.enableAction?.isEnabled != true)
@@ -751,19 +1237,14 @@ private struct AvailableModelRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.displayName)
-                        .font(.headline)
-                    Text(presentation.availableMetadataText ?? "")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityLabel(presentation.availableMetadataText ?? "")
-                        .accessibilityIdentifier("model.\(item.catalogID).metadata")
-                }
-                Spacer(minLength: 8)
-
+            Text(presentation.availableMetadataText ?? "")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(presentation.availableMetadataText ?? "")
+                .accessibilityIdentifier("model.\(item.catalogID).metadata")
+            HStack {
+                Spacer(minLength: 0)
                 if isDownloading {
                     ProgressView()
                         .controlSize(.small)
