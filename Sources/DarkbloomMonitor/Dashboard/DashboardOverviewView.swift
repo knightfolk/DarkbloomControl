@@ -56,7 +56,7 @@ struct DashboardOverviewView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                if let extras = store.providerExtras { ProviderThermalView(store: extras) }
+                ProviderResourcesView(store: store)
                 DashboardModelSummary(store: store, controlStore: controlStore)
                 if let controlStore { ProviderSelectionView(store: store, controlStore: controlStore) }
                 Text("Earnings reflect observed calendar coverage. Missing measurements are omitted; they are not zero.")

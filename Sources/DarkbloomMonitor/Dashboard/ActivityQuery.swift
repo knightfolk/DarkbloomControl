@@ -15,13 +15,18 @@ struct ActivityQuery: Hashable {
     let model: String?
     let revision: UInt64
     let refreshID: Int
+    let metric: ActivityChartMetric
+    let energyRevision: Date?
 
     init(period: ActivityPeriod, selectedDate: Date, endDate: Date, now: Date,
-         calendar: Calendar, model: String?, revision: UInt64, refreshID: Int) {
+         calendar: Calendar, model: String?, revision: UInt64, refreshID: Int,
+         metric: ActivityChartMetric = .earnings, energyRevision: Date? = nil) {
         self.calendar = calendar
         self.model = model
         self.revision = revision
         self.refreshID = refreshID
+        self.metric = metric
+        self.energyRevision = energyRevision
         unit = period == .thisWeek || period == .dateRange ? .day : .hour
         switch period {
         case .today: range = calendar.dateInterval(of: .day, for: now)

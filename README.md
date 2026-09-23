@@ -31,6 +31,10 @@ release bundle; no Gatekeeper-disable or quarantine-removal workaround is needed
   calendar-week total
 - Per-model average gross recorded work earnings per earning-hour, with its
   observed-hour count; this does not subtract electricity
+- Activity charts with readable per-model company color families, clickable
+  model filters, bar/line/area styles, and stacked or side-by-side bars
+- Estimated per-model profit per earning-hour, with whole-Mac electricity
+  shared evenly among models that earned in that fully measured hour
 - Completed jobs today and the prior seven-day daily average when enough local
   history exists
 - Green active, yellow loaded-idle, and gray available-model pills that remain
@@ -50,6 +54,8 @@ release bundle; no Gatekeeper-disable or quarantine-removal workaround is needed
 - Saved versus advertised model selection, with an explicit restart warning when they differ
 - Model hardware/runtime requirements, quantization, and context/output limits
 - GPU temperature and fan readings from the official read-only CLI diagnostics
+- Provider resources with measured Mac-wide CPU utilization and reported GPU
+  active/cache memory; GPU engine utilization is not exposed by the provider
 - Idle-memory policy and advanced beta settings, with explicit restart-required feedback
 - Fresh verification diagnostics for legacy and App Attest authorization
 - Network maintenance and aggregate cache-health reporting

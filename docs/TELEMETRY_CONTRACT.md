@@ -206,9 +206,11 @@ content or a reconstruction of omitted source history.
 - Prompt/input token counts were not observed.
 - MTP inactive/disable reason is optional in schema 1. New decoding retains it
   when reported and does not infer it from `mtp_active`.
-- CPU usage, process RSS, temperatures, power, and network throughput were not
-  exposed by the inventoried Darkbloom sources. System-wide probes are outside
-  the requested contract.
+- Darkbloom does not report CPU utilization, process RSS, GPU-engine
+  utilization, GPU power, or network throughput. Overview's CPU percentage is
+  sampled from macOS host counters and is system-wide, not attributed to the
+  provider. GPU memory is the daemon's active/cache allocation; GPU temperature
+  and fan RPM come separately from the official `fan status --json` source.
 - Cumulative-counter tokens/second is a polling-window estimate, not an engine
   benchmark or instantaneous generation rate.
 
@@ -280,6 +282,12 @@ sensor readings, distinct from macOS thermal-pressure classification and from
 adapter-power estimates. Fan helper timestamps use Swift's Date encoding rather
 than Unix seconds. No fan helper install, privileged setting, or enrollment change
 is performed by the app.
+
+The Overview samples macOS host CPU counters only while its resource panel is
+visible, at three-second intervals. It labels the result “Mac CPU / System-wide”
+because the counters include other apps and do not provide a Darkbloom process
+percentage. Missing, reset, or stale samples are omitted or shown as measuring;
+GPU engine utilization is not inferred from GPU memory or temperature.
 
 User-invoked idle/beta saves use fixed official command arguments, run through
 the existing app mutation gate, preserve staged model drafts, and report that a

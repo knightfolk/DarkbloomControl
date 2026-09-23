@@ -37,6 +37,95 @@ struct ActivityViewTests {
         try capture.run()
         capture.waitUntilExit()
     }
+
+    @Test("line, area, and side-by-side chart choices render with populated model data")
+    func rendersAlternativeChartStyles() async throws {
+        let cases: [(ActivityChartStyle, ActivityBarArrangement)] = [
+            (.lines, .stacked), (.area, .stacked), (.bars, .sideBySide),
+        ]
+        for (style, arrangement) in cases {
+            let store = MonitorStore(
+                service: TelemetryService(source: ActivityUnusedSource()),
+                initial: .unavailable(now: Date()), earningsClient: ActivityFixtureClient()
+            )
+            let host = NSHostingController(rootView: ActivityView(
+                store: store,
+                initialChartStyle: style,
+                initialBarArrangement: arrangement
+            ))
+            let window = NSWindow(contentViewController: host)
+            window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 570, height: 650))
+            window.orderBack(nil)
+            defer { window.close() }
+            try await Task.sleep(for: .milliseconds(300))
+            host.view.layoutSubtreeIfNeeded()
+            #expect(host.view.frame.width <= 570)
+            #expect(host.view.frame.height >= 600)
+
+            guard ProcessInfo.processInfo.environment["DARKBLOOM_RENDER_EVIDENCE"] == "1" else { continue }
+            let suffix = style == .bars ? "side-by-side" : style.rawValue.lowercased()
+            let capture = Process()
+            capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            capture.arguments = ["-x", "-l", String(window.windowNumber), "/tmp/darkbloom-activity-\(suffix)-570.png"]
+            try capture.run()
+            capture.waitUntilExit()
+        }
+    }
+
+    @Test("estimated-profit chart renders signed fixture data when power coverage is complete")
+    func rendersEstimatedProfitWithCoveredPower() async throws {
+        let now = Date()
+        let store = MonitorStore(
+            service: TelemetryService(source: ActivityUnusedSource()),
+            initial: .unavailable(now: now),
+            initialEnergy: fixtureEnergy(now: now),
+            earningsClient: ActivityFixtureClient()
+        )
+        let host = NSHostingController(rootView: ActivityView(store: store, initialChartMetric: .estimatedProfit))
+        let window = NSWindow(contentViewController: host)
+        window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 780, height: 760))
+        window.orderBack(nil)
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(350))
+        host.view.layoutSubtreeIfNeeded()
+        #expect(host.view.frame.width == 780)
+        #expect(host.view.frame.height >= 720)
+        guard ProcessInfo.processInfo.environment["DARKBLOOM_RENDER_EVIDENCE"] == "1" else { return }
+        let capture = Process()
+        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        capture.arguments = ["-x", "-l", String(window.windowNumber), "/tmp/darkbloom-activity-profit.png"]
+        try capture.run()
+        capture.waitUntilExit()
+        #expect(capture.terminationStatus == 0)
+    }
+}
+
+private func fixtureEnergy(now: Date) -> EnergyRecordingSnapshot {
+    let calendar = Calendar.current
+    let start = calendar.startOfDay(for: now)
+    let end = calendar.dateInterval(of: .hour, for: now)?.start ?? now
+    var cursor = start
+    var intervals: [EnergyInterval] = []
+    let step: TimeInterval = 10
+    while cursor.addingTimeInterval(step) <= end {
+        let next = cursor.addingTimeInterval(step)
+        intervals.append(EnergyInterval(
+            start: cursor,
+            end: next,
+            kWh: 0.4 * step / 3_600,
+            usdPerKWh: 0.2,
+            source: "render-fixture",
+            estimated: true
+        ))
+        cursor = next
+    }
+    return EnergyRecordingSnapshot(
+        reading: EnergyReading(date: cursor, watts: 400, source: "render-fixture", estimated: true),
+        intervals: intervals,
+        issue: nil
+    )
 }
 
 private struct ActivityFixtureClient: AccountEarningsFetching {

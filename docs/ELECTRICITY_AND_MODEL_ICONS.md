@@ -30,6 +30,13 @@ are excluded, not prorated. The matched-hour count and estimated/partial labels
 remain visible. This is not a full net-profit calculation or a full-day total.
 The first matched result normally requires tracking through a complete hour.
 
+Activity can also show an estimated profit per model-hour. For each complete
+earning hour with uninterrupted power coverage, it subtracts an equal share of
+whole-Mac electricity cost from each model with recorded work in that hour.
+Other apps and idle Mac use are included in the power cost, so this is a rough
+allocation rather than provider-only consumption. Hours with power gaps are
+omitted; the chart and averages identify the result as estimated.
+
 The menu bar uses Qwen, OpenAI (GPT-OSS), or Google (Gemma) marks during current
 inference. A process-matched unified `loop` log beginning `Loading model:` can
 also establish a loading indication for up to sixty seconds. Completion,

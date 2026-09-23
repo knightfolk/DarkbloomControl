@@ -86,6 +86,7 @@ final class MonitorStore: ObservableObject {
         service: TelemetryService,
         initial: TelemetrySnapshot,
         providerExtras: ProviderExtrasStore? = nil,
+        initialEnergy: EnergyRecordingSnapshot? = nil,
         earningsClient: any AccountEarningsFetching = AuthenticatedEarningsClient(
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser
         ),
@@ -103,6 +104,7 @@ final class MonitorStore: ObservableObject {
     ) {
         self.service = service
         self.providerExtras = providerExtras
+        energy = initialEnergy
         self.earningsClient = earningsClient
         self.uptimeRecorder = uptimeRecorder
         self.tokenRateRecorder = tokenRateRecorder

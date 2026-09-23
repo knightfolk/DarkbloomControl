@@ -33,4 +33,21 @@ struct ActivityQueryTests {
         #expect(query(.dateRange, before) == query(.dateRange, after))
         #expect(query(.today, before) != query(.today, before, model: "all"))
     }
+
+    @Test("profit requests refresh when the chart metric or power sample changes")
+    func profitQueryIdentityTracksInputs() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 86_400)
+        let firstPowerSample = now.addingTimeInterval(-10)
+        let secondPowerSample = now
+        func query(metric: ActivityChartMetric, power: Date?) -> ActivityQuery {
+            ActivityQuery(period: .today, selectedDate: now, endDate: now, now: now,
+                          calendar: calendar, model: nil, revision: 0, refreshID: 0,
+                          metric: metric, energyRevision: power)
+        }
+
+        #expect(query(metric: .earnings, power: nil) != query(metric: .estimatedProfit, power: nil))
+        #expect(query(metric: .estimatedProfit, power: firstPowerSample) != query(metric: .estimatedProfit, power: secondPowerSample))
+    }
 }
