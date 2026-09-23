@@ -84,6 +84,11 @@ struct ActivityChartSegment: Equatable, Identifiable {
 }
 
 enum ActivityChartData {
+    static func colorScaleDomain(models: [String]) -> [String] {
+        var seen = Set<String>()
+        return (models + ["Work", "Base rewards"]).filter { seen.insert($0).inserted }
+    }
+
     static func values(
         buckets: [ActivityBucket],
         models: [String],

@@ -8,7 +8,7 @@ import Testing
 @Suite("Activity rendering", .serialized)
 @MainActor
 struct ActivityViewTests {
-    @Test("populated local activity fits the dashboard detail column", arguments: [780.0, 570.0])
+    @Test("populated local activity fits narrow through wide dashboard detail columns", arguments: [1_080.0, 780.0, 570.0, 420.0])
     func rendersActivity(width: Double) async throws {
         let store = MonitorStore(
             service: TelemetryService(source: ActivityUnusedSource()),
@@ -36,6 +36,24 @@ struct ActivityViewTests {
         capture.arguments = ["-x", "-l", String(window.windowNumber), "/tmp/darkbloom-activity-window-\(Int(width)).png"]
         try capture.run()
         capture.waitUntilExit()
+    }
+
+    @Test("filtered one-model activity renders without changing the chart color scale")
+    func rendersFilteredModelChart() async throws {
+        let store = MonitorStore(
+            service: TelemetryService(source: ActivityUnusedSource()),
+            initial: .unavailable(now: Date()), earningsClient: ActivityFixtureClient()
+        )
+        let host = NSHostingController(rootView: ActivityView(store: store, initialModelFilter: ActivityFixtureModel.gemma))
+        let window = NSWindow(contentViewController: host)
+        window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 420, height: 620))
+        window.orderBack(nil)
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(350))
+        host.view.layoutSubtreeIfNeeded()
+        #expect(host.view.frame.width == 420)
+        #expect(host.view.frame.height >= 600)
     }
 
     @Test("line, area, and side-by-side chart choices render with populated model data")
@@ -128,9 +146,14 @@ private func fixtureEnergy(now: Date) -> EnergyRecordingSnapshot {
     )
 }
 
+private enum ActivityFixtureModel {
+    static let gemma = "google/gemma-4-26b"
+    static let qwen = "qwen/qwen3.8-27b"
+}
+
 private struct ActivityFixtureClient: AccountEarningsFetching {
     func fetch(now: Date) async throws -> EarningsPresentationValue { .unavailable(reason: "Render fixture") }
-    func activityModels(in range: DateInterval) async throws -> [String] { ["gemma", "qwen"] }
+    func activityModels(in range: DateInterval) async throws -> [String] { [ActivityFixtureModel.gemma, ActivityFixtureModel.qwen] }
 
     func activityByModel(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar) async throws -> [ModelActivityBucket]? {
         try ActivityCalendar.intervals(in: range, unit: unit, calendar: calendar).enumerated().flatMap { index, interval -> [ModelActivityBucket] in
@@ -138,23 +161,23 @@ private struct ActivityFixtureClient: AccountEarningsFetching {
             let gemma = Int64((index % 5 + 1) * 25_000)
             let qwen = Int64((index % 3 + 1) * 15_000)
             return [
-                ModelActivityBucket(interval: interval, model: "gemma", workMicroUSD: gemma),
-                ModelActivityBucket(interval: interval, model: "qwen", workMicroUSD: qwen),
+                ModelActivityBucket(interval: interval, model: ActivityFixtureModel.gemma, workMicroUSD: gemma),
+                ModelActivityBucket(interval: interval, model: ActivityFixtureModel.qwen, workMicroUSD: qwen),
             ]
         }
     }
 
     func modelHourlyEarningsAverages(in range: DateInterval) async throws -> [ModelHourlyEarningsAverage]? {
         [
-            ModelHourlyEarningsAverage(model: "gemma", workMicroUSD: 100_000, earningHours: 4),
-            ModelHourlyEarningsAverage(model: "qwen", workMicroUSD: 120_000, earningHours: 3),
+            ModelHourlyEarningsAverage(model: ActivityFixtureModel.gemma, workMicroUSD: 100_000, earningHours: 4),
+            ModelHourlyEarningsAverage(model: ActivityFixtureModel.qwen, workMicroUSD: 120_000, earningHours: 3),
         ]
     }
 
     func modelActivity(in range: DateInterval, unit: ActivityCalendarUnit, calendar: Calendar, model: String?) async throws -> [ActivityBucket]? {
         guard let model else { return try await activity(in: range, unit: unit, calendar: calendar) }
         return try ActivityCalendar.intervals(in: range, unit: unit, calendar: calendar).enumerated().map { index, interval in
-            let work: Int64 = model == "gemma"
+            let work: Int64 = model == ActivityFixtureModel.gemma
                 ? Int64((index % 5 + 1) * 25_000)
                 : Int64((index % 3 + 1) * 15_000)
             return ActivityBucket(interval: interval, totals: index == 3 ? nil : ActivityTotals(

@@ -49,6 +49,21 @@ struct ActivityChartDataTests {
         #expect(values.map(\.amountUSD) == [0.2])
     }
 
+    @Test("chart color scale stays anchored to the complete model list while filtering")
+    func modelFilterKeepsStableColorScale() {
+        let models = ["google/gemma-4-26b", "qwen/qwen3.8-27b"]
+        let interval = DateInterval(start: Date(timeIntervalSince1970: 3_600), duration: 3_600)
+        let filteredValues = ActivityChartData.values(
+            buckets: [bucket(interval, work: 200_000)],
+            models: models,
+            modelWorkByBucket: [interval.start: [models[0]: 100_000, models[1]: 200_000]],
+            selectedModel: models[1]
+        )
+
+        #expect(filteredValues.map(\.series) == [models[1]])
+        #expect(ActivityChartData.colorScaleDomain(models: models) == models + ["Work", "Base rewards"])
+    }
+
     @Test("company palettes keep sibling models visually related and readable")
     func companyPaletteGroups() {
         let gemma = ActivityChartPalette.components(for: "google/gemma-4-26b")
