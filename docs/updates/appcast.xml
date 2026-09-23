@@ -3,6 +3,18 @@
     <channel>
         <title>Darkbloom Control</title>
         <item>
+            <title>1.3.0</title>
+            <pubDate>Tue, 22 Sep 2026 21:04:33 -0700</pubDate>
+            <sparkle:version>113</sparkle:version>
+            <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.3.0/Darkbloom-Control-1.3.0-mac-arm64.zip" length="5671351" type="application/octet-stream" sparkle:edSignature="iudTXU2GreH2HfW3Be/c0hGAaZnBHmtvTFTWc5pnv6drgLeMCMgaB5Q7rYPmBNfh4q/LX/IFzI84LZjhWFvrBA=="/>
+            <sparkle:deltas>
+                <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.3.0/Darkbloom%20Control113-112.delta" sparkle:deltaFrom="112" length="527670" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977808" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="m8z8QTN/TzuHLQOGISjq8zj1rDOWKK3vJ0bzHs+Tc/ikfpcHSudNBcySbQqdx0Pcl/tzFuaVifPGT3x9aPc1CA=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>1.2.0</title>
             <pubDate>Tue, 22 Sep 2026 16:38:41 -0700</pubDate>
             <sparkle:version>112</sparkle:version>
