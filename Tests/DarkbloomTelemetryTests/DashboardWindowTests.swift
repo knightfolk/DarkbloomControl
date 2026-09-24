@@ -22,8 +22,8 @@ struct DashboardWindowTests {
         #expect(DashboardWindowSizing.fitted(savedFrame, within: visibleFrame) == savedFrame)
     }
 
-    @Test("Settings navigation reuses the dashboard window")
-    func settingsRoute() throws {
+    @Test("Hosting has a separate dashboard route and Settings remains available")
+    func hostingAndSettingsRoutes() throws {
         let suite = "DashboardNavigationTest-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -45,6 +45,12 @@ struct DashboardWindowTests {
         )
         let first = controller.window
         controller.present(activate: false)
+        #expect(DashboardDestination.allCases.map(\.rawValue).contains("Hosting"))
+        controller.present(section: .hosting, activate: false)
+        #expect(controller.window === first)
+        #expect(controller.navigation.selected == .hosting)
+        #expect(DashboardNavigation(defaults: defaults).selected == .hosting)
+
         controller.present(section: .settings, activate: false)
         #expect(controller.window === first)
         #expect(controller.navigation.selected == .settings)
@@ -88,6 +94,46 @@ struct DashboardWindowTests {
         let capture = Process()
         capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         capture.arguments = ["-x", "-l", String(window.windowNumber), "/tmp/darkbloom-unified-settings-\(appearance).png"]
+        try capture.run()
+        capture.waitUntilExit()
+        #expect(capture.terminationStatus == 0)
+    }
+
+    @Test("Hosting page renders in the dashboard at its minimum width", arguments: ["light", "dark"])
+    func hostingMinimumSize(appearance: String) async throws {
+        let suite = "DashboardHostingRender-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = MonitorStore(service: TelemetryService(source: DashboardUnusedSource()), initial: .unavailable(now: Date()))
+        let hostingStore = HostingSettingsStore(
+            controlStore: nil,
+            endpointClient: DashboardNoEndpoint(),
+            tokenFile: DashboardTokenFileFake(),
+            cliVersionProvider: { "0.9.7" },
+            defaults: defaults,
+            lanScanner: { ["192.168.1.20", "100.101.22.3"] }
+        )
+        let controller = DashboardWindowController(
+            store: store,
+            controlStore: nil,
+            hostingStore: hostingStore,
+            frameAutosaveName: nil,
+            defaults: defaults
+        )
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        window.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
+        window.setContentSize(NSSize(width: 800, height: 560))
+        controller.present(section: .hosting, activate: false)
+        try await Task.sleep(for: .milliseconds(200))
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        #expect(window.contentView?.frame.width == 800)
+        #expect(controller.navigation.selected == .hosting)
+        guard ProcessInfo.processInfo.environment["DARKBLOOM_RENDER_EVIDENCE"] == "1" else { return }
+        let capture = Process()
+        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        capture.arguments = ["-x", "-l", String(window.windowNumber), "/tmp/darkbloom-dashboard-hosting-\(appearance).png"]
         try capture.run()
         capture.waitUntilExit()
         #expect(capture.terminationStatus == 0)

@@ -12,16 +12,15 @@ public enum HostingEndpointMode: String, CaseIterable, Sendable, Equatable {
     /// handoff exactly like the existing start path.
     case unified
     /// `--local`: standalone coordinator-less direct mode. The official CLI
-    /// runs it as an unsupervised foreground process with no LaunchAgent, so
-    /// this app cannot own or terminate it safely. The mode exists only so the
-    /// settings surface can represent it as unavailable with a fixed reason.
+    /// runs it in the foreground, so this app cannot own or terminate it
+    /// safely. The settings surface can still show and copy its CLI command.
     case standalone
 
     public var isDispatchable: Bool { self != .standalone }
 
     /// Fixed, non-secret reason shown when standalone mode is selected.
     public static let standaloneUnavailableReason = String(
-        localized: "Standalone serving runs as an unsupervised foreground process that Darkbloom Control cannot own or stop safely. Use `darkbloom start --local` in Terminal if you need coordinator-less serving."
+        localized: "Local-only serving runs in the foreground. This app cannot supervise or stop it safely; copy the command below and run it in Terminal if you need coordinator-less serving."
     )
 }
 
@@ -29,7 +28,7 @@ public enum HostingEndpointMode: String, CaseIterable, Sendable, Equatable {
 public enum HostingBindScope: Equatable, Sendable {
     /// The documented default `--bind 127.0.0.1`: only this Mac.
     case loopback
-    /// One specific interface address, such as an active private LAN address.
+    /// One specific interface address, such as an active LAN or tailnet address.
     case specificInterface
     /// `--bind 0.0.0.0`: every interface. The widest possible exposure.
     case allInterfaces
@@ -48,15 +47,18 @@ public struct HostingOptions: Equatable, Sendable {
     public var mode: HostingEndpointMode
     public var port: UInt16
     public var bindAddress: String
+    public var requiresAuthentication: Bool
 
     public init(
         mode: HostingEndpointMode,
         port: UInt16 = HostingOptions.defaultPort,
-        bindAddress: String = HostingOptions.loopbackBindAddress
+        bindAddress: String = HostingOptions.loopbackBindAddress,
+        requiresAuthentication: Bool = true
     ) {
         self.mode = mode
         self.port = port
         self.bindAddress = bindAddress
+        self.requiresAuthentication = requiresAuthentication
     }
 
     /// No endpoint: the monitor's historical behavior before hosting existed.
@@ -74,6 +76,12 @@ public struct HostingOptions: Equatable, Sendable {
         mode != .off && bindScope != .loopback
     }
 
+    /// Every network-exposed or unauthenticated endpoint requires a fresh
+    /// confirmation before the CLI is asked to apply it.
+    public var requiresExposureConfirmation: Bool {
+        mode != .off && (requiresLANConfirmation || !requiresAuthentication)
+    }
+
     public var isValid: Bool {
         guard HostingAddressPolicy.isSupportedBindAddress(bindAddress) else { return false }
         return mode == .off || port > 0
@@ -82,16 +90,17 @@ public struct HostingOptions: Equatable, Sendable {
     /// The official `darkbloom start` argument suffix for these options.
     /// `--port` and `--bind` are always explicit for an active endpoint so the
     /// dispatched command documents the exact exposure instead of relying on
-    /// CLI defaults. `--no-auth` is absent by construction: bearer-token
-    /// authentication always stays enabled.
+    /// CLI defaults. Authentication remains enabled unless the user explicitly
+    /// opts out and confirms the resulting exposure in the app.
     public var startArguments: [String] {
+        let authArguments = requiresAuthentication ? [] : ["--no-auth"]
         switch mode {
         case .off:
             return []
         case .unified:
-            return ["--local-endpoint", "--port", String(port), "--bind", bindAddress]
+            return ["--local-endpoint", "--port", String(port), "--bind", bindAddress] + authArguments
         case .standalone:
-            return ["--local", "--port", String(port), "--bind", bindAddress]
+            return ["--local", "--port", String(port), "--bind", bindAddress] + authArguments
         }
     }
 }
@@ -115,12 +124,22 @@ public enum HostingAddressPolicy {
         return false
     }
 
-    /// Only permit the documented safe choices in settings: this Mac, one
-    /// private IPv4 interface, or the explicitly-confirmed all-interface bind.
+    /// Tailscale uses the shared address space 100.64.0.0/10. These addresses
+    /// are not RFC 1918 private addresses, but are a supported private-device
+    /// path for the CLI's local endpoint.
+    public static func isTailnetIPv4Address(_ value: String) -> Bool {
+        guard let octets = ipv4Octets(value) else { return false }
+        return octets[0] == 100 && (64...127).contains(octets[1])
+    }
+
+    /// Permit this Mac, an active RFC 1918/tailnet interface, or the explicitly
+    /// confirmed all-interface bind. Public and malformed addresses are not
+    /// accepted by the app even though the CLI accepts a string.
     public static func isSupportedBindAddress(_ value: String) -> Bool {
         value == HostingOptions.loopbackBindAddress
             || value == HostingOptions.allInterfacesBindAddress
             || isPrivateIPv4Address(value)
+            || isTailnetIPv4Address(value)
     }
 
     public static func bindScope(for address: String) -> HostingBindScope {
@@ -146,8 +165,8 @@ public enum HostingAddressPolicy {
     }
 }
 
-/// Enumerates this Mac's currently active private LAN IPv4 addresses so LAN
-/// binding can prefer one specific interface over all interfaces. Reading the
+/// Enumerates this Mac's active RFC 1918 and tailnet IPv4 addresses so hosting
+/// can prefer one specific interface over all interfaces. Reading the
 /// interface list is the only system introspection; no hostname or interface
 /// names leave this type.
 public enum LANAddressScanner {
@@ -181,7 +200,10 @@ public enum LANAddressScanner {
                     return ""
                 }
             }
-            guard !text.isEmpty, HostingAddressPolicy.isPrivateIPv4Address(text) else { continue }
+            guard !text.isEmpty,
+                  HostingAddressPolicy.isPrivateIPv4Address(text)
+                    || HostingAddressPolicy.isTailnetIPv4Address(text)
+            else { continue }
             found.insert(text)
         }
         return found.sorted()

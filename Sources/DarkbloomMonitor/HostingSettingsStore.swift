@@ -2,8 +2,8 @@ import AppKit
 import DarkbloomTelemetry
 import Foundation
 
-/// Owns the monitor's hosting start-flag preferences, the explicit LAN
-/// confirmation gate, and mode-appropriate local-endpoint details.
+/// Owns the monitor's hosting start-flag preferences, the explicit network and
+/// authentication confirmation gate, and mode-appropriate endpoint details.
 ///
 /// The options are application preferences, never provider configuration:
 /// they are applied only through the official `darkbloom start` path and
@@ -15,12 +15,13 @@ final class HostingSettingsStore: ObservableObject {
     static let modeKey = "hosting.endpointMode"
     static let portKey = "hosting.port"
     static let bindAddressKey = "hosting.bindAddress"
+    static let requiresAuthenticationKey = "hosting.requiresAuthentication"
 
     @Published private(set) var options: HostingOptions
     @Published private(set) var lanAddresses: [String] = []
     @Published private(set) var cliVersion: String?
     @Published private(set) var cliSupportsHosting = false
-    @Published private(set) var pendingLANConfirmation: HostingOptions?
+    @Published private(set) var pendingExposureConfirmation: HostingOptions?
     @Published private(set) var errorMessage: String?
     @Published private(set) var endpointDetails: LocalEndpointAvailability?
     @Published private(set) var isFetchingEndpointDetails = false
@@ -56,9 +57,9 @@ final class HostingSettingsStore: ObservableObject {
     }
 
     /// Loads persisted preferences, falling back to the safe default: no
-    /// endpoint, loopback bind. A persisted private-LAN bind is retained but
-    /// still requires a fresh explicit confirmation before any apply. A public
-    /// or malformed address falls back to loopback.
+    /// endpoint, loopback bind, and authentication enabled. A persisted
+    /// LAN/tailnet bind is retained but still requires a fresh confirmation
+    /// before apply. A public or malformed address falls back to loopback.
     static func loadOptions(from defaults: UserDefaults) -> HostingOptions {
         let mode = defaults.string(forKey: modeKey)
             .flatMap(HostingEndpointMode.init(rawValue:)) ?? .off
@@ -68,11 +69,17 @@ final class HostingSettingsStore: ObservableObject {
         if !HostingAddressPolicy.isSupportedBindAddress(bindAddress) {
             bindAddress = HostingOptions.loopbackBindAddress
         }
-        return HostingOptions(mode: mode, port: port, bindAddress: bindAddress)
+        let requiresAuthentication = defaults.object(forKey: requiresAuthenticationKey) as? Bool ?? true
+        return HostingOptions(
+            mode: mode,
+            port: port,
+            bindAddress: bindAddress,
+            requiresAuthentication: requiresAuthentication
+        )
     }
 
     /// Re-reads the runtime environment: the CLI version that authoritative
-    /// status observed, and the currently active private LAN addresses.
+    /// status observed, and the currently active LAN/tailnet addresses.
     func refreshEnvironment() {
         let version = cliVersionProvider()
         cliVersion = version
@@ -96,16 +103,22 @@ final class HostingSettingsStore: ObservableObject {
         return true
     }
 
-    func setBindAddress(_ address: String) {
-        guard HostingAddressPolicy.isSupportedBindAddress(address) else { return }
+    @discardableResult
+    func setBindAddress(_ address: String) -> Bool {
+        guard HostingAddressPolicy.isSupportedBindAddress(address) else { return false }
         update(\.bindAddress, to: address)
+        return true
     }
 
-    /// Requests application of the current options. A non-loopback bind never
-    /// dispatches from here: it first requires the explicit LAN confirmation.
+    func setRequiresAuthentication(_ required: Bool) {
+        update(\.requiresAuthentication, to: required)
+    }
+
+    /// Requests application of the current options. Network exposure and
+    /// disabling API-key authentication both require fresh confirmation.
     func requestApply() async {
         errorMessage = nil
-        pendingLANConfirmation = nil
+        pendingExposureConfirmation = nil
         guard cliSupportsHosting else {
             errorMessage = Self.unsupportedMessage(cliVersion: cliVersion)
             return
@@ -121,24 +134,24 @@ final class HostingSettingsStore: ObservableObject {
         if options.mode != .off,
            options.bindScope == .specificInterface,
            !lanAddresses.contains(options.bindAddress) {
-            errorMessage = "That LAN address is no longer active. Choose a current LAN address or use loopback."
+            errorMessage = "That address is not active on this Mac. Choose a current LAN or tailnet address, or use loopback."
             return
         }
-        if options.requiresLANConfirmation {
-            pendingLANConfirmation = options
+        if options.requiresExposureConfirmation {
+            pendingExposureConfirmation = options
             return
         }
         await apply(options)
     }
 
-    func confirmPendingLANConfirmation() async {
-        guard let pending = pendingLANConfirmation else { return }
-        pendingLANConfirmation = nil
+    func confirmPendingExposureConfirmation() async {
+        guard let pending = pendingExposureConfirmation else { return }
+        pendingExposureConfirmation = nil
         await apply(pending)
     }
 
-    func cancelPendingLANConfirmation() {
-        pendingLANConfirmation = nil
+    func cancelPendingExposureConfirmation() {
+        pendingExposureConfirmation = nil
     }
 
     func clearErrorMessage() {
@@ -165,6 +178,62 @@ final class HostingSettingsStore: ObservableObject {
             ? HostingOptions.loopbackBindAddress
             : options.bindAddress
         return "http://\(host):\(options.port)/v1"
+    }
+
+    /// The app cannot supervise direct mode because `darkbloom start --local`
+    /// remains in the foreground. This safe, argument-only command is offered
+    /// for an explicit user-initiated copy to Terminal.
+    var standaloneStartCommand: String? {
+        guard options.mode == .standalone, options.isValid else { return nil }
+        if options.bindScope == .specificInterface,
+           !lanAddresses.contains(options.bindAddress) {
+            return nil
+        }
+        var parts = [
+            "darkbloom", "start", "--local",
+            "--port", String(options.port),
+            "--bind", options.bindAddress,
+        ]
+        if !options.requiresAuthentication { parts.append("--no-auth") }
+        return parts.joined(separator: " ")
+    }
+
+    var exposureConfirmationTitle: String {
+        guard let pendingExposureConfirmation else { return "Confirm local endpoint access" }
+        if !pendingExposureConfirmation.requiresAuthentication {
+            return pendingExposureConfirmation.bindScope == .loopback
+                ? "Disable API-key authentication?"
+                : "Expose an unauthenticated endpoint?"
+        }
+        return "Allow access from the network?"
+    }
+
+    var exposureConfirmationMessage: String {
+        guard let pendingExposureConfirmation else { return "Review the endpoint settings before applying." }
+        var details: [String] = []
+        if pendingExposureConfirmation.bindScope == .allInterfaces {
+            details.append("0.0.0.0 listens on every network interface, not only your LAN.")
+        } else if pendingExposureConfirmation.bindScope == .specificInterface {
+            details.append("The endpoint will listen on \(pendingExposureConfirmation.bindAddress), which other devices able to reach that address can access.")
+        }
+        if !pendingExposureConfirmation.requiresAuthentication {
+            details.append("API-key authentication will be disabled; anyone who can reach this endpoint can send requests to this Mac.")
+        } else {
+            details.append("API-key authentication stays on. The token remains in Darkbloom's protected local storage.")
+        }
+        details.append("The endpoint uses HTTP without TLS or rate limiting.")
+        return details.joined(separator: " ")
+    }
+
+    var unauthenticatedAccessWarning: String {
+        switch options.mode {
+        case .off:
+            return "No local endpoint is active. If you enable local hosting later, the app will ask for confirmation before applying this setting."
+        case .unified:
+            return "No API key will be required. This is unsafe on shared, public, or untrusted networks. Applying requires a second confirmation before the provider is restarted."
+        case .standalone:
+            return "No API key will be required. The copied command includes --no-auth; the app will not run or supervise this command, so review it before executing in Terminal."
+        }
     }
 
     /// Copies the bearer token through the explicit user action only. The
@@ -218,5 +287,6 @@ final class HostingSettingsStore: ObservableObject {
         defaults.set(options.mode.rawValue, forKey: Self.modeKey)
         defaults.set(Int(options.port), forKey: Self.portKey)
         defaults.set(options.bindAddress, forKey: Self.bindAddressKey)
+        defaults.set(options.requiresAuthentication, forKey: Self.requiresAuthenticationKey)
     }
 }

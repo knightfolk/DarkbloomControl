@@ -67,10 +67,8 @@ struct HostingCommandMappingTests {
         #expect(!options.startArguments.contains("--local-endpoint"))
     }
 
-    @Test("bearer authentication is never disabled in any mode")
-    func authenticationAlwaysStaysEnabled() {
-        // The mapping cannot construct the flag at all; guard it explicitly so
-        // a future edit cannot reintroduce it silently.
+    @Test("bearer authentication stays on by default and opts out only explicitly")
+    func authenticationMapping() {
         for mode in HostingEndpointMode.allCases {
             let options = HostingOptions(mode: mode, port: 8000, bindAddress: "127.0.0.1")
             #expect(!options.startArguments.contains("--no-auth"))
@@ -82,6 +80,16 @@ struct HostingCommandMappingTests {
             )
             #expect(!command.arguments.contains("--no-auth"))
         }
+
+        let unauthenticated = HostingOptions(
+            mode: .unified,
+            port: 8123,
+            bindAddress: "127.0.0.1",
+            requiresAuthentication: false
+        )
+        #expect(unauthenticated.startArguments == [
+            "--local-endpoint", "--port", "8123", "--bind", "127.0.0.1", "--no-auth",
+        ])
     }
 
     @Test("local endpoint discovery uses the documented read-only command")

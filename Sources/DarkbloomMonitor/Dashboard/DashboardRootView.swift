@@ -2,7 +2,7 @@ import SwiftUI
 
 enum DashboardDestination: String, CaseIterable, Identifiable {
     case overview = "Overview", activity = "Activity", opportunity = "Opportunity"
-    case models = "Models", health = "Health & Logs", settings = "Settings"
+    case models = "Models", hosting = "Hosting", health = "Health & Logs", settings = "Settings"
     var id: String { rawValue }
     var symbol: String {
         switch self {
@@ -10,6 +10,7 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
         case .activity: "chart.bar"
         case .opportunity: "network"
         case .models: "cpu"
+        case .hosting: "antenna.radiowaves.left.and.right"
         case .health: "waveform.path.ecg"
         case .settings: "gearshape"
         }
@@ -61,11 +62,20 @@ struct DashboardRootView: View {
                     let work = ModelNetworkContext.workLabel(modelID: modelID, values: store.modelWorkEarnings, now: date)
                     return network + [performance, work].compactMap { $0 }
                 }
+            } else if navigation.selected == .hosting {
+                if let hostingStore {
+                    HostingSettingsView(store: hostingStore)
+                } else {
+                    ContentUnavailableView(
+                        "Hosting unavailable",
+                        systemImage: "antenna.radiowaves.left.and.right",
+                        description: Text("Provider hosting controls are not available in this session.")
+                    )
+                }
             } else if navigation.selected == .settings {
                 MonitorSettingsView(
                     extrasStore: store.providerExtras,
-                    controlStore: controlStore,
-                    hostingStore: hostingStore
+                    controlStore: controlStore
                 )
             } else {
                 HealthView(store: store)

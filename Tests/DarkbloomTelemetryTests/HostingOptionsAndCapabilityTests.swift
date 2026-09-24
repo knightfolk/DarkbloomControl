@@ -11,7 +11,9 @@ struct HostingOptionsAndCapabilityTests {
         #expect(options.port == 8000)
         #expect(options.bindAddress == "127.0.0.1")
         #expect(options.usesLoopback)
+        #expect(options.requiresAuthentication)
         #expect(!options.requiresLANConfirmation)
+        #expect(!options.requiresExposureConfirmation)
         #expect(options.isValid)
     }
 
@@ -45,6 +47,16 @@ struct HostingOptionsAndCapabilityTests {
         }
     }
 
+    @Test("Tailscale shared addresses are supported but public addresses are not")
+    func tailscaleAddressSupport() {
+        #expect(HostingAddressPolicy.isTailnetIPv4Address("100.64.0.1"))
+        #expect(HostingAddressPolicy.isTailnetIPv4Address("100.127.255.254"))
+        #expect(!HostingAddressPolicy.isTailnetIPv4Address("100.63.255.255"))
+        #expect(!HostingAddressPolicy.isTailnetIPv4Address("100.128.0.1"))
+        #expect(HostingOptions(mode: .unified, bindAddress: "100.101.22.3").isValid)
+        #expect(!HostingOptions(mode: .unified, bindAddress: "8.8.8.8").isValid)
+    }
+
     @Test("LAN confirmation is required for every non-loopback active endpoint")
     func lanConfirmationGate() {
         #expect(!HostingOptions(mode: .off, bindAddress: "192.168.1.5").requiresLANConfirmation)
@@ -52,6 +64,14 @@ struct HostingOptionsAndCapabilityTests {
         #expect(HostingOptions(mode: .unified, bindAddress: "192.168.1.5").requiresLANConfirmation)
         #expect(HostingOptions(mode: .unified, bindAddress: "0.0.0.0").requiresLANConfirmation)
         #expect(HostingOptions(mode: .standalone, bindAddress: "0.0.0.0").requiresLANConfirmation)
+    }
+
+    @Test("network exposure and authentication opt-out each require confirmation")
+    func exposureConfirmationGate() {
+        #expect(!HostingOptions(mode: .off, requiresAuthentication: false).requiresExposureConfirmation)
+        #expect(!HostingOptions(mode: .unified).requiresExposureConfirmation)
+        #expect(HostingOptions(mode: .unified, bindAddress: "100.101.22.3").requiresExposureConfirmation)
+        #expect(HostingOptions(mode: .unified, requiresAuthentication: false).requiresExposureConfirmation)
     }
 
     @Test("invalid addresses make options invalid regardless of mode")

@@ -44,7 +44,7 @@ struct HostingSettingsStoreTests {
         let (store, _) = try makeStore(defaults: makeDefaults())
         #expect(store.options == .default)
         #expect(store.cliSupportsHosting)
-        #expect(store.pendingLANConfirmation == nil)
+        #expect(store.pendingExposureConfirmation == nil)
     }
 
     @Test("preferences persist and reload with safe fallbacks")
@@ -54,9 +54,18 @@ struct HostingSettingsStoreTests {
         store.setMode(.unified)
         #expect(store.setPortText("8123"))
         store.setBindAddress("192.168.1.20")
+        store.setRequiresAuthentication(false)
 
         let reloaded = HostingSettingsStore.loadOptions(from: defaults)
-        #expect(reloaded == HostingOptions(mode: .unified, port: 8123, bindAddress: "192.168.1.20"))
+        #expect(reloaded == HostingOptions(
+            mode: .unified,
+            port: 8123,
+            bindAddress: "192.168.1.20",
+            requiresAuthentication: false
+        ))
+
+        defaults.removeObject(forKey: HostingSettingsStore.requiresAuthenticationKey)
+        #expect(HostingSettingsStore.loadOptions(from: defaults).requiresAuthentication)
 
         defaults.set("banana", forKey: HostingSettingsStore.bindAddressKey)
         defaults.set(70_000, forKey: HostingSettingsStore.portKey)
@@ -100,7 +109,7 @@ struct HostingSettingsStoreTests {
         #expect(executions.count == 1)
         #expect(executions.first?.action == .start)
         #expect(executions.first?.hosting == HostingOptions(mode: .unified, port: 8123, bindAddress: "127.0.0.1"))
-        #expect(store.pendingLANConfirmation == nil)
+        #expect(store.pendingExposureConfirmation == nil)
         #expect(store.errorMessage == nil)
     }
 
@@ -114,18 +123,18 @@ struct HostingSettingsStoreTests {
 
         await store.requestApply()
         #expect(await controller.hostingExecutions.isEmpty)
-        #expect(store.pendingLANConfirmation == HostingOptions(mode: .unified, port: 8123, bindAddress: "192.168.1.20"))
+        #expect(store.pendingExposureConfirmation == HostingOptions(mode: .unified, port: 8123, bindAddress: "192.168.1.20"))
 
-        store.cancelPendingLANConfirmation()
-        #expect(store.pendingLANConfirmation == nil)
+        store.cancelPendingExposureConfirmation()
+        #expect(store.pendingExposureConfirmation == nil)
         #expect(await controller.hostingExecutions.isEmpty)
 
         await store.requestApply()
-        await store.confirmPendingLANConfirmation()
+        await store.confirmPendingExposureConfirmation()
         let executions = await controller.hostingExecutions
         #expect(executions.count == 1)
         #expect(executions.first?.hosting.bindAddress == "192.168.1.20")
-        #expect(store.pendingLANConfirmation == nil)
+        #expect(store.pendingExposureConfirmation == nil)
     }
 
     @Test("an all-interfaces bind also requires confirmation")
@@ -135,7 +144,7 @@ struct HostingSettingsStoreTests {
         store.setBindAddress("0.0.0.0")
         await store.requestApply()
         #expect(await controller.hostingExecutions.isEmpty)
-        #expect(store.pendingLANConfirmation != nil)
+        #expect(store.pendingExposureConfirmation != nil)
     }
 
     @Test("a saved private address must still belong to an active LAN interface")
@@ -149,8 +158,64 @@ struct HostingSettingsStoreTests {
         await store.requestApply()
 
         #expect(await controller.hostingExecutions.isEmpty)
-        #expect(store.pendingLANConfirmation == nil)
-        #expect(store.errorMessage == "That LAN address is no longer active. Choose a current LAN address or use loopback.")
+        #expect(store.pendingExposureConfirmation == nil)
+        #expect(store.errorMessage == "That address is not active on this Mac. Choose a current LAN or tailnet address, or use loopback.")
+    }
+
+    @Test("disabling authentication requires confirmation even on loopback")
+    func unauthenticatedApplyRequiresConfirmation() async throws {
+        let (store, controller) = try makeStore(defaults: makeDefaults())
+        store.setMode(.unified)
+        store.setRequiresAuthentication(false)
+
+        await store.requestApply()
+
+        #expect(await controller.hostingExecutions.isEmpty)
+        #expect(store.pendingExposureConfirmation?.bindAddress == HostingOptions.loopbackBindAddress)
+        #expect(store.exposureConfirmationTitle == "Disable API-key authentication?")
+        #expect(store.exposureConfirmationMessage.contains("anyone who can reach this endpoint"))
+
+        await store.confirmPendingExposureConfirmation()
+        let executions = await controller.hostingExecutions
+        #expect(executions.count == 1)
+        #expect(executions.first?.hosting.requiresAuthentication == false)
+        #expect(store.pendingExposureConfirmation == nil)
+    }
+
+    @Test("standalone preview reflects the selected local CLI options")
+    func standaloneCommandPreview() throws {
+        let (store, _) = try makeStore(
+            defaults: makeDefaults(),
+            lanAddresses: ["192.168.1.20", "100.101.22.3"]
+        )
+        store.setMode(.standalone)
+        store.setPortText("8123")
+        store.setBindAddress("100.101.22.3")
+        store.setRequiresAuthentication(false)
+
+        #expect(store.standaloneStartCommand == "darkbloom start --local --port 8123 --bind 100.101.22.3 --no-auth")
+    }
+
+    @Test("standalone command preview requires the selected interface to be active")
+    func standaloneCommandRejectsInactiveAddress() throws {
+        let (store, _) = try makeStore(defaults: makeDefaults(), lanAddresses: ["192.168.1.20"])
+        store.setMode(.standalone)
+        store.setBindAddress("192.168.1.99")
+
+        #expect(store.standaloneStartCommand == nil)
+    }
+
+    @Test("authentication warning explains the selected mode without promising a nonexistent gate")
+    func unauthenticatedWarningMatchesMode() throws {
+        let (store, _) = try makeStore(defaults: makeDefaults())
+        store.setRequiresAuthentication(false)
+        #expect(store.unauthenticatedAccessWarning.contains("No local endpoint is active"))
+
+        store.setMode(.unified)
+        #expect(store.unauthenticatedAccessWarning.contains("second confirmation before the provider is restarted"))
+
+        store.setMode(.standalone)
+        #expect(store.unauthenticatedAccessWarning.contains("app will not run or supervise this command"))
     }
 
     @Test("an unverified CLI blocks every apply")
