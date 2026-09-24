@@ -61,6 +61,12 @@ release bundle; no Gatekeeper-disable or quarantine-removal workaround is needed
 - Fresh verification diagnostics for legacy and App Attest authorization
 - Network maintenance and aggregate cache-health reporting
 - One resizable dashboard and Settings window
+- Built-in Chat with an explicit per-conversation destination — the local
+  endpoint on this Mac (default) or the paid Darkbloom network — a separate
+  resizable chat window sharing the same conversation, verified-model
+  pickers, per-response route provenance, and a fail-closed paid gate
+  (consumer API key, fresh balance above zero, verified pricing, 402
+  honored as the network's final decision with no retry)
 - Qwen, OpenAI/GPT-OSS and Google/Gemma menu-bar icons during observed activity
 - Opt-in estimated adapter power, a saved USD/kWh electricity rate, and earnings
   after electricity for matching measurement periods
@@ -139,6 +145,12 @@ It stores compact, user-only SQLite histories under:
 Those databases contain hourly earnings aggregates, changed balance samples,
 observed uptime, and measured model token rates. They do not store the auth
 token, account ID, provider key, prompts, responses, or per-job content.
+Chat conversations are equally off-disk: the built-in Chat destination and
+its pop-out window keep the transcript in memory only, discard it on quit,
+and never write prompts or replies to any store. The Darkbloom consumer API
+key used by the paid chat route lives only in the macOS Keychain — never in
+preferences, files, or logs — and is separate from both the provider device
+token and the local endpoint token.
 
 Historical throughput is derived from positive token/time deltas belonging to
 the same provider process and model. These completion counters are not a live
@@ -199,6 +211,11 @@ does not claim to verify the applied runtime configuration through private APIs.
 - A per-model throughput breakdown appears only after at least two models have
   valid measured samples for the current local calendar day.
 - CLI output and APIs may evolve after the validated 0.9.7 contract. Older CLI versions omit unsupported diagnostics.
+- Chat is a first non-streaming version with cancellation; responses arrive
+  as a single completion. The paid network route's balance display is
+  advisory only — the network decides reservation sufficiency per request,
+  and HTTP 402 is final. Chat is available on this unreleased
+  `codex/chat-routing` worktree only.
 - Only the official CLI is supported; do not install a custom provider branch
   to enable monitor features. Live streaming throughput and protected model
   switching are not available.

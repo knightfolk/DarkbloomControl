@@ -21,6 +21,8 @@ struct DarkbloomMonitorApp: App {
                 .keyboardShortcut(",", modifiers: .command)
                 Button("Open Dashboard") { appDelegate.showDashboard() }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("Open Chat Window") { appDelegate.showChat() }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
             }
         }
     }
@@ -49,6 +51,10 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
 
     func showDashboard() {
         statusItemController?.showDashboard()
+    }
+
+    func showChat() {
+        statusItemController?.showChatWindow()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -123,6 +129,25 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
                 monitorStore?.snapshot.status.value?.version
             }
         )
+        // The consumer API key is a distinct credential from the provider
+        // device token and the local endpoint token: it lives only in the
+        // Keychain and is used only for the paid network chat route.
+        let consumerKeyStore = KeychainConsumerKeyStore()
+        let chatStore = ChatStore(
+            localClient: LocalChatClient(endpointProvider: AppLocalEndpointProvider(
+                defaults: .standard,
+                tokenFile: localEndpointTokenFile,
+                standaloneClient: localEndpointClient
+            )),
+            networkClient: NetworkChatClient(consumerKeyProvider: { [consumerKeyStore] in
+                consumerKeyStore.withConsumerKey { $0 }
+            }),
+            balanceClient: ConsumerBalanceClient(consumerKeyProvider: { [consumerKeyStore] in
+                consumerKeyStore.withConsumerKey { $0 }
+            }),
+            pricingClient: PublicPricingClient(),
+            keyStore: consumerKeyStore
+        )
         let providerControlStore = ProviderControlStore(
             controller: controlService,
             homeDirectory: home,
@@ -152,7 +177,8 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
         statusItemController = StatusItemController(
             store: monitorStore,
             controlStore: providerControlStore,
-            hostingStore: hostingSettingsStore
+            hostingStore: hostingSettingsStore,
+            chatStore: chatStore
         )
         ControlAppUpdater.shared.canRelaunch = { [weak providerControlStore] in
             guard let control = providerControlStore else { return true }

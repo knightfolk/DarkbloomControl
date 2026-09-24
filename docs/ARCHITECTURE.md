@@ -154,7 +154,10 @@ file for an explicit copy action. No other config field may change; credentials,
 account commands, launchd internals, direct cache mutation, remote coordinator
 mutation, private provider-control routes, and arbitrary local HTTP routes
 remain forbidden — the monitor configures the provider's own official endpoint
-through documented start flags and never opens a socket itself. Production
+through documented start flags and never opens a listening socket itself. The
+chat feature (see the chat routing section below) is an outbound HTTP client
+only: it connects to the user's own hosting endpoint or one fixed public host
+and never listens. Production
 commands use the official executable and argument values directly, never a
 shell. Paths printed by `darkbloom status` are inert display strings and are
 never followed. The monitor reads `auth_token` only for the fixed authenticated
@@ -197,6 +200,85 @@ per-model capacity. SQLite keeps separate hourly inference-work and online-
 reward aggregates plus balances with user-only permissions; it excludes
 account IDs, provider keys, and credential material. The source policy does not
 offer an arbitrary command interface.
+
+## Chat routing trust boundary (September 24, 2026, unreleased worktree)
+
+The Chat tab (dashboard) and the separate resizable pop-out chat window share
+one in-memory `ChatStore`, so both show the same conversation. The transcript
+is transient in-memory state: it is discarded on quit and never written to
+any store. The only chat credential kept anywhere is the consumer API key,
+which is intentionally stored in the macOS Keychain and nowhere else. This
+section is the authoritative description of the chat trust boundary. It
+exists only on the `codex/chat-routing` worktree and is unreleased.
+
+Every conversation is bound to one destination at creation and the route is
+immutable for its lifetime: **Local endpoint (this Mac)** — the user's own
+hosting endpoint exactly as configured in Hosting settings (unified mode URL
+plus the provider-owned `dk-local-` token file; unified mode has no discovery
+record and `darkbloom local --json` does not discover it), falling back to the
+documented standalone discovery record — or **Darkbloom network (paid)** —
+one fixed HTTPS host, `api.darkbloom.dev`. Switching routes requires an
+explicit New Chat, which starts an empty transcript; text written under one
+route can never be sent to the other, in either direction, and no fallback
+ever occurs. Composer drafts are owned by the conversation they were typed
+in (`ChatDraftPolicy`): a route change discards the draft before it can be
+delivered, even in the window before SwiftUI state settles.
+
+The two routes use three distinct credential domains that are never
+substituted for one another: the provider device token (earnings reads only),
+the local endpoint token (`dk-local-`, file-permission validated), and the
+**consumer API key**, which exists only in the macOS Keychain
+(`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`), is never written to
+defaults, files, or logs, and is never used for the local route. Network
+model verification is credential-scoped: replacing or removing the key drops
+the verified network model list, the selection from it, and the balance, and
+in-flight reads started under an older key are discarded through a credential
+generation counter, including mid-preflight paid sends.
+
+Both routes speak the OpenAI-compatible contract (`POST /v1/chat/completions`,
+authenticated `GET /v1/models`); the network adds
+`GET /v1/payments/balance` (`balance_micro_usd` ledger) and reuses the public
+`/v1/pricing` snapshot. All chat traffic goes through one ephemeral session
+with no cookies, credential storage, or caching, and a delegate that rejects
+every redirect. Requests are built only from fixed URLs or the app's own
+validated hosting configuration (never user text), bodies are bounded before
+sending (256 KiB request, 256 KiB model lists, 1 MiB completions), responses
+are streamed against hard byte ceilings, and the send pipeline checks
+cancellation at its bounded await points. Error surfaces are fixed local
+strings: a response body's
+free-text `error.message` is never displayed (it could echo credentials or
+prompt text); only whitelisted machine `error.code` tokens refine 403/404
+semantics.
+
+Local sends require a recent authenticated `/v1/models` verification, which
+is also the reachability check; if the local endpoint is unavailable the send
+stops with a fixed reason and the user must choose — the store never reroutes
+to the paid network. The local banner calls the route local without claiming
+it is costless: the local engine is shared with fleet serving work.
+
+Network sends fail closed through an ordered gate before any paid request:
+the conversation's explicit paid-route acknowledgement (per conversation,
+in memory, restating that this Mac is not used and every request is paid), a
+stored consumer key, a fresh pricing snapshot that lists the selected model
+(the send-time gate re-fetches pricing when stale and re-validates the
+returned snapshot's freshness), and a fresh,
+authoritative balance read above zero — a stale ledger snapshot blocks even
+when the fetch succeeds. A positive balance is never presented as a
+guarantee: the network reserves against each request's upper bound and
+decides sufficiency itself, so an HTTP 402 (`insufficient_funds` or
+`insufficient_quota`, even with an oversized or malformed error body) is
+recorded as the network's authoritative decision with no retry. Every
+assistant response retains route/model/time provenance (the served model
+when the response names one), and the network banner always states the
+non-guarantee, showing balance and selected-model price as status lines —
+including explicit "unavailable" states while those reads are pending or
+have failed, never a manufactured value.
+
+The first version is non-streaming with full cancellation (an honest
+cancelled state notes the request may already have been delivered); a
+duplicate send while one is in flight is ignored. Conversation state is
+transient: quitting the app discards it, and nothing about chat reaches
+SQLite or diagnostics.
 
 Download/Delete, Enable/Disable, and Preload/Unpreload are independent.
 Start passes saved enabled models as repeated official CLI `--model` arguments

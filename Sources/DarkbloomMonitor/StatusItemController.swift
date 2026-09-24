@@ -9,10 +9,12 @@ final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     private(set) var dashboardWindowController: DashboardWindowController?
+    private(set) var chatWindowController: ChatWindowController?
     private let store: MonitorStore
     private let defaults: UserDefaults
     private(set) var controlStore: ProviderControlStore?
     private let hostingStore: HostingSettingsStore?
+    private let chatStore: ChatStore?
 
     var statusItemLength: CGFloat { statusItem.length }
     var popoverContentSize: NSSize { popover.contentSize }
@@ -21,11 +23,13 @@ final class StatusItemController: NSObject {
         store: MonitorStore,
         controlStore: ProviderControlStore? = nil,
         hostingStore: HostingSettingsStore? = nil,
+        chatStore: ChatStore? = nil,
         defaults: UserDefaults = .standard
     ) {
         self.store = store
         self.defaults = defaults
         self.hostingStore = hostingStore
+        self.chatStore = chatStore
         statusItem = NSStatusBar.system.statusItem(withLength: Self.itemWidth)
         self.controlStore = controlStore
         super.init()
@@ -59,6 +63,7 @@ final class StatusItemController: NSObject {
 
     func invalidate() {
         popover.performClose(nil)
+        chatWindowController?.close()
         dashboardWindowController?.close()
         NSStatusBar.system.removeStatusItem(statusItem)
     }
@@ -79,10 +84,23 @@ final class StatusItemController: NSObject {
         popover.performClose(nil)
         if dashboardWindowController == nil {
             dashboardWindowController = DashboardWindowController(
-                store: store, controlStore: controlStore, hostingStore: hostingStore, defaults: defaults
+                store: store, controlStore: controlStore, hostingStore: hostingStore,
+                chatStore: chatStore,
+                openChatWindow: { [weak self] in self?.showChatWindow() },
+                defaults: defaults
             )
         }
         dashboardWindowController?.present(section: section, activate: activate)
+    }
+
+    /// Opens the resizable pop-out chat window. It shares the dashboard
+    /// Chat tab's `ChatStore`, so both views show the same conversation.
+    func showChatWindow(activate: Bool = true) {
+        popover.performClose(nil)
+        if chatWindowController == nil, let chatStore {
+            chatWindowController = ChatWindowController(store: chatStore)
+        }
+        chatWindowController?.present(activate: activate)
     }
 
     func showSettings(activate: Bool = true) {

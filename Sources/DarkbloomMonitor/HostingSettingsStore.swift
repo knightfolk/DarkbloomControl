@@ -200,6 +200,14 @@ final class HostingSettingsStore: ObservableObject {
     }
 
     var configuredEndpointURL: String? {
+        Self.endpointURL(from: options)
+    }
+
+    /// The unified-mode endpoint URL implied by persisted preferences. An
+    /// all-interfaces bind is addressed through loopback on this Mac. This is
+    /// the chat route's local base URL source; unified mode has no discovery
+    /// record.
+    static func endpointURL(from options: HostingOptions) -> String? {
         guard options.mode == .unified else { return nil }
         let host = options.bindAddress == HostingOptions.allInterfacesBindAddress
             ? HostingOptions.loopbackBindAddress

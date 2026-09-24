@@ -1,12 +1,13 @@
 import SwiftUI
 
 enum DashboardDestination: String, CaseIterable, Identifiable {
-    case overview = "Overview", activity = "Activity", opportunity = "Opportunity"
+    case overview = "Overview", chat = "Chat", activity = "Activity", opportunity = "Opportunity"
     case models = "Models", hosting = "Hosting", health = "Health & Logs", settings = "Settings"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .overview: "square.grid.2x2"
+        case .chat: "bubble.left.and.bubble.right"
         case .activity: "chart.bar"
         case .opportunity: "network"
         case .models: "cpu"
@@ -33,6 +34,8 @@ struct DashboardRootView: View {
     @ObservedObject var store: MonitorStore
     let controlStore: ProviderControlStore?
     var hostingStore: HostingSettingsStore? = nil
+    var chatStore: ChatStore? = nil
+    var openChatWindow: (() -> Void)? = nil
     @ObservedObject var navigation: DashboardNavigation
     private var selectedRaw: String { navigation.selected.rawValue }
 
@@ -51,6 +54,16 @@ struct DashboardRootView: View {
         } detail: {
             if selectedRaw == DashboardDestination.overview.rawValue || DashboardDestination(rawValue: selectedRaw) == nil {
                 DashboardOverviewView(store: store, controlStore: controlStore)
+            } else if navigation.selected == .chat {
+                if let chatStore {
+                    ChatView(store: chatStore, openPopOut: openChatWindow)
+                } else {
+                    ContentUnavailableView(
+                        "Chat unavailable",
+                        systemImage: "bubble.left.and.bubble.right",
+                        description: Text("Chat is not available in this session.")
+                    )
+                }
             } else if selectedRaw == DashboardDestination.activity.rawValue {
                 ActivityView(store: store)
             } else if selectedRaw == DashboardDestination.opportunity.rawValue {
