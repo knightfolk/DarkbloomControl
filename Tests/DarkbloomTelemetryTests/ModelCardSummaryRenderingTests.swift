@@ -8,7 +8,16 @@ import Testing
 @Suite("Model card rendering", .serialized)
 @MainActor
 struct ModelCardSummaryRenderingTests {
-    @Test("model metrics and schedule render at compact and roomy card widths", arguments: [300.0, 440.0])
+    @Test("grid preserves minimum readable width and caps at four columns")
+    func columnCounts() {
+        #expect(ModelCardLayout.columnCount(for: 700) == 1)
+        #expect(ModelCardLayout.columnCount(for: 720) == 2)
+        #expect(ModelCardLayout.columnCount(for: 1100) == 3)
+        #expect(ModelCardLayout.columnCount(for: 1480) == 4)
+        #expect(ModelCardLayout.columnCount(for: 2200) == 4)
+    }
+
+    @Test("model metrics and schedule render at compact and roomy card widths", arguments: [350.0, 440.0])
     func rendersSummary(width: Double) throws {
         let item = ModelInventoryItem(
             catalogID: "google/gemma-4",
@@ -53,7 +62,8 @@ struct ModelCardSummaryRenderingTests {
             tokenBudgetTotal: 1_000
         )
         let forecast = ModelRunForecast.calculate(runPercent: 50, serving: serving, tokenRate: rate)
-        let view = ModelCardSummary(
+        let view = VStack(alignment: .leading, spacing: 14) {
+        ModelCardSummary(
             item: item,
             installedMemoryGB: 64,
             rate: rate,
@@ -66,13 +76,62 @@ struct ModelCardSummaryRenderingTests {
             maximumRunPercent: 50,
             setRunPercent: { _ in }
         )
-        .padding(16)
+        Divider()
+        DownloadedModelRow(item: item,
+            draft: ProviderConfigDraft(sourceRevision: "fixture",
+                original: ProviderModelSelection(enabled: [item.catalogID], preloaded: []),
+                selection: ProviderModelSelection(enabled: [item.catalogID], preloaded: [])),
+            operation: .idle,
+            sources: ProviderControlSourceStates(catalog: .fresh(evidenceAt: Date()),
+                localModels: .fresh(evidenceAt: Date()), daemon: .fresh(evidenceAt: Date()),
+                loadedModels: .fresh(evidenceAt: Date())),
+            currentTime: Date(), sanitize: { $0 }, setEnabled: { _, _ in },
+            setPreloaded: { _, _ in }, requestDelete: { _ in }, compact: true)
+        Button("Manage & forecast") {}
+            .buttonStyle(.bordered).controlSize(.large)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(22)
         .frame(width: width, alignment: .leading)
         .background(Color(nsColor: .windowBackgroundColor))
 
-        let renderer = ImageRenderer(content: view)
-        renderer.scale = 2
-        let image = try #require(renderer.nsImage)
+        if ProcessInfo.processInfo.environment["DARKBLOOM_RENDER_EVIDENCE"] == "1" {
+            for gridWidth in [720.0, 1100.0, 1480.0] {
+                let grid = LazyVGrid(columns: ModelCardLayout.columns(for: gridWidth), spacing: 20) {
+                    ForEach(0..<7) { index in
+                        ModelCardSummary(item: ModelInventoryItem(
+                            catalogID: ["qwen/qwen3.8", "google/gemma-4", "openai/gpt-oss-20b"][index % 3],
+                            localID: nil,
+                            displayName: ["Qwen 3.8 27B", "Gemma 4 · 27B Instruct · 4-bit MLX", "GPT-OSS 20B"][index % 3],
+                            modelType: "text", capabilities: [], sizeGB: 18.2, minimumRAMGB: 32,
+                            isDownloaded: true, isEnabled: index == 0, isPreloaded: false,
+                            liveState: index == 0 ? .loadedIdle : .unloaded, issue: nil),
+                            installedMemoryGB: 64, rate: index == 1 ? nil : rate, capacity: capacity,
+                            serving: index == 2 ? nil : serving, grade: index == 2 ? nil : "A",
+                            forecast: forecast, runPercent: 50, isScheduleEnabled: index == 0,
+                            maximumRunPercent: 50, setRunPercent: { _ in })
+                        .padding(22)
+                        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 16))
+                    }
+                }.padding(24).frame(width: gridWidth + 48)
+                    .background(Color(nsColor: .windowBackgroundColor)).environment(\.colorScheme, .dark)
+                let gridRenderer = ImageRenderer(content: grid)
+                gridRenderer.scale = 1
+                let gridImage = try #require(gridRenderer.nsImage)
+                let tiff = try #require(gridImage.tiffRepresentation)
+                let bitmap = try #require(NSBitmapImageRep(data: tiff))
+                try #require(bitmap.representation(using: .png, properties: [:]))
+                    .write(to: URL(fileURLWithPath: "/tmp/darkbloom-grid-\(Int(gridWidth)).png"))
+            }
+        }
+
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(origin: .zero, size: host.fittingSize)
+        host.layoutSubtreeIfNeeded()
+        let representation = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: representation)
+        let image = NSImage(size: host.bounds.size)
+        image.addRepresentation(representation)
 
         #expect(abs(image.size.width - width) < 0.1)
         #expect(image.size.height > 300)

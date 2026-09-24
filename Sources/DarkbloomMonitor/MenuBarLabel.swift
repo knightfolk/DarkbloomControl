@@ -13,6 +13,13 @@ enum DarkbloomLogoAsset {
         return masks
     }()
 
+    static func modelImage(family: ModelFamilyIcon) -> NSImage? {
+        guard let source = modelMasks[family] ?? sourceImage else { return nil }
+        var bounds = NSRect(x: 0, y: 0, width: 96, height: 96)
+        guard let bitmap = source.cgImage(forProposedRect: &bounds, context: nil, hints: nil) else { return source }
+        return NSImage(cgImage: bitmap, size: NSSize(width: 96, height: 96))
+    }
+
     static func menuBarImage(tint: NSColor, family: ModelFamilyIcon = .darkbloom) -> NSImage? {
         guard let mask = modelMasks[family] ?? menuBarMask else { return nil }
 
