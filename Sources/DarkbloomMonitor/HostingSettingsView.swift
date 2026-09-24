@@ -11,6 +11,7 @@ struct HostingSettingsView: View {
     @State private var customAddressText = ""
     @State private var customAddressError: String?
     @State private var copiedCommand = false
+    @State private var bearerTokenText = ""
 
     private var isPortValid: Bool {
         guard let port = UInt16(portText) else { return false }
@@ -29,6 +30,16 @@ struct HostingSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
+
+                if let error = store.errorMessage {
+                    HostingNotice(
+                        title: "Could not update hosting",
+                        message: error,
+                        style: .danger,
+                        symbol: "exclamationmark.triangle.fill"
+                    )
+                    .accessibilityIdentifier("hosting.error")
+                }
 
                 if !store.cliSupportsHosting {
                     HostingNotice(
@@ -134,8 +145,8 @@ struct HostingSettingsView: View {
 
     private var servingModeCard: some View {
         HostingCard(
-            title: "Serving mode",
-            subtitle: "The first two modes are controlled by this app. Local-only is shown for completeness, but the CLI keeps it in the foreground."
+            title: "How this Mac serves",
+            subtitle: "Choose a mode; Apply uses the installed Darkbloom CLI with the matching start options."
         ) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 205), spacing: 12)], spacing: 12) {
                 modeCard(
@@ -153,7 +164,7 @@ struct HostingSettingsView: View {
                 modeCard(
                     .standalone,
                     title: "Local only",
-                    detail: "No fleet traffic or earnings. Runs in Terminal and is not managed by this app.",
+                    detail: "Uses `--local`. Runs in Terminal; this app cannot start or stop it.",
                     symbol: "desktopcomputer"
                 )
             }
@@ -190,6 +201,11 @@ struct HostingSettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .multilineTextAlignment(.leading)
+                Text(cliModeSummary(for: mode))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                 if mode == .standalone {
                     Text("TERMINAL MANAGED")
                         .font(.caption2.weight(.bold))
@@ -218,10 +234,18 @@ struct HostingSettingsView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    private func cliModeSummary(for mode: HostingEndpointMode) -> String {
+        switch mode {
+        case .off: "darkbloom start"
+        case .unified: "darkbloom start --local-endpoint"
+        case .standalone: "darkbloom start --local"
+        }
+    }
+
     private var endpointCard: some View {
         HostingCard(
             title: "Local endpoint",
-            subtitle: "These values map to the provider CLI’s --port and --bind options. They are saved as app preferences and apply only when you choose Apply."
+            subtitle: "Port and network reach map to the CLI's `--port` and `--bind` options. Apply sends them to Darkbloom."
         ) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .center, spacing: 14) {
@@ -353,21 +377,21 @@ struct HostingSettingsView: View {
 
     private var securityCard: some View {
         HostingCard(
-            title: "Access protection",
-            subtitle: "The CLI creates and stores an API key for you. The app never displays or saves it; you can copy it only when you ask."
+            title: "Local API access",
+            subtitle: "These controls map to the CLI's local API-key behavior. They do not change your Darkbloom fleet account."
         ) {
             VStack(alignment: .leading, spacing: 12) {
                 Toggle(isOn: authenticationBinding) {
-                    Label("Require API key", systemImage: "key.fill")
+                    Label("Require a bearer token", systemImage: "key.fill")
                         .font(.headline)
                 }
                 .toggleStyle(.switch)
                 .accessibilityIdentifier("hosting.auth.required")
 
                 if store.options.requiresAuthentication {
-                    Label("Recommended · requests need the local bearer token.", systemImage: "checkmark.shield.fill")
+                    Text("On is the CLI default. Turning it off adds `--no-auth` and needs confirmation.")
                         .font(.callout)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(.secondary)
                 } else {
                     HostingNotice(
                         title: "Anyone who can reach this endpoint can use it",
@@ -376,6 +400,51 @@ struct HostingSettingsView: View {
                         symbol: "lock.slash"
                     )
                     .accessibilityIdentifier("hosting.auth.warning")
+                    Text("The saved bearer token stays available for a future authenticated start, but `--no-auth` ignores it.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 10) {
+                    SecureField("Set a custom bearer token", text: $bearerTokenText)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("hosting.auth.bearerToken")
+                        .onChange(of: bearerTokenText) { _, _ in
+                            store.clearErrorMessage()
+                        }
+                    Button("Save token") {
+                        if store.saveBearerToken(bearerTokenText) {
+                            bearerTokenText = ""
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!LocalEndpointTokenFile.isValidBearerToken(bearerTokenText))
+                    .accessibilityIdentifier("hosting.auth.saveToken")
+                }
+                Text("16–256 letters, numbers, or - . _ ~ + / =. Saved as `~/.darkbloom/local_token` with private file permissions—not in app preferences.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Darkbloom creates a token automatically. Enter a custom value only if your client needs a fixed key; saving replaces it for future starts. A running endpoint keeps its current key until restarted.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let status = store.localTokenStatusMessage {
+                    Label(status, systemImage: store.localTokenNeedsRestart ? "arrow.clockwise" : "checkmark.circle")
+                        .font(.callout)
+                        .foregroundStyle(store.localTokenNeedsRestart ? .orange : .secondary)
+                        .accessibilityIdentifier("hosting.auth.tokenStatus")
+                }
+
+                HStack(spacing: 10) {
+                    Button("Copy bearer token") {
+                        Task { _ = await store.copyBearerTokenToPasteboard() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!store.canCopyBearerToken)
+                    .accessibilityIdentifier("hosting.auth.copyToken")
+                    Text("Copies the active endpoint key, or the saved CLI key when no endpoint is running.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -385,7 +454,7 @@ struct HostingSettingsView: View {
     private var connectionDetailsCard: some View {
         HostingCard(
             title: "Connection details",
-            subtitle: "Use the OpenAI-compatible base URL in a local client. This is a configured address, not a live health check."
+            subtitle: "The URL reflects your selected settings, not a reachability check. Apply changes to start or restart it; manage its key under Local API access."
         ) {
             switch store.options.mode {
             case .off:
@@ -441,19 +510,7 @@ struct HostingSettingsView: View {
                 }
             }
 
-            if store.options.requiresAuthentication {
-                HStack(spacing: 10) {
-                    Button("Copy API key") {
-                        _ = store.copyBearerTokenToPasteboard()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!store.canCopyBearerToken)
-                    .accessibilityIdentifier("hosting.details.copyToken")
-                    Text("Copied only on request; never shown in this app.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
+            if !store.options.requiresAuthentication {
                 Label("API-key authentication is disabled for this endpoint.", systemImage: "lock.slash")
                     .font(.callout)
                     .foregroundStyle(.orange)
@@ -482,11 +539,7 @@ struct HostingSettingsView: View {
                     Text("Base URL · \(record.baseURL)")
                     Text("Listening at \(record.host):\(record.port)")
                         .foregroundStyle(.secondary)
-                    if record.hasBearerToken {
-                        Button("Copy API key") { _ = store.copyBearerTokenToPasteboard() }
-                            .disabled(!store.canCopyBearerToken)
-                            .accessibilityIdentifier("hosting.details.copyToken")
-                    } else {
+                    if !record.hasBearerToken {
                         Text("API-key authentication is disabled on this endpoint.")
                             .foregroundStyle(.orange)
                     }
@@ -557,15 +610,11 @@ struct HostingSettingsView: View {
                 }
             }
 
-            if let error = store.errorMessage {
-                HostingNotice(title: "Could not apply hosting settings", message: error, style: .danger, symbol: "exclamationmark.triangle.fill")
-                    .accessibilityIdentifier("hosting.error")
-            }
         }
     }
 
     private var applyTitle: String {
-        store.options.mode == .unified ? "Apply & restart provider" : "Remove local endpoint"
+        store.options.mode == .unified ? "Apply & restart provider" : "Apply fleet-only mode"
     }
 
     private var standaloneCommandIssue: String {
@@ -584,7 +633,7 @@ struct HostingSettingsView: View {
     private var applyDescription: String {
         switch store.options.mode {
         case .off:
-            return "Return the provider to fleet-only serving. The saved port, bind, and access settings remain here for later."
+            return "Use the official `darkbloom start` command without a local API. Your saved port, network, and token settings stay available for later."
         case .unified:
             let access = store.options.requiresAuthentication ? "authenticated" : "unauthenticated"
             return "Start the \(access) local API alongside fleet serving. Network access or disabled authentication always requires a fresh confirmation."

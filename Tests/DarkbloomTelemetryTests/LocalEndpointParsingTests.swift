@@ -116,6 +116,64 @@ struct LocalEndpointParsingTests {
         #expect(receivedToken == "dk-local-synthetic-token")
     }
 
+    @Test("the provider token reader accepts a custom bearer token in its protected file")
+    func readsCustomBearerToken() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalEndpointCustomToken-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let tokenURL = directory.appendingPathComponent("local_token")
+        let token = "client-custom-bearer-token-12345"
+        try Data(token.utf8).write(to: tokenURL)
+        #expect(chmod(tokenURL.path, 0o600) == 0)
+
+        var receivedToken: String?
+        let found = LocalEndpointTokenFile(fileURL: tokenURL).withBearerToken {
+            receivedToken = $0
+        }
+        #expect(found)
+        #expect(receivedToken == token)
+    }
+
+    @Test("saving a bearer token uses the CLI's protected token-file format")
+    func savesBearerToken() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalEndpointSaveToken-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let tokenURL = directory.appendingPathComponent("local_token")
+        let tokenFile = LocalEndpointTokenFile(fileURL: tokenURL)
+        let token = "client-custom-bearer-token-12345"
+        try tokenFile.saveBearerToken(token)
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: tokenURL.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        var receivedToken: String?
+        #expect(tokenFile.withBearerToken { receivedToken = $0 })
+        #expect(receivedToken == token)
+    }
+
+    @Test("invalid bearer tokens do not replace the current CLI token")
+    func rejectsInvalidBearerToken() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalEndpointRejectToken-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let tokenFile = LocalEndpointTokenFile(fileURL: directory.appendingPathComponent("local_token"))
+        let currentToken = "dk-local-existing-token-123456789"
+        try tokenFile.saveBearerToken(currentToken)
+        for invalidToken in ["too short", "invalid=middle-padding-token"] {
+            #expect(throws: LocalEndpointTokenFileError.invalidToken) {
+                try tokenFile.saveBearerToken(invalidToken)
+            }
+        }
+
+        var receivedToken: String?
+        #expect(tokenFile.withBearerToken { receivedToken = $0 })
+        #expect(receivedToken == currentToken)
+    }
+
     @Test("the provider token reader rejects loose permissions and symlinks")
     func rejectsInsecureTokenFiles() throws {
         let directory = FileManager.default.temporaryDirectory

@@ -7,8 +7,8 @@ import Foundation
 ///
 /// The options are application preferences, never provider configuration:
 /// they are applied only through the official `darkbloom start` path and
-/// persisted in user defaults without any secret material. Unified mode reads
-/// the provider-owned token file only for the explicit copy action; standalone
+/// persisted in user defaults without any secret material. The provider-owned
+/// token file is read or updated only after an explicit user action; standalone
 /// discovery uses `darkbloom local --json`.
 @MainActor
 final class HostingSettingsStore: ObservableObject {
@@ -25,18 +25,20 @@ final class HostingSettingsStore: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var endpointDetails: LocalEndpointAvailability?
     @Published private(set) var isFetchingEndpointDetails = false
+    @Published private(set) var localTokenStatusMessage: String?
+    @Published private(set) var localTokenNeedsRestart = false
 
     private let defaults: UserDefaults
     private var controlStore: ProviderControlStore?
     private let endpointClient: any LocalEndpointFetching
-    private let tokenFile: any LocalEndpointTokenProviding
+    private let tokenFile: any LocalEndpointTokenManaging
     private let cliVersionProvider: () -> String?
     private let lanScanner: @Sendable () -> [String]
 
     init(
         controlStore: ProviderControlStore?,
         endpointClient: any LocalEndpointFetching,
-        tokenFile: any LocalEndpointTokenProviding,
+        tokenFile: any LocalEndpointTokenManaging,
         cliVersionProvider: @escaping () -> String?,
         defaults: UserDefaults = .standard,
         lanScanner: @escaping @Sendable () -> [String] = LANAddressScanner.activePrivateIPv4Addresses
@@ -92,6 +94,9 @@ final class HostingSettingsStore: ObservableObject {
             endpointDetails = nil
         }
         update(\.mode, to: mode)
+        if localTokenNeedsRestart {
+            localTokenStatusMessage = tokenStatusMessage(for: mode)
+        }
     }
 
     /// Returns false when the text is not a usable port; the caller keeps the
@@ -166,10 +171,32 @@ final class HostingSettingsStore: ObservableObject {
         endpointDetails = await endpointClient.fetch()
     }
 
+    /// Writes the custom key to the exact protected file read by `darkbloom
+    /// start`. Secrets never enter user defaults. Existing servers keep the key
+    /// they loaded at startup until their normal apply/restart path is used.
+    @discardableResult
+    func saveBearerToken(_ token: String) -> Bool {
+        errorMessage = nil
+        do {
+            try tokenFile.saveBearerToken(token)
+        } catch LocalEndpointTokenFileError.invalidToken {
+            errorMessage = "Use 16–256 letters, numbers, or - . _ ~ + / = characters for the bearer token."
+            return false
+        } catch {
+            errorMessage = "Could not save the token to Darkbloom's protected local storage."
+            return false
+        }
+
+        localTokenNeedsRestart = options.mode == .unified
+        localTokenStatusMessage = tokenStatusMessage(for: options.mode)
+        return true
+    }
+
     var canCopyBearerToken: Bool {
-        if options.mode == .unified { return true }
-        if case .live(let record) = endpointDetails, record.hasBearerToken { return true }
-        return false
+        if case .live(let record) = endpointDetails { return record.hasBearerToken }
+        var available = false
+        _ = tokenFile.withBearerToken { _ in available = true }
+        return available
     }
 
     var configuredEndpointURL: String? {
@@ -236,26 +263,32 @@ final class HostingSettingsStore: ObservableObject {
         }
     }
 
-    /// Copies the bearer token through the explicit user action only. The
-    /// token is never displayed, logged, or persisted.
-    func copyBearerTokenToPasteboard() -> Bool {
+    /// Refreshes the live CLI record only after an explicit copy action, so a
+    /// custom token staged on disk cannot be confused with a running server's
+    /// still-active key. The secret is never displayed, logged, or persisted.
+    func copyBearerTokenToPasteboard() async -> Bool {
         var copied = false
-        if options.mode == .unified {
-            let found = tokenFile.withBearerToken { token in
+        await fetchEndpointDetails()
+        if case .live(let record) = endpointDetails, record.hasBearerToken {
+            record.withBearerToken { token in
                 NSPasteboard.general.clearContents()
                 copied = NSPasteboard.general.setString(token, forType: .string)
             }
-            if !found {
-                errorMessage = "The endpoint token is not available yet. Apply the hosting settings and start the endpoint first."
-            }
-            return found && copied
+            return copied
         }
-        guard case .live(let record) = endpointDetails, record.hasBearerToken else { return false }
-        record.withBearerToken { token in
+        if case .live = endpointDetails {
+            errorMessage = "The running local endpoint has bearer-token authentication disabled."
+            return false
+        }
+
+        let found = tokenFile.withBearerToken { token in
             NSPasteboard.general.clearContents()
             copied = NSPasteboard.general.setString(token, forType: .string)
         }
-        return copied
+        if !found {
+            errorMessage = "The bearer token is not available yet. Start local hosting first, or save a custom token."
+        }
+        return found && copied
     }
 
     static func unsupportedMessage(cliVersion: String?) -> String {
@@ -271,6 +304,34 @@ final class HostingSettingsStore: ObservableObject {
         let succeeded = await controlStore.applyHosting(options)
         if !succeeded {
             errorMessage = "Hosting settings could not be applied. Refresh before trying again."
+            return
+        }
+        if localTokenNeedsRestart {
+            localTokenNeedsRestart = false
+            localTokenStatusMessage = options.mode == .off
+                ? "Hosting changes applied. The saved token will be used next time you enable a local endpoint."
+                : "Hosting changes applied. The running endpoint has restarted with the saved token."
+        }
+    }
+
+    private func tokenStatusMessage(for mode: HostingEndpointMode) -> String {
+        if localTokenNeedsRestart {
+            switch mode {
+            case .off:
+                return "Saved in Darkbloom's protected token file. Choose Apply changes to return to Fleet only; this key stays saved for future local hosting."
+            case .unified:
+                return "Saved in Darkbloom's protected token file. Choose Apply changes to restart the provider with it."
+            case .standalone:
+                return "Token saved. Stop the current provider from the CLI before starting the Terminal-managed local mode."
+            }
+        }
+        switch mode {
+        case .off:
+            return "Saved in Darkbloom's protected token file. A running endpoint keeps its current key until restarted; future local starts use this one."
+        case .unified:
+            return "Saved in Darkbloom's protected token file for the next local endpoint start."
+        case .standalone:
+            return "Saved for the next `darkbloom start --local`. Stop and restart any running local-only server in Terminal to activate it."
         }
     }
 

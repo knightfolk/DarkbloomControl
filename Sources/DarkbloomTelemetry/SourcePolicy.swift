@@ -28,8 +28,8 @@ public struct DarkbloomSourcePolicy: Equatable, Sendable {
     public let daemonState: URL
     public let loadedModels: URL
     public let legacyLog: URL
-    /// Provider-owned local bearer token, read only for an explicit user
-    /// initiated copy action. This is intentionally excluded from `allowedFiles`.
+    /// Provider-owned local bearer token, read or replaced only after an
+    /// explicit user action. This is intentionally excluded from `allowedFiles`.
     public let localEndpointToken: URL
     public let providerConfig: URL
     public let cliCandidates: [URL]

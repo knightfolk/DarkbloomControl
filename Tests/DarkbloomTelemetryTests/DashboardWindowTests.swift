@@ -196,8 +196,9 @@ private struct DashboardNoEndpoint: LocalEndpointFetching {
     }
 }
 
-private struct DashboardTokenFileFake: LocalEndpointTokenProviding {
+private struct DashboardTokenFileFake: LocalEndpointTokenManaging {
     func withBearerToken(_ action: (String) -> Void) -> Bool { false }
+    func saveBearerToken(_ token: String) throws {}
 }
 
 private struct UnexpectedAcquisition: Error {}

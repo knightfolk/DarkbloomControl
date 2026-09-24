@@ -18,7 +18,8 @@ struct HostingSettingsStoreTests {
         defaults: UserDefaults,
         cliVersion: String? = "0.9.7",
         lanAddresses: [String] = ["192.168.1.20"],
-        endpointAvailability: LocalEndpointAvailability = .none("fixture")
+        endpointAvailability: LocalEndpointAvailability = .none("fixture"),
+        tokenFile: any LocalEndpointTokenManaging = HostingTokenFileFake()
     ) throws -> (HostingSettingsStore, HostingSpyController) {
         let controller = HostingSpyController()
         let controlStore = ProviderControlStore(
@@ -29,7 +30,7 @@ struct HostingSettingsStoreTests {
         let store = HostingSettingsStore(
             controlStore: controlStore,
             endpointClient: endpointClient,
-            tokenFile: HostingTokenFileFake(),
+            tokenFile: tokenFile,
             cliVersionProvider: { cliVersion },
             defaults: defaults,
             lanScanner: { lanAddresses }
@@ -72,6 +73,57 @@ struct HostingSettingsStoreTests {
         defaults.set("sideways", forKey: HostingSettingsStore.modeKey)
         let recovered = HostingSettingsStore.loadOptions(from: defaults)
         #expect(recovered == .default)
+    }
+
+    @Test("a custom bearer token is saved for the CLI and never enters app preferences")
+    func savesCustomBearerToken() throws {
+        let defaults = makeDefaults()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HostingSettingsToken-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tokenFile = LocalEndpointTokenFile(fileURL: directory.appendingPathComponent("local_token"))
+        let (store, _) = try makeStore(defaults: defaults, tokenFile: tokenFile)
+        store.setMode(.unified)
+
+        let token = "custom-openai-client-key-12345"
+        #expect(store.saveBearerToken(token))
+        #expect(store.localTokenNeedsRestart)
+        #expect(store.localTokenStatusMessage?.contains("Apply changes") == true)
+        #expect(store.localTokenStatusMessage?.contains(token) == false)
+        #expect(store.canCopyBearerToken)
+
+        var savedToken: String?
+        #expect(tokenFile.withBearerToken { savedToken = $0 })
+        #expect(savedToken == token)
+        #expect(defaults.dictionaryRepresentation().values.allSatisfy { ($0 as? String) != token })
+    }
+
+    @Test("a custom token is reported for Terminal restart in unmanaged local-only mode")
+    func standaloneTokenRequiresTerminalRestart() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HostingStandaloneToken-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tokenFile = LocalEndpointTokenFile(fileURL: directory.appendingPathComponent("local_token"))
+        let (store, _) = try makeStore(defaults: makeDefaults(), tokenFile: tokenFile)
+        store.setMode(.standalone)
+
+        #expect(store.saveBearerToken("custom-openai-client-key-12345"))
+        #expect(!store.localTokenNeedsRestart)
+        #expect(store.localTokenStatusMessage?.contains("darkbloom start --local") == true)
+        #expect(store.localTokenStatusMessage?.contains("Terminal") == true)
+    }
+
+    @Test("saving a custom token while auth is disabled retains it for a later authenticated start")
+    func savesTokenForLaterAuthenticatedStart() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HostingNoAuthToken-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tokenFile = LocalEndpointTokenFile(fileURL: directory.appendingPathComponent("local_token"))
+        let (store, _) = try makeStore(defaults: makeDefaults(), tokenFile: tokenFile)
+        store.setRequiresAuthentication(false)
+
+        #expect(store.saveBearerToken("custom-openai-client-key-12345"))
+        #expect(store.localTokenStatusMessage?.contains("Darkbloom's protected token file") == true)
     }
 
     @Test("an invalid port text is rejected without changing the saved value")
@@ -331,6 +383,7 @@ private struct EndpointFetchFake: LocalEndpointFetching {
     func fetch() async -> LocalEndpointAvailability { availability }
 }
 
-private struct HostingTokenFileFake: LocalEndpointTokenProviding {
+private struct HostingTokenFileFake: LocalEndpointTokenManaging {
     func withBearerToken(_ action: (String) -> Void) -> Bool { false }
+    func saveBearerToken(_ token: String) throws {}
 }

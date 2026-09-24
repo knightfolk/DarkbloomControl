@@ -71,6 +71,7 @@ private struct HostingNoEndpoint: LocalEndpointFetching {
     }
 }
 
-private struct HostingViewTokenFileFake: LocalEndpointTokenProviding {
+private struct HostingViewTokenFileFake: LocalEndpointTokenManaging {
     func withBearerToken(_ action: (String) -> Void) -> Bool { false }
+    func saveBearerToken(_ token: String) throws {}
 }

@@ -82,10 +82,21 @@ public protocol LocalEndpointTokenProviding: Sendable {
     func withBearerToken(_ action: (String) -> Void) -> Bool
 }
 
-/// Safely reads the provider-owned `0600` token file without following a
-/// symlink. The token is passed to the caller synchronously and is never
+public enum LocalEndpointTokenFileError: Error, Equatable, Sendable {
+    case invalidToken
+    case cannotWrite
+}
+
+/// Can set the token that the official CLI reads when starting either local
+/// serving mode. Implementations must keep the token out of logs and defaults.
+public protocol LocalEndpointTokenManaging: LocalEndpointTokenProviding {
+    func saveBearerToken(_ token: String) throws
+}
+
+/// Safely reads and updates Darkbloom's `0600` local token file without
+/// following a symlink. Read access is callback-scoped so a token is never
 /// returned as a value that could accidentally be logged or persisted.
-public struct LocalEndpointTokenFile: LocalEndpointTokenProviding, Sendable {
+public struct LocalEndpointTokenFile: LocalEndpointTokenManaging, Sendable {
     public let fileURL: URL
 
     public init(fileURL: URL) {
@@ -116,16 +127,100 @@ public struct LocalEndpointTokenFile: LocalEndpointTokenProviding, Sendable {
         guard bytesRead == data.count,
               let token = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-              token.hasPrefix("dk-local-"),
-              token.utf8.count <= 256,
-              token.utf8.allSatisfy({
-                  ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90)
-                      || ($0 >= 97 && $0 <= 122) || $0 == 45 || $0 == 95
-              })
+              Self.isValidBearerToken(token)
         else { return false }
 
         action(token)
         return true
+    }
+
+    /// CLI-compatible bearer values are printable RFC 6750 token characters.
+    /// Requiring 16 characters keeps accidental weak values out of local auth.
+    public static func isValidBearerToken(_ rawToken: String) -> Bool {
+        let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (16...256).contains(token.utf8.count) else { return false }
+        var paddingStarted = false
+        var hasPayload = false
+        for byte in token.utf8 {
+            if byte == 61 { // RFC 6750 permits '=' only as trailing padding.
+                paddingStarted = true
+                continue
+            }
+            guard !paddingStarted,
+                  (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90)
+                    || (byte >= 97 && byte <= 122)
+                    || [45, 46, 95, 126, 43, 47].contains(byte)
+            else { return false }
+            hasPayload = true
+        }
+        return hasPayload
+    }
+
+    /// Saves a user-selected CLI bearer token atomically with the same `0600`
+    /// permissions used by Darkbloom. A running server reads its token at
+    /// startup, so callers must explain that a restart is needed to activate it.
+    public func saveBearerToken(_ rawToken: String) throws {
+        let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Self.isValidBearerToken(token) else {
+            throw LocalEndpointTokenFileError.invalidToken
+        }
+
+        let directory = fileURL.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            throw LocalEndpointTokenFileError.cannotWrite
+        }
+
+        var directoryMetadata = stat()
+        guard lstat(directory.path, &directoryMetadata) == 0,
+              directoryMetadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
+              directoryMetadata.st_uid == getuid()
+        else {
+            throw LocalEndpointTokenFileError.cannotWrite
+        }
+
+        let temporaryURL = directory.appendingPathComponent(
+            ".\(fileURL.lastPathComponent).tmp-\(UUID().uuidString)",
+            isDirectory: false
+        )
+        var descriptor = open(
+            temporaryURL.path,
+            O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW,
+            0o600
+        )
+        guard descriptor >= 0 else { throw LocalEndpointTokenFileError.cannotWrite }
+        defer {
+            if descriptor >= 0 { close(descriptor) }
+        }
+
+        let bytes = Array(token.utf8)
+        var offset = 0
+        while offset < bytes.count {
+            let written = bytes.withUnsafeBytes { buffer -> Int in
+                guard let baseAddress = buffer.baseAddress else { return -1 }
+                return Darwin.write(descriptor, baseAddress.advanced(by: offset), buffer.count - offset)
+            }
+            if written < 0, errno == EINTR { continue }
+            guard written > 0 else {
+                unlink(temporaryURL.path)
+                throw LocalEndpointTokenFileError.cannotWrite
+            }
+            offset += written
+        }
+
+        let secured = fchmod(descriptor, 0o600) == 0 && fsync(descriptor) == 0
+        let closeResult = close(descriptor)
+        descriptor = -1
+        guard secured, closeResult == 0 else {
+            unlink(temporaryURL.path)
+            throw LocalEndpointTokenFileError.cannotWrite
+        }
+
+        guard rename(temporaryURL.path, fileURL.path) == 0 else {
+            unlink(temporaryURL.path)
+            throw LocalEndpointTokenFileError.cannotWrite
+        }
     }
 }
 
