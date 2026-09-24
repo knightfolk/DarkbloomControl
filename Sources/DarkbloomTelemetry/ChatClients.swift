@@ -47,9 +47,15 @@ enum ChatRouteExecutor {
 }
 
 /// The live local chat endpoint as resolved from the app's hosting settings
-/// or the standalone discovery record. The token is the local endpoint's own
-/// bearer token; it is never a consumer API key, a provider device token, or
-/// anything else, and it is exposed only inside an explicit action.
+/// or the standalone discovery record.
+///
+/// Credential domains: an authenticated endpoint carries the local bearer
+/// token (the provider-owned token file, or the discovery record's key) —
+/// never a consumer API key and never a provider device token. An endpoint
+/// is unauthenticated only when that is explicit: hosting settings disabled
+/// authentication (`--no-auth`) or the discovery record reports no bearer
+/// token. A required-but-absent token is the provider's failure to resolve,
+/// never an unauthenticated endpoint.
 ///
 /// Base URL contract: this type is the single normalization point. A
 /// configured unified URL like `http://127.0.0.1:8000/v1` (Hosting settings)
@@ -59,23 +65,30 @@ enum ChatRouteExecutor {
 /// there.
 public struct ChatLocalEndpoint: Sendable, CustomStringConvertible, CustomReflectable {
     public let origin: URL
-    private let token: String
+    private let token: String?
+
+    public var isAuthenticated: Bool { token != nil }
 
     public var description: String {
-        "ChatLocalEndpoint(origin: \(origin.absoluteString), token: present)"
+        "ChatLocalEndpoint(origin: \(origin.absoluteString), authenticated: \(isAuthenticated))"
     }
 
     public var customMirror: Mirror {
-        Mirror(self, children: ["origin": origin.absoluteString, "hasToken": !token.isEmpty])
+        Mirror(self, children: ["origin": origin.absoluteString, "isAuthenticated": isAuthenticated])
     }
 
     /// Validates the endpoint URL (http/https, host present, no user, query
-    /// or fragment) and normalizes it to its origin. Returns nil for anything
-    /// else, including unusable tokens.
-    public static func make(baseURL: String, token: String) -> ChatLocalEndpoint? {
-        guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              token.utf8.count <= 256,
-              let components = URLComponents(string: baseURL),
+    /// or fragment) and normalizes it to its origin. `token` nil means an
+    /// explicitly unauthenticated endpoint; a non-nil token must be a usable
+    /// bearer value (nonblank, at most 256 UTF-8 bytes). Returns nil for
+    /// anything else.
+    public static func make(baseURL: String, token: String?) -> ChatLocalEndpoint? {
+        if let token {
+            guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  token.utf8.count <= 256
+            else { return nil }
+        }
+        guard let components = URLComponents(string: baseURL),
               let scheme = components.scheme?.lowercased(),
               ["http", "https"].contains(scheme),
               let host = components.host, !host.isEmpty,
@@ -90,15 +103,20 @@ public struct ChatLocalEndpoint: Sendable, CustomStringConvertible, CustomReflec
         return ChatLocalEndpoint(origin: origin, token: token)
     }
 
-    func withToken<R>(_ body: (String) throws -> R) rethrows -> R {
-        try body(token)
+    /// Gives the bearer token to a synchronous action on authenticated
+    /// endpoints only; returns false when unauthenticated.
+    @discardableResult
+    func withToken<R>(_ body: (String) throws -> R) rethrows -> R? {
+        guard let token else { return nil }
+        return try body(token)
     }
 }
 
 public protocol ChatLocalEndpointProviding: Sendable {
-    /// Resolves the current local endpoint, or nil when hosting is off and no
-    /// standalone endpoint is advertised. Called before every local request so
-    /// a restarted endpoint with a rotated token is picked up.
+    /// Resolves the current local endpoint, or nil when hosting is off, no
+    /// standalone endpoint is advertised, or authentication is required but
+    /// its token is unavailable. Called before every local request so a
+    /// restarted endpoint with a rotated token is picked up.
     func endpoint() async -> ChatLocalEndpoint?
 }
 
@@ -126,9 +144,7 @@ public struct LocalChatClient: ChatModelListing, ChatCompleting, Sendable {
 
     public func models(now: Date) async throws -> ChatModelListSnapshot {
         let endpoint = try await resolvedEndpoint()
-        let request = try endpoint.withToken { token in
-            try Self.modelsRequest(endpoint: endpoint, token: token)
-        }
+        let request = Self.modelsRequest(endpoint: endpoint)
         return try await ChatRouteExecutor.execute(
             request: request,
             session: session,
@@ -140,14 +156,12 @@ public struct LocalChatClient: ChatModelListing, ChatCompleting, Sendable {
 
     public func complete(model: String, messages: [ChatMessagePayload]) async throws -> ChatCompletionOutcome {
         let endpoint = try await resolvedEndpoint()
-        let request = try endpoint.withToken { token in
-            try ChatCompletionRequest.makeLocal(
-                origin: endpoint.origin,
-                token: token,
-                model: model,
-                messages: messages
-            )
-        }
+        let request = try ChatCompletionRequest.makeLocal(
+            origin: endpoint.origin,
+            token: endpoint.withToken { $0 },
+            model: model,
+            messages: messages
+        )
         return try await ChatRouteExecutor.execute(
             request: request.urlRequest,
             session: session,
@@ -164,15 +178,19 @@ public struct LocalChatClient: ChatModelListing, ChatCompleting, Sendable {
         return endpoint
     }
 
-    private static func modelsRequest(endpoint: ChatLocalEndpoint, token: String) throws -> URLRequest {
-        guard let url = URL(string: endpoint.origin.absoluteString + "/v1/models") else {
-            throw ChatClientError.invalidEndpoint
-        }
-        var request = URLRequest(url: url, timeoutInterval: 20)
+    /// An explicitly unauthenticated endpoint sends no Authorization header;
+    /// an authenticated one sends its own bearer token (never a consumer
+    /// key or provider credential). The URL append cannot fail: the origin
+    /// was validated to scheme/host(/port) at construction.
+    private static func modelsRequest(endpoint: ChatLocalEndpoint) -> URLRequest {
+        var request = URLRequest(url: URL(string: endpoint.origin.absoluteString + "/v1/models")!)
+        request.timeoutInterval = 20
         request.httpMethod = "GET"
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        endpoint.withToken { token in
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         return request
     }
 }

@@ -144,7 +144,7 @@ struct ChatView: View {
             .font(.caption)
             .foregroundStyle(.red)
         } else {
-            Text("Verifying the local endpoint with an authenticated model list…")
+            Text("Verifying the local endpoint model list…")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -296,7 +296,7 @@ struct ChatView: View {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
                 }
-                .help("Re-verify the model list on this chat's route with an authenticated request")
+                .help("Re-verify the model list on this chat's route")
                 if conversation.route == .network {
                     consumerKeyLink
                 }

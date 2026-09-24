@@ -214,9 +214,10 @@ exists only on the `codex/chat-routing` worktree and is unreleased.
 Every conversation is bound to one destination at creation and the route is
 immutable for its lifetime: **Local endpoint (this Mac)** — the user's own
 hosting endpoint exactly as configured in Hosting settings (unified mode URL
-plus the provider-owned `dk-local-` token file; unified mode has no discovery
-record and `darkbloom local --json` does not discover it), falling back to the
-documented standalone discovery record — or **Darkbloom network (paid)** —
+plus the provider-owned local token file when authentication is enabled;
+unified mode has no discovery record and `darkbloom local --json` does not
+discover it), falling back to the documented standalone discovery record —
+or **Darkbloom network (paid)** —
 one fixed HTTPS host, `api.darkbloom.dev`. Switching routes requires an
 explicit New Chat, which starts an empty transcript; text written under one
 route can never be sent to the other, in either direction, and no fallback
@@ -224,9 +225,18 @@ ever occurs. Composer drafts are owned by the conversation they were typed
 in (`ChatDraftPolicy`): a route change discards the draft before it can be
 delivered, even in the window before SwiftUI state settles.
 
+A local endpoint is unauthenticated only when that is explicit: hosting
+settings disabled authentication (the official `--no-auth` start flag) or
+the standalone discovery record itself reports no bearer token. In that
+case local requests carry no Authorization header at all. When
+authentication is required but the token is unavailable, resolution fails
+closed — the chat reports the local endpoint unavailable rather than
+silently dropping the credential. Blank tokens are not a way to drop
+authentication.
+
 The two routes use three distinct credential domains that are never
 substituted for one another: the provider device token (earnings reads only),
-the local endpoint token (`dk-local-`, file-permission validated), and the
+the local endpoint token (file-permission validated), and the
 **consumer API key**, which exists only in the macOS Keychain
 (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`), is never written to
 defaults, files, or logs, and is never used for the local route. Network
@@ -250,8 +260,10 @@ free-text `error.message` is never displayed (it could echo credentials or
 prompt text); only whitelisted machine `error.code` tokens refine 403/404
 semantics.
 
-Local sends require a recent authenticated `/v1/models` verification, which
-is also the reachability check; if the local endpoint is unavailable the send
+Local sends require a recent successful `GET /v1/models` verification —
+bearer-authenticated on authenticated endpoints, unauthenticated only where
+that is explicit — which is also the reachability check; if the local
+endpoint is unavailable the send
 stops with a fixed reason and the user must choose — the store never reroutes
 to the paid network. The local banner calls the route local without claiming
 it is costless: the local engine is shared with fleet serving work.

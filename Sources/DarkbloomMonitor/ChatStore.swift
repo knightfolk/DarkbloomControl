@@ -70,8 +70,10 @@ struct ChatConversation: Identifiable, Equatable, Sendable {
 /// store's memory and the consumer API key lives only in the Keychain.
 ///
 /// Send gating, all fail-closed:
-/// - Local: an authenticated `GET /v1/models` verification must have succeeded
-///   recently, or Send stays disabled. If the local endpoint is unavailable
+/// - Local: a recent successful `GET /v1/models` verification (bearer-token
+///   authenticated on authenticated endpoints, unauthenticated only where
+///   that is explicit in hosting settings or the discovery record) is
+///   required, or Send stays disabled. If the local endpoint is unavailable
 ///   the store stops; it never falls back to the network.
 /// - Network: the conversation's paid-route acknowledgment, a stored consumer
 ///   API key, a fresh authoritative balance read above zero, and a fresh
@@ -169,8 +171,9 @@ final class ChatStore: ObservableObject {
     // MARK: Model verification
 
     /// The verified model IDs for the active conversation's route, from the
-    /// most recent successful authenticated `GET /v1/models`. The picker
-    /// offers nothing else.
+    /// most recent successful `GET /v1/models` read (authenticated or
+    /// explicitly unauthenticated, per the endpoint). The picker offers
+    /// nothing else.
     var verifiedModelIDs: [String] {
         guard let conversation else { return [] }
         return modelsSnapshot(for: conversation.route)?.modelIDs ?? []

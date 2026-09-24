@@ -110,14 +110,20 @@ public struct ChatCompletionRequest: CustomStringConvertible, Sendable {
     /// Builds the request for the local hosting endpoint. `origin` must be a
     /// normalized `ChatLocalEndpoint` origin (`scheme://host[:port]`, no
     /// path); a URL carrying a path is rejected so `/v1` can never be
-    /// doubled. The only base-URL normalization lives in
-    /// `ChatLocalEndpoint.make`.
+    /// doubled. `token` nil means an explicitly unauthenticated endpoint and
+    /// omits the Authorization header; a non-nil token must be usable. The
+    /// only base-URL normalization lives in `ChatLocalEndpoint.make`.
     public static func makeLocal(
         origin: URL,
-        token: String,
+        token: String?,
         model: String,
         messages: [ChatMessagePayload]
     ) throws -> Self {
+        if let token {
+            guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  token.utf8.count <= 256
+            else { throw ChatClientError.invalidEndpoint }
+        }
         guard let components = URLComponents(url: origin, resolvingAgainstBaseURL: false),
               components.scheme?.lowercased() == "http" || components.scheme?.lowercased() == "https",
               components.host?.isEmpty == false,
@@ -131,7 +137,7 @@ public struct ChatCompletionRequest: CustomStringConvertible, Sendable {
 
     private static func make(
         url: URL,
-        token: String,
+        token: String?,
         model: String,
         messages: [ChatMessagePayload],
         timeout: TimeInterval
@@ -143,7 +149,9 @@ public struct ChatCompletionRequest: CustomStringConvertible, Sendable {
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         return Self(urlRequest: request)
     }

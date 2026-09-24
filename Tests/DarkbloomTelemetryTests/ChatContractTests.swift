@@ -128,29 +128,53 @@ struct ChatContractTests {
         // Hosting settings' unified URL form, ending in /v1.
         let configured = try #require(ChatLocalEndpoint.make(baseURL: "http://127.0.0.1:8000/v1", token: "dk-local-synthetic"))
         #expect(configured.origin.absoluteString == "http://127.0.0.1:8000")
+        #expect(configured.isAuthenticated)
         // Discovery record form without a path, on a LAN address with port.
         let discovered = try #require(ChatLocalEndpoint.make(baseURL: "http://192.168.1.5:8123", token: "dk-local-synthetic"))
         #expect(discovered.origin.absoluteString == "http://192.168.1.5:8123")
 
         for endpoint in [configured, discovered] {
-            let request = try endpoint.withToken { token in
+            let request = try #require(endpoint.withToken { token in
                 try ChatCompletionRequest.makeLocal(
                     origin: endpoint.origin,
                     token: token,
                     model: "gpt-oss-20b",
                     messages: [ChatMessagePayload(role: .user, content: "hi")]
                 )
-            }.urlRequest
+            }).urlRequest
             #expect(request.url?.path == "/v1/chat/completions")
             #expect(request.url!.absoluteString.hasSuffix("/v1/chat/completions"))
             #expect(!request.url!.absoluteString.contains("/v1/v1"))
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer dk-local-synthetic")
         }
+        // An explicitly unauthenticated endpoint targets the same paths and
+        // sends no Authorization header at all.
+        let noAuth = try #require(ChatLocalEndpoint.make(baseURL: "http://127.0.0.1:8000/v1", token: nil))
+        #expect(noAuth.isAuthenticated == false)
+        #expect(noAuth.withToken { _ in true } == nil)
+        let request = try ChatCompletionRequest.makeLocal(
+            origin: noAuth.origin,
+            token: nil,
+            model: "gpt-oss-20b",
+            messages: [ChatMessagePayload(role: .user, content: "hi")]
+        ).urlRequest
+        #expect(request.url?.path == "/v1/chat/completions")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
         // A non-origin URL with a path is refused by the builder itself.
         let withPath = try #require(URL(string: "http://127.0.0.1:8000/v1"))
         #expect(throws: ChatClientError.invalidEndpoint) {
             _ = try ChatCompletionRequest.makeLocal(
                 origin: withPath,
                 token: "dk-local-synthetic",
+                model: "m",
+                messages: [ChatMessagePayload(role: .user, content: "hi")]
+            )
+        }
+        // Blank tokens are not a way to silently drop authentication.
+        #expect(throws: ChatClientError.invalidEndpoint) {
+            _ = try ChatCompletionRequest.makeLocal(
+                origin: noAuth.origin,
+                token: " ",
                 model: "m",
                 messages: [ChatMessagePayload(role: .user, content: "hi")]
             )
@@ -164,9 +188,11 @@ struct ChatContractTests {
         #expect(ChatLocalEndpoint.make(baseURL: "http://host?a=1", token: "t") == nil)
         #expect(ChatLocalEndpoint.make(baseURL: "http://host", token: " ") == nil)
         #expect(ChatLocalEndpoint.make(baseURL: "http://host", token: String(repeating: "k", count: 257)) == nil)
+        #expect(ChatLocalEndpoint.make(baseURL: "not a url", token: nil) == nil)
         let endpoint = ChatLocalEndpoint.make(baseURL: "http://host", token: "dk-local-synthetic")
         #expect(endpoint?.description.contains("dk-local-synthetic") == false)
-        #expect(endpoint?.description.contains("present") == true)
+        #expect(endpoint?.description.contains("authenticated: true") == true)
+        #expect(ChatLocalEndpoint.make(baseURL: "http://host", token: nil)?.description.contains("authenticated: false") == true)
     }
 
     // MARK: Completion response

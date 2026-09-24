@@ -56,6 +56,35 @@ struct ChatTransportTests {
         }
     }
 
+    @Test("explicitly unauthenticated local endpoints send no Authorization on models and completion")
+    func localNoAuth() async throws {
+        let provider = FixedProvider(endpoint: ChatLocalEndpoint.make(
+            baseURL: "http://127.0.0.1:8123", token: nil
+        ))
+        let models = try await localClient(provider: provider, mode: "models-noauth").models(now: Self.now)
+        #expect(models.modelIDs.count == 2)
+        let outcome = try await localClient(provider: provider, mode: "chat-noauth").complete(
+            model: "gpt-oss-20b",
+            messages: [ChatMessagePayload(role: .user, content: "hi")]
+        )
+        #expect(outcome.content == "Local synthetic reply.")
+    }
+
+    @Test("a blank token is not a way to silently drop local authentication")
+    func localBlankTokenFails() async {
+        // ChatLocalEndpoint rejects a blank non-nil token, so the client
+        // reports the endpoint unavailable instead of sending unauthenticated.
+        let client = LocalChatClient(
+            endpointProvider: FixedProvider(endpoint: ChatLocalEndpoint.make(
+                baseURL: "http://127.0.0.1:8123", token: " "
+            )),
+            session: makeSession(mode: "must-not-start")
+        )
+        await #expect(throws: ChatClientError.localEndpointUnavailable) {
+            _ = try await client.models(now: Self.now)
+        }
+    }
+
     @Test("missing endpoint or missing local token fails before any request")
     func localEndpointUnavailable() async {
         for endpoint in [nil, ChatLocalEndpoint.make(baseURL: "http://127.0.0.1:8123", token: "")] {
@@ -283,12 +312,17 @@ private final class ChatFixtureProtocol: URLProtocol, @unchecked Sendable {
         } else {
             #expect(request.httpMethod == "GET")
         }
-        // Local requests carry the endpoint token; network requests carry the
-        // synthetic consumer key. Both must be bearer.
+        // Local requests carry the endpoint token when authenticated and no
+        // Authorization header at all when the endpoint is explicitly
+        // unauthenticated; network requests always carry the synthetic
+        // consumer key.
         let authorization = request.value(forHTTPHeaderField: "Authorization") ?? ""
-        #expect(authorization.hasPrefix("Bearer "))
         if isLocal {
-            #expect(authorization == "Bearer dk-local-synthetic")
+            if mode.hasSuffix("-noauth") {
+                #expect(authorization.isEmpty)
+            } else {
+                #expect(authorization == "Bearer dk-local-synthetic")
+            }
             #expect(url?.scheme == "http")
         } else {
             #expect(authorization == "Bearer dk-synthetic-consumer")
