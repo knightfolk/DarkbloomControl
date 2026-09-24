@@ -6,6 +6,22 @@ import Testing
 @Suite("Dashboard window", .serialized)
 @MainActor
 struct DashboardWindowTests {
+    @Test("oversized saved window is fitted inside the usable screen area")
+    func fitsOversizedSavedWindow() {
+        let visibleFrame = NSRect(x: 0, y: 24, width: 1440, height: 876)
+        let oversizedFrame = NSRect(x: -240, y: -600, width: 2200, height: 2400)
+
+        #expect(DashboardWindowSizing.fitted(oversizedFrame, within: visibleFrame) == visibleFrame)
+    }
+
+    @Test("window fitting preserves a saved frame that already fits")
+    func preservesFittingSavedWindow() {
+        let visibleFrame = NSRect(x: 0, y: 24, width: 1440, height: 876)
+        let savedFrame = NSRect(x: 180, y: 120, width: 1120, height: 760)
+
+        #expect(DashboardWindowSizing.fitted(savedFrame, within: visibleFrame) == savedFrame)
+    }
+
     @Test("Settings navigation reuses the dashboard window")
     func settingsRoute() throws {
         let suite = "DashboardNavigationTest-\(UUID().uuidString)"

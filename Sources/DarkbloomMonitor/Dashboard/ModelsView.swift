@@ -6,20 +6,20 @@ struct ModelsView: View {
     let controlStore: ProviderControlStore?
     var monitorStore: MonitorStore? = nil
     var networkContext: (String, Date) -> [String] = { _, _ in [] }
+    @State private var showsSelectionDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Models").font(.largeTitle.bold())
-                Text("Choose your models and how much work this Mac takes on.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-            .padding(24)
             if let controlStore {
                 if let monitorStore {
-                    DisclosureGroup("Running and saved selection") {
+                    DisclosureGroup(isExpanded: $showsSelectionDetails) {
                         ProviderSelectionView(store: monitorStore, controlStore: controlStore)
-                    }.padding(.horizontal, 24).padding(.bottom, 16)
+                    } label: {
+                        Text("Running and saved selection")
+                            .font(.callout.weight(.medium))
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
                 }
                 ModelManagerView(
                     store: controlStore,

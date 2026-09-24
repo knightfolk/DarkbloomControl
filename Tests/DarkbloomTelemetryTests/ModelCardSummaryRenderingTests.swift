@@ -8,13 +8,33 @@ import Testing
 @Suite("Model card rendering", .serialized)
 @MainActor
 struct ModelCardSummaryRenderingTests {
-    @Test("grid preserves minimum readable width and caps at four columns")
+    @Test("grid preserves minimum readable width and caps at three columns")
     func columnCounts() {
         #expect(ModelCardLayout.columnCount(for: 700) == 1)
         #expect(ModelCardLayout.columnCount(for: 720) == 2)
         #expect(ModelCardLayout.columnCount(for: 1100) == 3)
-        #expect(ModelCardLayout.columnCount(for: 1480) == 4)
-        #expect(ModelCardLayout.columnCount(for: 2200) == 4)
+        #expect(ModelCardLayout.columnCount(for: 1480) == 3)
+        #expect(ModelCardLayout.columnCount(for: 2200) == 3)
+        #expect(ModelCardLayout.maximumVisibleRows == 2)
+    }
+
+    @Test("enabled models lead the catalog without reordering the remaining results")
+    func enabledModelsLead() {
+        func item(_ id: String) -> ModelInventoryItem {
+            ModelInventoryItem(
+                catalogID: id, localID: nil, displayName: id, modelType: "text",
+                capabilities: [], sizeGB: 1, minimumRAMGB: 1, isDownloaded: true,
+                isEnabled: false, isPreloaded: false, liveState: .unloaded, issue: nil
+            )
+        }
+        let catalog = [item("vendor/first"), item("vendor/enabled-a"), item("vendor/last"), item("vendor/enabled-b")]
+        let enabledIDs: Set<String> = ["vendor/enabled-a", "vendor/enabled-b"]
+
+        let sorted = ModelManagerPresentation.enabledFirst(catalog) {
+            enabledIDs.contains($0.catalogID)
+        }
+
+        #expect(sorted.map(\.catalogID) == ["vendor/enabled-a", "vendor/enabled-b", "vendor/first", "vendor/last"])
     }
 
     @Test("model metrics and schedule render at compact and roomy card widths", arguments: [350.0, 440.0])
@@ -97,24 +117,40 @@ struct ModelCardSummaryRenderingTests {
 
         if ProcessInfo.processInfo.environment["DARKBLOOM_RENDER_EVIDENCE"] == "1" {
             for gridWidth in [720.0, 1100.0, 1480.0] {
-                let grid = LazyVGrid(columns: ModelCardLayout.columns(for: gridWidth), spacing: 20) {
-                    ForEach(0..<7) { index in
-                        ModelCardSummary(item: ModelInventoryItem(
+                let grid = LazyVGrid(columns: ModelCardLayout.columns(for: gridWidth), spacing: ModelCardLayout.rowSpacing) {
+                    ForEach(0..<9) { index in
+                        let cardItem = ModelInventoryItem(
                             catalogID: ["qwen/qwen3.8", "google/gemma-4", "openai/gpt-oss-20b"][index % 3],
                             localID: nil,
                             displayName: ["Qwen 3.8 27B", "Gemma 4 · 27B Instruct · 4-bit MLX", "GPT-OSS 20B"][index % 3],
                             modelType: "text", capabilities: [], sizeGB: 18.2, minimumRAMGB: 32,
                             isDownloaded: true, isEnabled: index == 0, isPreloaded: false,
-                            liveState: index == 0 ? .loadedIdle : .unloaded, issue: nil),
-                            installedMemoryGB: 64, rate: index == 1 ? nil : rate, capacity: capacity,
-                            serving: index == 2 ? nil : serving, grade: index == 2 ? nil : "A",
-                            forecast: forecast, runPercent: 50, isScheduleEnabled: index == 0,
-                            maximumRunPercent: 50, setRunPercent: { _ in })
+                            liveState: index == 0 ? .loadedIdle : .unloaded, issue: nil
+                        )
+                        VStack(alignment: .leading, spacing: 14) {
+                            ModelCardSummary(item: cardItem, installedMemoryGB: 64,
+                                rate: index == 1 ? nil : rate, capacity: capacity,
+                                serving: index == 2 ? nil : serving, grade: index == 2 ? nil : "A",
+                                forecast: forecast, runPercent: 50, isScheduleEnabled: index == 0,
+                                maximumRunPercent: 50, setRunPercent: { _ in })
+                            Divider()
+                            VStack(alignment: .leading, spacing: 8) {
+                                Toggle("Enabled", isOn: .constant(index == 0)).controlSize(.small)
+                                Toggle("Load at startup", isOn: .constant(index == 0)).controlSize(.small)
+                            }
+                            .frame(height: 66, alignment: .topLeading)
+                            Button("Manage & forecast") {}
+                                .buttonStyle(.bordered).controlSize(.large)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                        }
                         .padding(22)
-                        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 16))
+                        .frame(height: ModelCardLayout.estimatedCardHeight, alignment: .top)
+                            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 16))
                     }
-                }.padding(24).frame(width: gridWidth + 48)
-                    .background(Color(nsColor: .windowBackgroundColor)).environment(\.colorScheme, .dark)
+                }
+                .frame(width: gridWidth, height: ModelCardLayout.maximumVisibleHeight, alignment: .top)
+                .clipped()
+                .background(Color(nsColor: .windowBackgroundColor)).environment(\.colorScheme, .dark)
                 let gridRenderer = ImageRenderer(content: grid)
                 gridRenderer.scale = 1
                 let gridImage = try #require(gridRenderer.nsImage)

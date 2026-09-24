@@ -128,6 +128,18 @@ enum ModelManagerPresentation {
             }
     }
 
+    static func enabledFirst(
+        _ items: [ModelInventoryItem],
+        isEnabled: (ModelInventoryItem) -> Bool
+    ) -> [ModelInventoryItem] {
+        items.enumerated().sorted { lhs, rhs in
+            let lhsEnabled = isEnabled(lhs.element)
+            let rhsEnabled = isEnabled(rhs.element)
+            if lhsEnabled != rhsEnabled { return lhsEnabled }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+
     static func diagnostic(
         _ value: String,
         sanitize: (String) -> String
@@ -507,61 +519,72 @@ struct ModelManagerView: View {
     }
 
     private func modelList(currentTime: Date) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Picker("View", selection: $section) {
-                Text("On this Mac").tag(0)
-                Text("Available").tag(1)
-                Text("Capacity").tag(2)
-            }.pickerStyle(.segmented)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Picker("View", selection: $section) {
+                    Text("On this Mac").tag(0)
+                    Text("Available").tag(1)
+                    Text("Capacity").tag(2)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 520)
+                Spacer(minLength: 4)
+                if section != 2 {
+                    TextField("Find models", text: $search)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                        .frame(width: 220)
+                        .accessibilityLabel("Find a model")
+                }
+            }
             if section == 0 {
-                Text("Enable models to receive work. Load at startup requests them after a restart, subject to memory.")
+                Text("Enabled models can receive work; startup loading is subject to memory.")
                     .font(.callout).foregroundStyle(.secondary)
-                Text("Scheduled serving: \(ModelManagerPresentation.runHoursPerDay(percent: ModelManagerPresentation.totalRunPercent(enabledSchedule)).formatted(.number.precision(.fractionLength(0...1)))) of 24 hours/day. This estimates active work time, not models kept in memory.")
+                Text("Scheduled serving: \(ModelManagerPresentation.runHoursPerDay(percent: ModelManagerPresentation.totalRunPercent(enabledSchedule)).formatted(.number.precision(.fractionLength(0...1)))) h/day · active work estimate, not memory use")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if section != 2 {
-                TextField("Find a model", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("Find a model")
-            }
             GeometryReader { geometry in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    if section == 2 {
-                        capacityControls
-                    } else {
-                        let items = visibleModels
-                        if store.snapshot == nil && store.operation == .refreshing {
-                            HStack { ProgressView().controlSize(.small); Text("Reading your model catalog…") }
-                                .foregroundStyle(.secondary).padding(.vertical, 20)
-                        } else if items.isEmpty {
-                            ContentUnavailableView(search.isEmpty ? "No models here" : "No matching models",
-                                systemImage: "cpu", description: Text(store.snapshot == nil
-                                    ? "Refresh to load the model catalog." : "Try another view or search."))
-                        }
-                        LazyVGrid(columns: ModelCardLayout.columns(for: geometry.size.width),
-                                  alignment: .leading, spacing: 20) {
-                            ForEach(items) { item in
-                                modelCard(item, at: currentTime)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        if section == 2 {
+                            capacityControls
+                        } else {
+                            let items = visibleModels
+                            if store.snapshot == nil && store.operation == .refreshing {
+                                HStack { ProgressView().controlSize(.small); Text("Reading your model catalog…") }
+                                    .foregroundStyle(.secondary).padding(.vertical, 20)
+                            } else if items.isEmpty {
+                                ContentUnavailableView(search.isEmpty ? "No models here" : "No matching models",
+                                    systemImage: "cpu", description: Text(store.snapshot == nil
+                                        ? "Refresh to load the model catalog." : "Try another view or search."))
+                            }
+                            LazyVGrid(columns: ModelCardLayout.columns(for: geometry.size.width),
+                                      alignment: .leading, spacing: ModelCardLayout.rowSpacing) {
+                                ForEach(items) { item in
+                                    modelCard(item, at: currentTime)
+                                }
                             }
                         }
-                    }
-                    if let issues = store.snapshot?.inventory.issues, !issues.isEmpty {
-                        DisclosureGroup("Catalog notices (\(issues.count))") {
-                            ForEach(issues, id: \.self) { issue in
-                                Text(store.sanitizedDiagnostic(issue)).font(.callout).foregroundStyle(.orange)
+                        if let issues = store.snapshot?.inventory.issues, !issues.isEmpty {
+                            DisclosureGroup("Catalog notices (\(issues.count))") {
+                                ForEach(issues, id: \.self) { issue in
+                                    Text(store.sanitizedDiagnostic(issue)).font(.callout).foregroundStyle(.orange)
+                                }
                             }
                         }
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: min(geometry.size.height, ModelCardLayout.maximumVisibleHeight))
             }
-            }
-        }.padding(.horizontal, 24).padding(.bottom, 12)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 8)
     }
 
     private var visibleModels: [ModelInventoryItem] {
         let items = section == 0 ? store.snapshot?.inventory.myCatalog : store.snapshot?.inventory.available
-        return ModelManagerPresentation.filtered(items ?? [], search: search)
+        let filtered = ModelManagerPresentation.filtered(items ?? [], search: search)
+        return ModelManagerPresentation.enabledFirst(filtered, isEnabled: isEffectivelyEnabled)
     }
 
     private var enabledSchedule: [String: Int] {
@@ -796,12 +819,18 @@ struct ModelManagerView: View {
 }
 
 enum ModelCardLayout {
+    static let maximumColumns = 3
+    static let maximumVisibleRows = 2
+    static let rowSpacing: CGFloat = 20
+    static let estimatedCardHeight: CGFloat = 530
+    static let maximumVisibleHeight = CGFloat(maximumVisibleRows) * estimatedCardHeight + rowSpacing
+
     static func columnCount(for width: CGFloat) -> Int {
-        min(4, max(1, Int((width + 20) / 370)))
+        min(maximumColumns, max(1, Int((width + rowSpacing) / 370)))
     }
 
     static func columns(for width: CGFloat) -> [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 20, alignment: .top),
+        Array(repeating: GridItem(.flexible(), spacing: rowSpacing, alignment: .top),
               count: columnCount(for: width))
     }
 }
