@@ -3,6 +3,27 @@
     <channel>
         <title>Darkbloom Control</title>
         <item>
+            <title>1.4.1</title>
+            <pubDate>Wed, 23 Sep 2026 19:45:48 -0700</pubDate>
+            <sparkle:version>116</sparkle:version>
+            <sparkle:shortVersionString>1.4.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Darkbloom Control v1.4.1
+
+- Refine model cards with larger, centered metric icons and overlapping values.
+- Explain card metrics, network demand, request counts, opportunity grades, and
+  staged enable/preload controls on hover.
+- Add active and waiting network request counts next to demand and replace the
+  demand bars with a shaded, color-coded shield.
+- Put enable and load-at-startup switches on each downloaded model card, remove
+  the redundant catalog RAM requirement from the card face, and keep forecasts
+  and detailed compatibility information in Manage & Forecast.
+- Keep card sizing uniform and readable, with at most four columns.
+]]></description>
+            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.4.1/Darkbloom-Control-1.4.1-mac-arm64.zip" length="5838318" type="application/octet-stream" sparkle:edSignature="7UnLhHVI6eXzydgAbkO4JHvsJs+XM68/ruAc9qxLHshrExokp40VTzE8DTsGKNpd1JDz9ePgkM1F072YlkBrBg=="/>
+        </item>
+        <item>
             <title>1.4.0</title>
             <pubDate>Wed, 23 Sep 2026 15:40:15 -0700</pubDate>
             <sparkle:version>115</sparkle:version>
