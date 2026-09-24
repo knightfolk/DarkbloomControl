@@ -28,7 +28,21 @@ struct DashboardWindowTests {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = MonitorStore(service: TelemetryService(source: DashboardUnusedSource()), initial: .unavailable(now: Date()))
-        let controller = DashboardWindowController(store: store, controlStore: nil, frameAutosaveName: nil, defaults: defaults)
+        let hostingStore = HostingSettingsStore(
+            controlStore: nil,
+            endpointClient: DashboardNoEndpoint(),
+            tokenFile: DashboardTokenFileFake(),
+            cliVersionProvider: { "0.9.7" },
+            defaults: defaults,
+            lanScanner: { ["192.168.1.20"] }
+        )
+        let controller = DashboardWindowController(
+            store: store,
+            controlStore: nil,
+            hostingStore: hostingStore,
+            frameAutosaveName: nil,
+            defaults: defaults
+        )
         let first = controller.window
         controller.present(activate: false)
         controller.present(section: .settings, activate: false)
@@ -46,7 +60,21 @@ struct DashboardWindowTests {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = MonitorStore(service: TelemetryService(source: DashboardUnusedSource()), initial: .unavailable(now: Date()))
-        let controller = DashboardWindowController(store: store, controlStore: nil, frameAutosaveName: nil, defaults: defaults)
+        let hostingStore = HostingSettingsStore(
+            controlStore: nil,
+            endpointClient: DashboardNoEndpoint(),
+            tokenFile: DashboardTokenFileFake(),
+            cliVersionProvider: { "0.9.7" },
+            defaults: defaults,
+            lanScanner: { ["192.168.1.20"] }
+        )
+        let controller = DashboardWindowController(
+            store: store,
+            controlStore: nil,
+            hostingStore: hostingStore,
+            frameAutosaveName: nil,
+            defaults: defaults
+        )
         defer { controller.close() }
         let window = try #require(controller.window)
         window.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
@@ -114,6 +142,16 @@ private struct DashboardUnusedSource: TelemetrySource {
     func readLoadedModels() async throws -> LoadedModelsState { throw UnexpectedAcquisition() }
     func readStatus() async throws -> StatusSnapshot { throw UnexpectedAcquisition() }
     func readLegacyEvents(limit: Int) async throws -> [LogEvent] { throw UnexpectedAcquisition() }
+}
+
+private struct DashboardNoEndpoint: LocalEndpointFetching {
+    func fetch() async -> LocalEndpointAvailability {
+        .none(LocalEndpointClient.noLiveEndpointReason)
+    }
+}
+
+private struct DashboardTokenFileFake: LocalEndpointTokenProviding {
+    func withBearerToken(_ action: (String) -> Void) -> Bool { false }
 }
 
 private struct UnexpectedAcquisition: Error {}

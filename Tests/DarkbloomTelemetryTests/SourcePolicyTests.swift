@@ -25,9 +25,11 @@ struct SourcePolicyTests {
         #expect(policy.daemonState.path == "/Users/example/.darkbloom/daemon-state.json")
         #expect(policy.loadedModels.path == "/Users/example/.darkbloom/loaded-models.json")
         #expect(policy.legacyLog.path == "/Users/example/.darkbloom/provider.log")
+        #expect(policy.localEndpointToken.path == "/Users/example/.darkbloom/local_token")
         #expect(policy.providerConfig.path == "/Users/example/.config/darkbloom/provider.toml")
         #expect(policy.allowedFiles == [policy.daemonState, policy.loadedModels, policy.legacyLog])
         #expect(!policy.allowedFiles.map(\.lastPathComponent).contains("auth_token"))
+        #expect(!policy.allowedFiles.map(\.lastPathComponent).contains("local_token"))
         // The provider config is a separate, narrowly managed control surface,
         // not a read-only telemetry file.
         #expect(!policy.allowedFiles.map(\.lastPathComponent).contains("provider.toml"))

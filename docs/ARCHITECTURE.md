@@ -148,17 +148,48 @@ Stop or Restart action can do that.
 The provider surface is an exact allowlist: the fixed `provider.toml` (only
 `enabled_models`, `preload_models`, and `max_model_slots`),
 catalog/list/status, download/remove/start/stop/restart, a UUID-named sibling
-candidate, and one fixed backup. No other config field may change; credentials,
+candidate, one fixed backup, the documented local-endpoint start flags, the
+`local --json` standalone discovery read, and the provider-owned local token
+file for an explicit copy action. No other config field may change; credentials,
 account commands, launchd internals, direct cache mutation, remote coordinator
 mutation, private provider-control routes, and arbitrary local HTTP routes
-remain forbidden. Production commands use the official executable and argument
-values directly, never a shell. Paths printed by `darkbloom status` are inert
-display strings and are never followed. The monitor reads `auth_token` only for
-the fixed authenticated account-earnings GET; it is never logged, displayed, or
-persisted. The state `attestation_public_key` and unknown fields are ignored.
-Log messages are untrusted literal text without link activation or command
-execution; a unified-log `<private>` value becomes an explicit
-privacy-redaction placeholder.
+remain forbidden — the monitor configures the provider's own official endpoint
+through documented start flags and never opens a socket itself. Production
+commands use the official executable and argument values directly, never a
+shell. Paths printed by `darkbloom status` are inert display strings and are
+never followed. The monitor reads `auth_token` only for the fixed authenticated
+account-earnings GET; it is never logged, displayed, or persisted. The state
+`attestation_public_key` and unknown fields are ignored. Log messages are
+untrusted literal text without link activation or command execution; a
+unified-log `<private>` value becomes an explicit privacy-redaction
+placeholder.
+
+Hosting settings (September 24, 2026) apply the official CLI's unified
+local-endpoint mode — `--local-endpoint`, `--port`, and `--bind` appended to
+the existing non-interactive start command — as monitor-owned application
+preferences persisted in user defaults, never as `provider.toml` fields. The
+default is no endpoint with a loopback bind; any non-loopback bind requires
+an explicit confirmation dialog before the start command runs, and the
+documented LAN warning (no TLS, no rate limiting, bearer token stays on) is
+shown at selection time. `--no-auth` does not exist in the command mapping,
+so bearer-token authentication cannot be disabled through the monitor.
+Standalone `--local` direct mode is refused by the control service by
+construction: the official CLI runs it as an unsupervised foreground process
+this app's bounded finite runner cannot own or terminate, so the settings
+surface represents it as unavailable with a fixed reason instead of
+pretending to supervise it. The same saved hosting flags are re-applied by
+every monitor-initiated start/restart so a later restart cannot silently drop
+the endpoint from the new provider registration. Unified mode displays the
+configured URL (and active private LAN addresses for a wildcard bind) instead
+of using standalone discovery. It reads the provider-owned
+`~/.darkbloom/local_token` only after the user chooses Copy, validates
+ownership and restrictive file permissions, and does not follow symlinks.
+Standalone discovery details come from `darkbloom local --json` only on
+explicit demand. A bearer token is never displayed, logged, or persisted.
+Hosting is gated on a CLI version the app has
+verified against the official provider CLI reference (0.9.7); older or
+unknown CLI versions show hosting as unavailable rather than dispatching
+unverified flags.
 
 Networking has three fixed public HTTPS GET paths on `api.darkbloom.dev`:
 authenticated account earnings, the public 24-hour leaderboard, and public

@@ -173,6 +173,15 @@ public protocol ProviderControlling: Sendable {
         enabledModels: [String],
         onPhase: ProviderMutationPhaseObserver?
     ) async throws -> ProviderMutationCompletion
+    /// Hosting-aware lifecycle dispatch. Implementations apply the official
+    /// local-endpoint start flags through the same bounded, reconciled path as
+    /// every other lifecycle action.
+    func performLifecycle(
+        _ action: ProviderLifecycleAction,
+        enabledModels: [String],
+        hosting: HostingOptions,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion
 }
 
 public extension ProviderControlling {
@@ -209,7 +218,21 @@ public extension ProviderControlling {
         enabledModels: [String],
         onPhase: ProviderMutationPhaseObserver?
     ) async throws -> ProviderMutationCompletion {
-        try await execute(action, enabledModels: enabledModels)
+        try await performLifecycle(action, enabledModels: enabledModels, hosting: .default, onPhase: onPhase)
+    }
+
+    /// A controller that has not implemented hosting-aware lifecycle dispatch
+    /// must refuse endpoint flags rather than silently starting without them.
+    func performLifecycle(
+        _ action: ProviderLifecycleAction,
+        enabledModels: [String],
+        hosting: HostingOptions,
+        onPhase: ProviderMutationPhaseObserver?
+    ) async throws -> ProviderMutationCompletion {
+        guard hosting.mode == .off else {
+            throw ProviderControlError.hostingUnsupportedByController
+        }
+        _ = try await execute(action, enabledModels: enabledModels)
         await onPhase?(.reconciling)
         return .refreshUncertain
     }
@@ -223,6 +246,9 @@ public enum ProviderControlError: Error, Equatable, Sendable {
     case inventoryUnavailable(String)
     case deleteBlocked(String)
     case invalidOutput(String)
+    case hostingRequiresSupervision
+    case hostingUnsupportedByController
+    case invalidHostingOptions
 }
 
 public actor ProviderControlService: ProviderControlling {
@@ -399,8 +425,18 @@ public actor ProviderControlService: ProviderControlling {
     public func performLifecycle(
         _ action: ProviderLifecycleAction,
         enabledModels _: [String],
+        hosting: HostingOptions,
         onPhase: ProviderMutationPhaseObserver?
     ) async throws -> ProviderMutationCompletion {
+        guard hosting.mode != .standalone else {
+            // The official CLI runs standalone serving as an unsupervised
+            // foreground process. This bounded, finite command runner must
+            // never launch one, so the mode is refused here by construction.
+            throw ProviderControlError.hostingRequiresSupervision
+        }
+        guard hosting.isValid else {
+            throw ProviderControlError.invalidHostingOptions
+        }
         try beginCommand()
         defer { endCommand() }
         let executable = try resolveExecutable()
@@ -427,7 +463,8 @@ public actor ProviderControlService: ProviderControlling {
             command = DarkbloomCommand.start(
                 executable: executable,
                 config: policy.providerConfig,
-                models: savedEnabledModels
+                models: savedEnabledModels,
+                hosting: hosting
             )
         case .stop:
             command = DarkbloomCommand.stop(executable: executable)
@@ -439,7 +476,8 @@ public actor ProviderControlService: ProviderControlling {
             command = DarkbloomCommand.start(
                 executable: executable,
                 config: policy.providerConfig,
-                models: savedEnabledModels
+                models: savedEnabledModels,
+                hosting: hosting
             )
         }
         let timeout = action == .stop

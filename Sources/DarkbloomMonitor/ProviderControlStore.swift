@@ -45,6 +45,10 @@ final class ProviderControlStore: ObservableObject {
     private let refreshTelemetry: @MainActor @Sendable () async -> Void
     private let awaitStartup: @MainActor @Sendable (Date) async throws -> Void
     private let now: @Sendable () -> Date
+    /// Saved hosting start flags, re-applied by every monitor-initiated start
+    /// or restart so a later popup restart cannot silently drop the endpoint
+    /// from the new provider registration.
+    private let hostingOptions: @MainActor () -> HostingOptions
     private var currentTask: Task<Void, Never>?
     private var operationGeneration: UInt64 = 0
 
@@ -53,13 +57,17 @@ final class ProviderControlStore: ObservableObject {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         refreshTelemetry: @escaping @MainActor @Sendable () async -> Void = {},
         now: @escaping @Sendable () -> Date = { Date() },
-        awaitStartup: @escaping @MainActor @Sendable (Date) async throws -> Void = { _ in }
+        awaitStartup: @escaping @MainActor @Sendable (Date) async throws -> Void = { _ in },
+        hostingOptions: @escaping @MainActor () -> HostingOptions = {
+            HostingSettingsStore.loadOptions(from: .standard)
+        }
     ) {
         self.awaitStartup = awaitStartup
         self.controller = controller
         diagnosticSanitizer = UserDiagnosticSanitizer(homeDirectory: homeDirectory)
         self.refreshTelemetry = refreshTelemetry
         self.now = now
+        self.hostingOptions = hostingOptions
     }
 
     var canSave: Bool {
@@ -414,6 +422,7 @@ final class ProviderControlStore: ObservableObject {
     /// first, because the CLI changes the same TOML revision.
     func performSettingsMutation(
         _ label: String,
+        failureMessage: String? = nil,
         mutation: @escaping @Sendable () async throws -> Void
     ) async -> Bool {
         guard pendingConfirmation == nil, draft?.hasChanges != true,
@@ -431,13 +440,33 @@ final class ProviderControlStore: ObservableObject {
                 succeeded = true
             } catch {
                 invalidateActionableSnapshot()
-                errorMessage = "Provider settings could not be confirmed. Refresh before trying again."
+                errorMessage = failureMessage
+                    ?? "Provider settings could not be confirmed. Refresh before trying again."
             }
             finish(generation)
         }
         currentTask = task
         await awaitTask(task)
         return succeeded
+    }
+
+    /// Applies monitor-owned hosting start flags through the official
+    /// non-interactive start path. `mode == .off` re-runs start without
+    /// endpoint flags, removing the endpoint from the next provider
+    /// registration. Like every other start, the CLI drains and replaces the
+    /// running provider rather than interrupting accepted work.
+    func applyHosting(_ options: HostingOptions) async -> Bool {
+        await performSettingsMutation(
+            "hosting",
+            failureMessage: "Hosting settings could not be applied. Refresh before trying again."
+        ) { [controller] in
+            _ = try await controller.performLifecycle(
+                .start,
+                enabledModels: [],
+                hosting: options,
+                onPhase: nil
+            )
+        }
     }
 
     func cancelPendingLifecycle() {
@@ -459,6 +488,7 @@ final class ProviderControlStore: ObservableObject {
             completion = try await controller.performLifecycle(
                 action,
                 enabledModels: enabledModels,
+                hosting: action == .stop ? .default : hostingOptions(),
                 onPhase: { [weak self] phase in
                     await self?.advanceMutationPhase(phase, generation: generation)
                 }
@@ -690,6 +720,12 @@ final class ProviderControlStore: ObservableObject {
                 : "The model cannot be deleted safely."
         case .invalidOutput:
             "Darkbloom returned an invalid response while trying to \(action)."
+        case .hostingRequiresSupervision:
+            "Standalone serving is not available in Darkbloom Control."
+        case .hostingUnsupportedByController:
+            "This build cannot apply hosting settings."
+        case .invalidHostingOptions:
+            "Enter a valid port and bind address before applying hosting settings."
         }
     }
 

@@ -12,13 +12,20 @@ final class StatusItemController: NSObject {
     private let store: MonitorStore
     private let defaults: UserDefaults
     private(set) var controlStore: ProviderControlStore?
+    private let hostingStore: HostingSettingsStore?
 
     var statusItemLength: CGFloat { statusItem.length }
     var popoverContentSize: NSSize { popover.contentSize }
 
-    init(store: MonitorStore, controlStore: ProviderControlStore? = nil, defaults: UserDefaults = .standard) {
+    init(
+        store: MonitorStore,
+        controlStore: ProviderControlStore? = nil,
+        hostingStore: HostingSettingsStore? = nil,
+        defaults: UserDefaults = .standard
+    ) {
         self.store = store
         self.defaults = defaults
+        self.hostingStore = hostingStore
         statusItem = NSStatusBar.system.statusItem(withLength: Self.itemWidth)
         self.controlStore = controlStore
         super.init()
@@ -72,7 +79,7 @@ final class StatusItemController: NSObject {
         popover.performClose(nil)
         if dashboardWindowController == nil {
             dashboardWindowController = DashboardWindowController(
-                store: store, controlStore: controlStore, defaults: defaults
+                store: store, controlStore: controlStore, hostingStore: hostingStore, defaults: defaults
             )
         }
         dashboardWindowController?.present(section: section, activate: activate)

@@ -31,6 +31,7 @@ final class DashboardNavigation: ObservableObject {
 struct DashboardRootView: View {
     @ObservedObject var store: MonitorStore
     let controlStore: ProviderControlStore?
+    var hostingStore: HostingSettingsStore? = nil
     @ObservedObject var navigation: DashboardNavigation
     private var selectedRaw: String { navigation.selected.rawValue }
 
@@ -61,7 +62,11 @@ struct DashboardRootView: View {
                     return network + [performance, work].compactMap { $0 }
                 }
             } else if navigation.selected == .settings {
-                MonitorSettingsView(extrasStore: store.providerExtras, controlStore: controlStore)
+                MonitorSettingsView(
+                    extrasStore: store.providerExtras,
+                    controlStore: controlStore,
+                    hostingStore: hostingStore
+                )
             } else {
                 HealthView(store: store)
             }
@@ -69,6 +74,9 @@ struct DashboardRootView: View {
         .toolbar {
             Button { navigation.selected = .settings } label: { Label("Settings", systemImage: "gearshape") }
                 .help("Open Settings")
+        }
+        .onChange(of: store.snapshot.status.value?.version) { _, _ in
+            hostingStore?.refreshEnvironment()
         }
     }
 }

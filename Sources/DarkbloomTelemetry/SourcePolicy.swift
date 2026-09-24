@@ -15,6 +15,10 @@ public struct DarkbloomSourcePolicy: Equatable, Sendable {
     public static let catalogTimeout: Duration = .seconds(15)
     public static let downloadTimeout: Duration = .seconds(21_600)
     public static let mutationOutputByteLimit = 1_048_576
+    /// `darkbloom local --json` reads its discovery record and verifies the
+    /// recorded process is still alive, so a short bound is sufficient.
+    public static let localEndpointTimeout: Duration = .seconds(5)
+    public static let localEndpointOutputByteLimit = 64 * 1024
     public static let cliCandidateDescriptions = [
         "~/.darkbloom/bin/darkbloom",
         "~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom",
@@ -24,6 +28,9 @@ public struct DarkbloomSourcePolicy: Equatable, Sendable {
     public let daemonState: URL
     public let loadedModels: URL
     public let legacyLog: URL
+    /// Provider-owned local bearer token, read only for an explicit user
+    /// initiated copy action. This is intentionally excluded from `allowedFiles`.
+    public let localEndpointToken: URL
     public let providerConfig: URL
     public let cliCandidates: [URL]
 
@@ -34,6 +41,7 @@ public struct DarkbloomSourcePolicy: Equatable, Sendable {
         daemonState = root.appendingPathComponent("daemon-state.json")
         loadedModels = root.appendingPathComponent("loaded-models.json")
         legacyLog = root.appendingPathComponent("provider.log")
+        localEndpointToken = root.appendingPathComponent("local_token")
         providerConfig = homeDirectory.appendingPathComponent(".config/darkbloom/provider.toml")
         cliCandidates = [root.appendingPathComponent("bin/darkbloom"), root.appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom")] + environmentPath.split(separator: ":").map {
             URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent("darkbloom")
@@ -87,10 +95,26 @@ public enum DarkbloomCommand {
     public static func localModels(executable: URL, config: URL) -> ProcessCommand { ProcessCommand(executable: executable, arguments: ["models", "list", "--config", config.path, "--json", "--all"]) }
     public static func download(executable: URL, config: URL, modelID: String) -> ProcessCommand { ProcessCommand(executable: executable, arguments: ["models", "download", "--config", config.path, modelID]) }
     public static func remove(executable: URL, modelID: String) -> ProcessCommand { ProcessCommand(executable: executable, arguments: ["models", "remove", modelID, "--force"]) }
-    public static func start(executable: URL, config: URL, models: [String]) -> ProcessCommand {
+    /// Hosted start flags are appended exactly as documented by the official
+    /// CLI reference. Bearer-token authentication is always retained; the
+    /// `--no-auth` flag does not exist in this allowlist.
+    public static func start(
+        executable: URL,
+        config: URL,
+        models: [String],
+        hosting: HostingOptions = .default
+    ) -> ProcessCommand {
+        precondition(hosting.isValid, "Hosting options must be validated before dispatch")
         var args = ["start", "--config", config.path]
         for model in models { args += ["--model", model] }
+        args += hosting.startArguments
         return ProcessCommand(executable: executable, arguments: args)
+    }
+    /// The documented on-demand view of the live local endpoint. The JSON
+    /// payload contains the bearer API key: callers must never log, export, or
+    /// persist it.
+    public static func localEndpointInfo(executable: URL) -> ProcessCommand {
+        ProcessCommand(executable: executable, arguments: ["local", "--json"])
     }
     public static func stop(executable: URL) -> ProcessCommand {
         ProcessCommand(

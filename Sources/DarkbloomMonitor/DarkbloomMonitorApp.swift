@@ -116,6 +116,16 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
             configStore: configStore,
             runner: runner
         )
+        let localEndpointClient = LocalEndpointClient(policy: policy, runner: runner)
+        let localEndpointTokenFile = LocalEndpointTokenFile(fileURL: policy.localEndpointToken)
+        let hostingSettingsStore = HostingSettingsStore(
+            controlStore: nil,
+            endpointClient: localEndpointClient,
+            tokenFile: localEndpointTokenFile,
+            cliVersionProvider: { [weak monitorStore] in
+                monitorStore?.snapshot.status.value?.version
+            }
+        )
         let providerControlStore = ProviderControlStore(
             controller: controlService,
             homeDirectory: home,
@@ -134,13 +144,18 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
                     try await Task.sleep(for: .seconds(2))
                 }
                 throw ProviderStartupTimeout()
+            },
+            hostingOptions: { [weak hostingSettingsStore] in
+                hostingSettingsStore?.options ?? HostingSettingsStore.loadOptions(from: .standard)
             }
         )
+        hostingSettingsStore.attachControlStore(providerControlStore)
         store = monitorStore
         controlStore = providerControlStore
         statusItemController = StatusItemController(
             store: monitorStore,
-            controlStore: providerControlStore
+            controlStore: providerControlStore,
+            hostingStore: hostingSettingsStore
         )
         ControlAppUpdater.shared.canRelaunch = { [weak providerControlStore] in
             guard let control = providerControlStore else { return true }

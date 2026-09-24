@@ -4,6 +4,7 @@ import SwiftUI
 struct MonitorSettingsView: View {
     var extrasStore: ProviderExtrasStore? = nil
     var controlStore: ProviderControlStore? = nil
+    var hostingStore: HostingSettingsStore? = nil
     @AppStorage("menuBarDisplayMode") private var displayModeRaw =
         MenuBarDisplayMode.automatic.rawValue
 
@@ -20,6 +21,9 @@ struct MonitorSettingsView: View {
             ControlAppUpdateSettings()
             CLIUpdateNoticeView(store: CLIUpdateStatusStore.shared)
             GeneralSettingsView(displayModeRaw: $displayModeRaw)
+            if let hostingStore {
+                HostingSettingsView(store: hostingStore)
+            }
             if let extrasStore, let controlStore {
                 ProviderAdvancedSettingsHost(extras: extrasStore, control: controlStore)
             }

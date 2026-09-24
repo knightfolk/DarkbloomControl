@@ -1713,3 +1713,145 @@ private let ambiguousFamilyLocalJSON = Data(#"""
   ]
 }
 """#.utf8)
+
+@Suite("Provider control service hosting dispatch")
+struct HostingLifecycleServiceTests {
+    @Test("hosting start dispatches unified endpoint flags with policy bounds")
+    func unifiedStartDispatch() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+
+        let hosting = HostingOptions(mode: .unified, port: 8123, bindAddress: "127.0.0.1")
+        _ = try await harness.service.performLifecycle(
+            .start, enabledModels: [], hosting: hosting, onPhase: nil
+        )
+
+        let invocations = await harness.runner.lifecycleInvocations
+        #expect(invocations.count == 1)
+        #expect(invocations.first?.command.arguments == [
+            "start", "--config", harness.configURL.path,
+            "--model", "gemma-4-26b-qat-4bit",
+            "--local-endpoint", "--port", "8123", "--bind", "127.0.0.1",
+        ])
+        #expect(invocations.first?.timeout == DarkbloomSourcePolicy.lifecycleTimeout)
+        #expect(invocations.first?.outputLimit == DarkbloomSourcePolicy.mutationOutputByteLimit)
+        #expect(invocations.allSatisfy { !$0.command.arguments.contains("--no-auth") })
+    }
+
+    @Test("hosting restart applies the same flags; stop never carries them")
+    func restartAndStopDispatch() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+
+        let hosting = HostingOptions(mode: .unified, port: 8000, bindAddress: "127.0.0.1")
+        _ = try await harness.service.performLifecycle(
+            .restart, enabledModels: [], hosting: hosting, onPhase: nil
+        )
+        _ = try await harness.service.performLifecycle(
+            .stop, enabledModels: [], hosting: hosting, onPhase: nil
+        )
+
+        let invocations = await harness.runner.lifecycleInvocations
+        #expect(invocations.map(\.command.arguments) == [
+            [
+                "start", "--config", harness.configURL.path,
+                "--model", "gemma-4-26b-qat-4bit",
+                "--local-endpoint", "--port", "8000", "--bind", "127.0.0.1",
+            ],
+            ["stop", "--timeout", "600"],
+        ])
+    }
+
+    @Test("standalone mode is refused by construction and dispatches nothing")
+    func standaloneIsRefused() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+
+        let hosting = HostingOptions(mode: .standalone, port: 8000, bindAddress: "127.0.0.1")
+        await #expect(throws: ProviderControlError.hostingRequiresSupervision) {
+            _ = try await harness.service.performLifecycle(
+                .start, enabledModels: [], hosting: hosting, onPhase: nil
+            )
+        }
+        #expect(await harness.runner.lifecycleInvocations.isEmpty)
+        #expect(await harness.runner.invocations.allSatisfy {
+            !$0.command.arguments.contains("--local")
+        })
+    }
+
+    @Test("invalid hosting options are refused before any command runs")
+    func invalidOptionsAreRefused() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+
+        await #expect(throws: ProviderControlError.invalidHostingOptions) {
+            _ = try await harness.service.performLifecycle(
+                .start,
+                enabledModels: [],
+                hosting: HostingOptions(mode: .unified, port: 8000, bindAddress: "not-an-address"),
+                onPhase: nil
+            )
+        }
+        #expect(await harness.runner.invocations.isEmpty)
+    }
+
+    @Test("port zero is refused before any provider command runs")
+    func zeroPortIsRefused() async throws {
+        let harness = try ServiceHarness.make()
+        defer { harness.cleanup() }
+
+        await #expect(throws: ProviderControlError.invalidHostingOptions) {
+            _ = try await harness.service.performLifecycle(
+                .start,
+                enabledModels: [],
+                hosting: HostingOptions(mode: .unified, port: 0),
+                onPhase: nil
+            )
+        }
+        #expect(await harness.runner.invocations.isEmpty)
+    }
+
+    @Test("a controller without hosting support refuses endpoint flags instead of dropping them")
+    func legacyControllerRefusesHosting() async throws {
+        // The protocol's default implementation must not silently start the
+        // provider without the requested endpoint flags.
+        let legacy = LegacyHostingController()
+        await #expect(throws: ProviderControlError.hostingUnsupportedByController) {
+            _ = try await legacy.performLifecycle(
+                .start,
+                enabledModels: [],
+                hosting: HostingOptions(mode: .unified),
+                onPhase: nil
+            )
+        }
+        #expect(await legacy.executeCount == 0)
+    }
+}
+
+private actor LegacyHostingController: ProviderControlling {
+    private(set) var executeCount = 0
+
+    func refresh() async throws -> ProviderControlSnapshot {
+        throw ProviderControlError.invalidOutput("unused")
+    }
+
+    func save(_ draft: ProviderConfigDraft) async throws -> ProviderConfigSaveResult {
+        throw ProviderControlError.invalidOutput("unused")
+    }
+
+    func download(
+        _ modelID: String,
+        onOutput: (@Sendable (ProcessOutputChunk) -> Void)?
+    ) async throws {}
+
+    func delete(_ localModelID: String) async throws {}
+
+    func activityRisk() async -> ProviderActivityRisk { .idle }
+
+    func execute(
+        _ action: ProviderLifecycleAction,
+        enabledModels: [String]
+    ) async throws {
+        executeCount += 1
+    }
+}

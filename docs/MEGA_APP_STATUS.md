@@ -15,12 +15,28 @@ there as current status.
 | 2: Activity | ActivitySeries, ActivityQuery, ActivityView and local SQLite queries; calendar date range, exact model filter, separate rewards, table summaries and explicit gaps | Full live ledger reconciliation/coverage, boundary behavior and accessibility verification. UTC-hour aggregates cannot precisely split partial local-hour boundaries. Projection is not enabled. |
 | 3: Opportunity | Separate capacity/catalog/pricing/series sources, backoff+jitter, total resource limit, loopback tests and live successful HTTPS smoke test; raw factors and RAM-minimum comparison | Every recommendation's complete factors/ages and full compatibility proof; a balanced profitability score is not established. Conditional requests need upstream support verification. Demand-first observations are not profit forecasts. |
 | 4: operations | Shared Models editor with My Catalog/Available, separate controls, metadata, demand/pricing/performance/work context; Health/Logs, redaction preview/export, bounded retention and measured churn optimization | Verified log model attribution/filter; manual doctor contract; broader hardware/competing-service context; native export failure/keyboard cases and full privacy/state audit. Work earnings are explicitly partial, not complete realized payout coverage. |
-| 5: lifecycle/model residency | Official CLI Start, Stop, Restart, catalog and configuration controls with customer-impact confirmation | Live warming, resident switching, automatic demand switching and load-first staging are unavailable with the official CLI. Keep those controls Coming Soon; do not add private endpoints or custom provider builds. |
+| 5: lifecycle/model residency | Official CLI Start, Stop, Restart, catalog and configuration controls with customer-impact confirmation; unified local-endpoint hosting settings (loopback default, confirmed-LAN-only exposure, bearer auth always retained, configured URLs and protected token copy, standalone discovery) | Live warming, resident switching, automatic demand switching and load-first staging are unavailable with the official CLI. Keep those controls Coming Soon; do not add private endpoints or custom provider builds. Standalone `--local` serving stays unavailable pending a real supervision path; live LAN-exposure acceptance and update-flow interaction are unverified. |
 | 6: Fleet | Deliberately not enabled | Stable ownership/identity contract before implementation; remote control excluded from the first dashboard release. |
 | 7: Energy | Nonprivileged thermal/provider-memory context | Energy is opt-in and not implemented: supported sensor, tariff, coverage, retention and cost integration remain conditional work. No helper/privilege installation authorized. |
 | 8: packaging | Kernel single-instance guard/tests; REVIEW_LAUNCH.md records exact-artifact review procedure | Repeatable bundle assembly and CI, one canonical bundle identity, safe old-build detection/activation, upgrade/migration/rollback proof, signing/notarization, checksums/provenance/SBOM and clean-account Gatekeeper acceptance. No current publication authority. |
 
 ## Current runtime and pending user choices
+
+- Hosting settings added September 24, 2026 on branch
+  `codex/hosting-lan-settings`: Settings now exposes the official unified
+  local inference endpoint (`darkbloom start --local-endpoint --port --bind`)
+  per the provider cli-reference and direct-mode docs. Defaults are endpoint
+  off and loopback bind; LAN binds (a specific active private address
+  preferred over all interfaces) require an explicit confirmation carrying
+  the documented no-TLS/no-rate-limiting warning. `--no-auth` is never
+  passed. Standalone `--local` is shown as unavailable because the bounded
+  finite process runner cannot supervise the CLI's unsupervised foreground
+  process. Unified-mode URLs are derived from the selected settings; the
+  provider-owned token file is read only after an explicit copy action, with
+  ownership and restrictive permissions checked. Standalone details are
+  fetched on demand from `darkbloom local --json`; the bearer token is never
+  displayed, logged, or persisted. No live provider lifecycle command was run
+  while implementing or testing this feature.
 
 - Superseding provider choice, September 4 at 18:02 Phoenix: user rejected
   increasing the memory cap and requested one slot, all downloaded supported

@@ -9,6 +9,7 @@ final class DashboardWindowController: NSWindowController, NSWindowDelegate {
     init(
         store: MonitorStore,
         controlStore: ProviderControlStore?,
+        hostingStore: HostingSettingsStore? = nil,
         frameAutosaveName: String? = "DarkbloomDashboard",
         defaults: UserDefaults = .standard
     ) {
@@ -16,7 +17,7 @@ final class DashboardWindowController: NSWindowController, NSWindowDelegate {
         self.frameAutosaveName = frameAutosaveName
         navigation = DashboardNavigation(defaults: defaults)
         let content = NSHostingController(rootView: DashboardRootView(
-            store: store, controlStore: controlStore, navigation: navigation
+            store: store, controlStore: controlStore, hostingStore: hostingStore, navigation: navigation
         ))
         let window = NSWindow(contentViewController: content)
         window.title = "Darkbloom Control"
