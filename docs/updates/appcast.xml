@@ -3,6 +3,26 @@
     <channel>
         <title>Darkbloom Control</title>
         <item>
+            <title>1.5.0</title>
+            <pubDate>Thu, 24 Sep 2026 12:00:14 -0700</pubDate>
+            <sparkle:version>118</sparkle:version>
+            <sparkle:shortVersionString>1.5.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Darkbloom Control v1.5.0
+
+- Show best-effort, whole-Mac GPU utilization in the provider resources panel,
+  alongside the provider's reported GPU memory.
+- Show provider request activity: `1+` while inference is active and the exact
+  accepted requests remaining during a graceful drain.
+- Use the CLI's native graceful-stop behavior to pause new admissions and drain
+  accepted work, replacing the app's former idle-polling stop flow.
+- Keep the Models window within the visible screen area with a compact toolbar
+  and responsive, enabled-first model cards.
+]]></description>
+            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.5.0/Darkbloom-Control-1.5.0-mac-arm64.zip" length="6041541" type="application/octet-stream" sparkle:edSignature="TFXSI2zi0TMv9L03pUsB+HwfHt/RUXYWlGjSmJnTr9Ny/0A7+t3sbttld4GaRe68zmq28DgEbNDX1u4dSK+0CA=="/>
+        </item>
+        <item>
             <title>1.4.2</title>
             <pubDate>Wed, 23 Sep 2026 20:53:25 -0700</pubDate>
             <sparkle:version>117</sparkle:version>
