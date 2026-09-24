@@ -721,7 +721,7 @@ final class ProviderControlStore: ObservableObject {
         case .invalidOutput:
             "Darkbloom returned an invalid response while trying to \(action)."
         case .hostingRequiresSupervision:
-            "Standalone serving is not available in Darkbloom Control."
+            "Standalone serving is not available in \(MonitorApplicationIdentity.displayName)."
         case .hostingUnsupportedByController:
             "This build cannot apply hosting settings."
         case .invalidHostingOptions:

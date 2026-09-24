@@ -110,11 +110,18 @@ def _make_framework_lookup_portable(executable, rpaths):
         raise ValueError('packaged executable is missing its in-app framework search path')
 
 def assemble(executable, resources, output, version, build_number,
-             sparkle_framework=None, update_public_key=None, update_feed_url=None):
+             sparkle_framework=None, update_public_key=None, update_feed_url=None,
+             app_name='Darkbloom Control', bundle_identifier='dev.darkbloom.monitor'):
     if not re.fullmatch(r'\d+\.\d+\.\d+', version):
         raise ValueError('version must be three numeric components')
     if not re.fullmatch(r'[1-9]\d*', build_number):
         raise ValueError('build number must be a positive integer')
+    if (not isinstance(app_name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}', app_name)
+            or app_name.strip() != app_name):
+        raise ValueError('app name must be a safe single path component of at most 64 characters')
+    if not isinstance(bundle_identifier, str) or not re.fullmatch(
+            r'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+', bundle_identifier):
+        raise ValueError('bundle identifier must be a reverse-DNS identifier')
     if not all(p.is_absolute() for p in (executable, resources, output)):
         raise ValueError('all paths must be absolute')
     if sparkle_framework is not None:
@@ -131,11 +138,14 @@ def assemble(executable, resources, output, version, build_number,
         raise ValueError("this executable requires --sparkle-framework")
     if resources.is_symlink() or not resources.is_dir():
         raise ValueError('resources must be a non-symlink directory')
+    resource_files = resources / 'Contents/Resources'
+    if not resource_files.is_dir():
+        resource_files = resources
     for entry in resources.rglob('*'):
         mode = entry.lstat().st_mode
         if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
             raise ValueError('resources cannot contain symlinks or special files')
-    if not (resources / 'AppIcon.icns').is_file():
+    if not (resource_files / 'AppIcon.icns').is_file():
         raise ValueError('resources must contain the Darkbloom Control app icon')
     if output.is_relative_to(resources) or resources.is_relative_to(output):
         raise ValueError('output and resource paths must not overlap')
@@ -145,7 +155,7 @@ def assemble(executable, resources, output, version, build_number,
     # Exclusive creation protects existing outputs, including empty directories.
     # Failures after this point deliberately leave the new partial output intact.
     output.mkdir()
-    app = output / 'Darkbloom Control.app'
+    app = output / f'{app_name}.app'
     contents = app / 'Contents'
     (contents / 'MacOS').mkdir(parents=True)
     (contents / 'Resources').mkdir()
@@ -153,7 +163,7 @@ def assemble(executable, resources, output, version, build_number,
     if links_sparkle:
         _make_framework_lookup_portable(contents / 'MacOS/DarkbloomMonitor', rpaths)
     shutil.copytree(resources, contents / 'Resources/DarkbloomMonitor_DarkbloomMonitor.bundle', symlinks=True)
-    shutil.copy2(resources / 'AppIcon.icns', contents / 'Resources/AppIcon.icns')
+    shutil.copy2(resource_files / 'AppIcon.icns', contents / 'Resources/AppIcon.icns')
     framework_destination = None
     if sparkle_framework is not None:
         framework_destination = contents / 'Frameworks/Sparkle.framework'
@@ -163,8 +173,8 @@ def assemble(executable, resources, output, version, build_number,
         # turn a local framework into a bundle path escape.
         _validate_framework_tree(framework_destination)
     # Preserve identity and executable/resource names for upgrade compatibility.
-    info = dict(CFBundleIdentifier='dev.darkbloom.monitor', CFBundleName='Darkbloom Control',
-                CFBundleDisplayName='Darkbloom Control',
+    info = dict(CFBundleIdentifier=bundle_identifier, CFBundleName=app_name,
+                CFBundleDisplayName=app_name,
                 CFBundleIconFile='AppIcon',
                 CFBundleExecutable='DarkbloomMonitor', CFBundlePackageType='APPL',
                 CFBundleShortVersionString=version, CFBundleVersion=build_number,
@@ -188,6 +198,10 @@ def main():
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--version', required=True)
     parser.add_argument('--build-number', required=True)
+    parser.add_argument('--app-name', default='Darkbloom Control',
+                        help='bundle name (defaults to the production identity)')
+    parser.add_argument('--bundle-identifier', default='dev.darkbloom.monitor',
+                        help='reverse-DNS bundle id (defaults to the production identity)')
     parser.add_argument('--sparkle-framework', type=Path,
                         help='absolute Sparkle.framework path; required when the executable links Sparkle')
     parser.add_argument('--update-public-key',

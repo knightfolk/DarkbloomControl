@@ -41,7 +41,7 @@ final class ControlAppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
         do {
             try updater.start()
             isConfigured = true
-            message = "Check for a newer version of Darkbloom Control."
+            message = "Check for a newer version of \(MonitorApplicationIdentity.displayName)."
         } catch {
             message = "App updates could not start. Reopen a release build to try again."
         }
@@ -70,13 +70,13 @@ final class ControlAppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
-        message = "Darkbloom Control is up to date."
+        message = "\(MonitorApplicationIdentity.displayName) is up to date."
     }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: any Error) {
         if (error as NSError).domain == SUSparkleErrorDomain,
            (error as NSError).code == SUError.noUpdateError.rawValue {
-            message = "Darkbloom Control is up to date."
+            message = "\(MonitorApplicationIdentity.displayName) is up to date."
             return
         }
         message = "The update did not finish. Check again to retry."
@@ -101,7 +101,7 @@ final class ControlAppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
 struct ControlAppUpdateSettings: View {
     @ObservedObject var updater = ControlAppUpdater.shared
     var body: some View {
-        Section("Darkbloom Control · App updates") {
+        Section("\(MonitorApplicationIdentity.displayName) · App updates") {
             LabeledContent("Installed version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development build")
             Toggle("Automatically check for updates", isOn: Binding(
                 get: { updater.automaticChecks }, set: updater.setAutomaticChecks))

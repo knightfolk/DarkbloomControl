@@ -25,8 +25,8 @@ final class MonitorStore: ObservableObject {
         return energyEarnings
     }
     private var energyTask: Task<Void, Never>?
-    private let energyRecorder = EnergyRecorder(file: FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/Darkbloom Monitor/energy-history.json"))
+    private let energyRecorder = EnergyRecorder(file: MonitorApplicationIdentity
+        .applicationSupportDirectory().appendingPathComponent("energy-history.json"))
     static let earningsPollingInterval: Duration = .seconds(600)
     @Published private(set) var dashboardVisible = false
     private var networkPollingPolicy = NetworkPollingPolicy()

@@ -73,10 +73,7 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
             source: source,
             unifiedEvents: UnifiedLogStreamer().events()
         )
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!.appendingPathComponent("Darkbloom Monitor", isDirectory: true)
+        let applicationSupport = MonitorApplicationIdentity.applicationSupportDirectory()
         let earningsDatabase = try? EarningsDatabase(
             url: applicationSupport.appendingPathComponent("earnings.sqlite3")
         )
@@ -189,7 +186,7 @@ struct AppSettingsSceneRoot: View {
         if let controlStore {
             ProviderSettingsRoot(controlStore: controlStore)
         } else {
-            ProgressView("Starting Darkbloom Control…")
+            ProgressView("Starting \(MonitorApplicationIdentity.displayName)…")
                 .frame(width: 420, height: 180)
         }
     }

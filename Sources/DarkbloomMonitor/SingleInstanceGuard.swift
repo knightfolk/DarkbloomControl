@@ -80,10 +80,15 @@ enum SingleInstanceGuardError: Error, Equatable, LocalizedError, Sendable {
 final class SingleInstanceGuard {
     static let lockFileName = "darkbloom-monitor.lock"
 
-    static func defaultLockURL(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        homeDirectory
-            .appendingPathComponent("Library/Application Support/Darkbloom Monitor", isDirectory: true)
-            .appendingPathComponent(lockFileName, isDirectory: false)
+    static func defaultLockURL(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        bundleIdentifier: String? = Bundle.main.bundleIdentifier
+    ) -> URL {
+        MonitorApplicationIdentity.applicationSupportDirectory(
+            homeDirectory: homeDirectory,
+            bundleIdentifier: bundleIdentifier
+        )
+        .appendingPathComponent(lockFileName, isDirectory: false)
     }
 
     private let lockURL: URL

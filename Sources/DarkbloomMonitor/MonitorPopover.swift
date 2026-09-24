@@ -477,7 +477,7 @@ struct MonitorPopover: View {
             )
             .frame(width: 22, height: 25)
 
-            Text("Darkbloom Control")
+            Text(MonitorApplicationIdentity.displayName)
                 .font(.system(size: 14, weight: .bold))
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -500,8 +500,8 @@ struct MonitorPopover: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
-            .help("Quit Darkbloom Control")
-            .accessibilityLabel("Quit Darkbloom Control")
+            .help("Quit \(MonitorApplicationIdentity.displayName)")
+            .accessibilityLabel("Quit \(MonitorApplicationIdentity.displayName)")
             .accessibilityIdentifier("dashboard.quit")
         }
     }

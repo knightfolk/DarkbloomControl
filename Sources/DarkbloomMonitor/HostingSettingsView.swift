@@ -222,7 +222,7 @@ struct HostingSettingsView: View {
         }
         .disabled(!store.canCopyBearerToken)
         .accessibilityIdentifier("hosting.details.copyToken")
-        Text("The address reflects the settings above, not a live health check. The token is read from the provider's protected local file only when you choose Copy; Darkbloom Control never displays or saves it.")
+        Text("The address reflects the settings above, not a live health check. The token is read from the provider's protected local file only when you choose Copy; \(MonitorApplicationIdentity.displayName) never displays or saves it.")
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -260,7 +260,7 @@ struct HostingSettingsView: View {
             }
             .disabled(!store.canCopyBearerToken)
             .accessibilityIdentifier("hosting.details.copyToken")
-            Text("The token is read on demand from the provider's discovery record. It is never shown, logged, or saved by Darkbloom Control.")
+            Text("The token is read on demand from the provider's discovery record. It is never shown, logged, or saved by \(MonitorApplicationIdentity.displayName).")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

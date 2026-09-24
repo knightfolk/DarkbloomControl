@@ -98,6 +98,62 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(item['sha256'], hashlib.sha256(data).hexdigest())
         self.assertNotIn(str(self.root), json.dumps(manifest))
 
+    def test_beta_bundle_uses_a_distinct_product_name_and_identifier(self):
+        result = self.run_packager(
+            '--app-name', 'DC Beta',
+            '--bundle-identifier', 'dev.darkbloom.monitor.beta',
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        app = self.output / 'DC Beta.app'
+        self.assertTrue(app.is_dir())
+        info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+        self.assertEqual(info['CFBundleIdentifier'], 'dev.darkbloom.monitor.beta')
+        self.assertEqual(info['CFBundleName'], 'DC Beta')
+        self.assertEqual(info['CFBundleDisplayName'], 'DC Beta')
+
+    def test_beta_bundle_identity_rejects_path_components_and_invalid_ids(self):
+        cases = [
+            ('../DC Beta', 'dev.darkbloom.monitor.beta'),
+            ('DC Beta', '../dev.darkbloom.beta'),
+            ('DC Beta', 'not-a-domain'),
+        ]
+        for app_name, bundle_identifier in cases:
+            with self.subTest(app_name=app_name, bundle_identifier=bundle_identifier):
+                result = self.run_packager(
+                    '--app-name', app_name,
+                    '--bundle-identifier', bundle_identifier,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.output.exists())
+
+    def test_swiftpm_resource_bundle_keeps_its_bundle_structure(self):
+        self.resources = self.root / 'DarkbloomMonitor_DarkbloomMonitor.bundle'
+        bundle_resources = self.resources / 'Contents/Resources'
+        bundle_resources.mkdir(parents=True)
+        (bundle_resources / 'AppIcon.icns').write_bytes(b'fixture-icon')
+        (bundle_resources / 'mark.svg').write_text('<svg/>')
+        (self.resources / 'Contents/Info.plist').write_bytes(
+            plistlib.dumps({'CFBundlePackageType': 'BNDL'})
+        )
+
+        result = self.run_packager()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        app = self.output / 'Darkbloom Control.app'
+        nested_bundle = app / 'Contents/Resources/DarkbloomMonitor_DarkbloomMonitor.bundle'
+        self.assertEqual(
+            (nested_bundle / 'Contents/Info.plist').read_bytes(),
+            (self.resources / 'Contents/Info.plist').read_bytes(),
+        )
+        self.assertEqual(
+            (nested_bundle / 'Contents/Resources/mark.svg').read_text(),
+            '<svg/>',
+        )
+        self.assertEqual(
+            (app / 'Contents/Resources/AppIcon.icns').read_bytes(),
+            b'fixture-icon',
+        )
+
     def test_existing_output_is_preserved(self):
         self.output.mkdir()
         marker = self.output / 'keep'
