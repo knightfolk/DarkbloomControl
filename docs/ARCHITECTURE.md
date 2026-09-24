@@ -264,6 +264,8 @@ ProviderSelectionComparison and the dashboard separate saved enabled models, the
 NetworkCacheStore owns a visibility-scoped public cache-health request independent of the existing public data sources. This aggregate network state never drives local model switching or claims local cache gains. See PUBLIC_API_CONTRACT.md for cadence and validation.
 
 
-### Queued stop
+### Native graceful stop and provider activity
 
-Stop when idle is an in-memory request owned by ProviderControlStore, independent of dashboard or popover visibility. It polls official activity evidence and never interprets stale or unknown activity as idle. A second fresh idle check precedes the normal stop command. Users can cancel while waiting; the monitor must remain open. Configuration and other lifecycle mutations are blocked while queued. The CLI has no drain-only mode, so new work may arrive while waiting. Once dispatched, normal CLI shutdown refuses new work and drains in-flight requests, with the CLI's bounded shutdown timeout; the two idle reads are not an atomic admission lock.
+Stop uses the CLI's native graceful drain directly instead of polling for idle in the app. The CLI pauses new admission, drains accepted requests, and waits for usage acknowledgement before stopping. The app allows 600 seconds for that CLI drain plus a 30-second process margin; it never passes force or uninstall flags. If the CLI's drain deadline expires, the provider remains draining and the UI reports the exact remaining count from daemon state so Stop can be selected again. Older schema-1 state remains supported.
+
+While serving, the daemon exposes only a Boolean inference-active signal, not an exact running-request count. The provider panel therefore displays `1+` while active and zero while idle; it shows the exact remaining accepted requests during native drain. GPU utilization is a best-effort whole-Mac IOAccelerator reading when the hardware publishes it, and is not attributed to the provider. Provider-reported GPU allocations remain a separate metric.

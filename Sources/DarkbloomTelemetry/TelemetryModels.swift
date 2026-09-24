@@ -23,6 +23,9 @@ public struct DaemonState: Equatable, Sendable {
     /// Load failures are retained as bounded codes; provider error prose is
     /// never exposed by the telemetry model.
     public let modelLoadFailures: [ModelLoadFailure]
+    /// Bounded native CLI lifecycle status, when present in this daemon
+    /// snapshot. Older schema-1 states omit it.
+    public let lifecycle: ProviderLifecycleState?
 
     public var loadFailures: [ModelLoadFailure] { modelLoadFailures }
 
@@ -42,7 +45,8 @@ public struct DaemonState: Equatable, Sendable {
         processIdentity: ProcessIdentity,
         advertisedModels: [String]? = nil,
         coordinatorURL: String? = nil,
-        modelLoadFailures: [ModelLoadFailure] = []
+        modelLoadFailures: [ModelLoadFailure] = [],
+        lifecycle: ProviderLifecycleState? = nil
     ) {
         self.schema = schema
         self.version = version
@@ -60,6 +64,41 @@ public struct DaemonState: Equatable, Sendable {
         self.advertisedModels = advertisedModels
         self.coordinatorURL = coordinatorURL
         self.modelLoadFailures = modelLoadFailures
+        self.lifecycle = lifecycle
+    }
+}
+
+public enum ProviderLifecycleOutcome: Equatable, Sendable {
+    case serving
+    case draining
+    case drained
+    case stopped
+    case unknown
+
+    init(rawValue: String) {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "serving": self = .serving
+        case "draining": self = .draining
+        case "drained": self = .drained
+        case "stopped": self = .stopped
+        default: self = .unknown
+        }
+    }
+}
+
+public struct ProviderLifecycleState: Equatable, Sendable {
+    public let outcome: ProviderLifecycleOutcome
+    public let remainingRequests: Int?
+    public let coordinatorAcknowledged: Bool?
+
+    public init(
+        outcome: ProviderLifecycleOutcome,
+        remainingRequests: Int? = nil,
+        coordinatorAcknowledged: Bool? = nil
+    ) {
+        self.outcome = outcome
+        self.remainingRequests = remainingRequests.flatMap { (0...1_000_000).contains($0) ? $0 : nil }
+        self.coordinatorAcknowledged = coordinatorAcknowledged
     }
 }
 

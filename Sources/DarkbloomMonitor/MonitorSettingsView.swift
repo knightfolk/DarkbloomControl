@@ -115,7 +115,6 @@ private struct ProviderAdvancedSettingsHost: View {
         })
         .disabled(control.operation != .idle
             || control.pendingConfirmation != nil
-            || control.queuedStopState != nil
             || control.draft?.hasChanges == true)
         if let error = control.errorMessage {
             Section { Text(error).foregroundStyle(.orange) }

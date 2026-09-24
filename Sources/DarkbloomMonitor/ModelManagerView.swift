@@ -520,21 +520,15 @@ struct ModelManagerView: View {
 
     private func modelList(currentTime: Date) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                Picker("View", selection: $section) {
-                    Text("On this Mac").tag(0)
-                    Text("Available").tag(1)
-                    Text("Capacity").tag(2)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    sectionPicker
+                    Spacer(minLength: 4)
+                    if section != 2 { modelSearchField }
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 520)
-                Spacer(minLength: 4)
-                if section != 2 {
-                    TextField("Find models", text: $search)
-                        .textFieldStyle(.roundedBorder)
-                        .controlSize(.small)
-                        .frame(width: 220)
-                        .accessibilityLabel("Find a model")
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionPicker
+                    if section != 2 { modelSearchField }
                 }
             }
             if section == 0 {
@@ -585,6 +579,24 @@ struct ModelManagerView: View {
         let items = section == 0 ? store.snapshot?.inventory.myCatalog : store.snapshot?.inventory.available
         let filtered = ModelManagerPresentation.filtered(items ?? [], search: search)
         return ModelManagerPresentation.enabledFirst(filtered, isEnabled: isEffectivelyEnabled)
+    }
+
+    private var sectionPicker: some View {
+        Picker("View", selection: $section) {
+            Text("On this Mac").tag(0)
+            Text("Available").tag(1)
+            Text("Capacity").tag(2)
+        }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 520)
+    }
+
+    private var modelSearchField: some View {
+        TextField("Find models", text: $search)
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.small)
+            .frame(width: 220)
+            .accessibilityLabel("Find a model")
     }
 
     private var enabledSchedule: [String: Int] {
@@ -688,9 +700,9 @@ struct ModelManagerView: View {
                         inspectedModel = nil
                         deletion = ModelDeletionConfirmation(localID: localID,
                             displayName: item.displayName, sizeGB: item.sizeGB)
-                    }).disabled(store.queuedStopState != nil)
+                    })
             } else {
-                AvailableModelRow(item: item, store: store).disabled(store.queuedStopState != nil)
+                AvailableModelRow(item: item, store: store)
             }
             modelDetails(item, at: date)
             } else {
@@ -703,7 +715,6 @@ struct ModelManagerView: View {
                             setEnabled: { store.setEnabled($0, modelID: $1) },
                             setPreloaded: { store.setPreloaded($0, modelID: $1) },
                             requestDelete: { _ in }, compact: true)
-                            .disabled(store.queuedStopState != nil)
                     } else {
                         Label("Not downloaded", systemImage: "arrow.down.circle")
                             .foregroundStyle(.secondary)
@@ -739,7 +750,7 @@ struct ModelManagerView: View {
                     set: store.setMaxModelSlots)
                 Label("Save, then restart the provider to apply these limits.", systemImage: "info.circle")
                     .font(.callout).foregroundStyle(.secondary)
-            }.disabled(store.operation != .idle || store.queuedStopState != nil)
+            }.disabled(store.operation != .idle)
         } else {
             ContentUnavailableView("Capacity settings unavailable", systemImage: "slider.horizontal.3",
                 description: Text("Refresh to read the provider configuration."))

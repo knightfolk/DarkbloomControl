@@ -23,9 +23,11 @@ struct DarkbloomCommandTests {
         #expect(!command.arguments.contains("--no-auth"))
     }
 
-    @Test("stop cannot uninstall")
+    @Test("stop uses native graceful drain without force or uninstall")
     func stopArguments() {
-        #expect(DarkbloomCommand.stop(executable: executable).arguments == ["stop"])
+        #expect(DarkbloomCommand.stop(executable: executable).arguments == ["stop", "--timeout", "600"])
+        #expect(!DarkbloomCommand.stop(executable: executable).arguments.contains("--force"))
+        #expect(!DarkbloomCommand.stop(executable: executable).arguments.contains("--uninstall"))
     }
 
     @Test("model commands keep identifiers as single arguments")

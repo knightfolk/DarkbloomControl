@@ -797,14 +797,15 @@ struct ProviderLifecyclePresentationTests {
         #expect(!ProviderLifecycleControl.restart.isActive(in: .downloading("gpt-oss")))
     }
 
-    @Test("active warning names the interrupting action")
+    @Test("confirmed stop uses native graceful drain while restart warns about interruption")
     func activeWarningCopy() {
         let stop = LifecycleConfirmationPresentation.make(.stop(.active))
         let restart = LifecycleConfirmationPresentation.make(.restart(.active))
 
-        #expect(stop.title == "Customer work may be interrupted")
-        #expect(stop.body == "A customer job is currently running. Continuing will interrupt it.")
-        #expect(stop.confirmLabel == "Stop Anyway")
+        #expect(stop.title == "Drain and stop the provider?")
+        #expect(stop.body.contains("pause new requests"))
+        #expect(stop.body.contains("finish accepted requests"))
+        #expect(stop.confirmLabel == "Drain & Stop")
         #expect(restart.title == "Customer work may be interrupted")
         #expect(restart.body == "A customer job is currently running. Continuing will interrupt it.")
         #expect(restart.confirmLabel == "Restart Anyway")
@@ -820,6 +821,13 @@ struct ProviderLifecyclePresentationTests {
         #expect(value.body == "Darkbloom Control cannot confirm whether a customer job is running. Continuing may interrupt customer work.")
         #expect(value.confirmLabel == "Continue Anyway")
         #expect(!value.body.contains("private provider detail"))
+
+        let stop = LifecycleConfirmationPresentation.make(.stop(.unknown("private provider detail")))
+        #expect(stop.title == "Drain and stop the provider?")
+        #expect(stop.body.contains("pause new requests"))
+        #expect(stop.body.contains("finish accepted requests"))
+        #expect(!stop.body.contains("private provider detail"))
+        #expect(stop.confirmLabel == "Drain & Stop")
     }
 
     @Test("system dismissal cancels pending confirmation exactly once")

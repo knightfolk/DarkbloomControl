@@ -7,13 +7,22 @@ import Testing
 @Suite("Provider resource panel", .serialized)
 @MainActor
 struct ProviderResourcesViewTests {
-    @Test("resource panel renders system CPU, provider GPU memory, and provider sensor temperature")
+    @Test("resource panel renders system CPU/GPU use, request activity, provider GPU memory, and temperature")
     func rendersMeasuredAndProviderReportedResources() async throws {
         let now = Date()
         let fixtureURL = try #require(
             Bundle.module.url(forResource: "daemon-state-online", withExtension: "json", subdirectory: "Fixtures")
         )
-        let daemon = try DaemonStateParser.parse(Data(contentsOf: fixtureURL))
+        var daemonJSON = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
+        )
+        daemonJSON["inference_active"] = true
+        daemonJSON["lifecycle"] = [
+            "outcome": "draining",
+            "remaining": 6,
+            "coordinator_acknowledged": false,
+        ]
+        let daemon = try DaemonStateParser.parse(JSONSerialization.data(withJSONObject: daemonJSON))
         let snapshot = TelemetrySnapshot(
             state: .available(value: daemon, capturedAt: now),
             loadedModels: .unavailable(reason: "Not acquired"),

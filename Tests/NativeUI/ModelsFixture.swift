@@ -48,10 +48,8 @@ private actor ModelsFixtureController: ProviderControlling {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Synthetic review · no provider changes").font(.headline).padding(.horizontal, 24).padding(.top, 16)
                 ModelManagerView(store: store)
-                HStack {
-                    ProviderQueuedStopView(store: store, providerIsRunning: true)
-                    Button("Finish simulated work") { Task { await controller.finishWork() } }
-                }.padding()
+                Button("Finish simulated work") { Task { await controller.finishWork() } }
+                    .padding()
             }.frame(minWidth: 650, minHeight: 700).task { await store.refresh() }
         }
     }

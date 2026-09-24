@@ -145,7 +145,7 @@ final class DarkbloomMonitorAppDelegate: NSObject, NSApplicationDelegate, Observ
         ControlAppUpdater.shared.canRelaunch = { [weak providerControlStore] in
             guard let control = providerControlStore else { return true }
             return control.operation == .idle && control.draft?.hasChanges != true
-                && control.pendingConfirmation == nil && control.queuedStopState == nil
+                && control.pendingConfirmation == nil
         }
         ControlAppUpdater.shared.start()
         CLIUpdateStatusStore.shared.start()

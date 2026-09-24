@@ -37,7 +37,6 @@ final class ProviderControlStore: ObservableObject {
     @Published private(set) var operation: ProviderOperation = .idle
     @Published private(set) var operationPhase: ProviderMutationPhase?
     @Published private(set) var pendingConfirmation: LifecycleConfirmation?
-    @Published private(set) var queuedStopState: ProviderQueuedStopState?
     @Published private(set) var errorMessage: String?
     @Published private(set) var latestDownloadProgressLine: String?
 
@@ -46,48 +45,30 @@ final class ProviderControlStore: ObservableObject {
     private let refreshTelemetry: @MainActor @Sendable () async -> Void
     private let awaitStartup: @MainActor @Sendable (Date) async throws -> Void
     private let now: @Sendable () -> Date
-    private let queuedStopWait: @Sendable () async throws -> Void
     private var currentTask: Task<Void, Never>?
-    private var queuedStopTask: Task<Void, Never>?
     private var operationGeneration: UInt64 = 0
-    private var queuedStopGeneration: UInt64 = 0
 
     init(
         controller: any ProviderControlling,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         refreshTelemetry: @escaping @MainActor @Sendable () async -> Void = {},
         now: @escaping @Sendable () -> Date = { Date() },
-        awaitStartup: @escaping @MainActor @Sendable (Date) async throws -> Void = { _ in },
-        queuedStopWait: @escaping @Sendable () async throws -> Void = {
-            try await Task.sleep(for: .seconds(2))
-        }
+        awaitStartup: @escaping @MainActor @Sendable (Date) async throws -> Void = { _ in }
     ) {
         self.awaitStartup = awaitStartup
         self.controller = controller
         diagnosticSanitizer = UserDiagnosticSanitizer(homeDirectory: homeDirectory)
         self.refreshTelemetry = refreshTelemetry
         self.now = now
-        self.queuedStopWait = queuedStopWait
     }
 
     var canSave: Bool {
-        guard operation == .idle, queuedStopState == nil,
-              let draft, draft.hasChanges else { return false }
+        guard operation == .idle, let draft, draft.hasChanges else { return false }
         return draftValidationMessage == nil
     }
 
-    /// A queued stop reserves lifecycle mutation without holding the normal
-    /// operation slot while it waits for fresh activity evidence.
-    var canQueueStop: Bool {
-        operation == .idle
-            && pendingConfirmation == nil
-            && queuedStopState == nil
-            && draft?.hasChanges != true
-    }
-
     func canDownload(_ modelID: String) -> Bool {
-        guard operation == .idle, queuedStopState == nil,
-              hasFreshModelSources, let snapshot else { return false }
+        guard operation == .idle, hasFreshModelSources, let snapshot else { return false }
         return snapshot.inventory.available.contains {
             $0.catalogID == modelID && $0.issue == nil
         }
@@ -174,21 +155,18 @@ final class ProviderControlStore: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, modelID: String) {
-        guard queuedStopState == nil else { return }
         guard var draft else { return }
         Self.setMembership(enabled, modelID: modelID, in: &draft.selection.enabled)
         self.draft = draft
     }
 
     func setPreloaded(_ preloaded: Bool, modelID: String) {
-        guard queuedStopState == nil else { return }
         guard var draft else { return }
         Self.setMembership(preloaded, modelID: modelID, in: &draft.selection.preloaded)
         self.draft = draft
     }
 
     func setMaxModelSlots(_ maxModelSlots: Int) {
-        guard queuedStopState == nil else { return }
         guard var draft, maxModelSlots > 0 else { return }
         draft.maxModelSlots = maxModelSlots
         self.draft = draft
@@ -197,7 +175,6 @@ final class ProviderControlStore: ObservableObject {
     /// Stage the provider-wide CBv2 concurrent-request cap. Per-model TOML
     /// overrides remain untouched and continue to take precedence at runtime.
     func setEngineV2MaxConcurrent(_ engineV2MaxConcurrent: Int) {
-        guard queuedStopState == nil else { return }
         guard var draft, (1...24).contains(engineV2MaxConcurrent) else { return }
         draft.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.draft = draft
@@ -373,9 +350,11 @@ final class ProviderControlStore: ObservableObject {
             } catch is CancellationError {
                 // Cancellation leaves authoritative state unchanged.
             } catch let error as ProviderControlError {
-                errorMessage = controlErrorMessage(error, action: action.rawValue)
+                errorMessage = gracefulStopFailureMessage()
+                    ?? controlErrorMessage(error, action: action.rawValue)
             } catch {
-                errorMessage = "Could not \(action.rawValue) the provider."
+                errorMessage = gracefulStopFailureMessage()
+                    ?? "Could not \(action.rawValue) the provider."
             }
             finish(generation)
         }
@@ -417,10 +396,12 @@ final class ProviderControlStore: ObservableObject {
                 // Cancellation leaves authoritative state unchanged.
             } catch let error as ProviderControlError {
                 pendingConfirmation = nil
-                errorMessage = controlErrorMessage(error, action: action.rawValue)
+                errorMessage = gracefulStopFailureMessage()
+                    ?? controlErrorMessage(error, action: action.rawValue)
             } catch {
                 pendingConfirmation = nil
-                errorMessage = "Could not \(action.rawValue) the provider."
+                errorMessage = gracefulStopFailureMessage()
+                    ?? "Could not \(action.rawValue) the provider."
             }
             finish(generation)
         }
@@ -436,7 +417,6 @@ final class ProviderControlStore: ObservableObject {
         mutation: @escaping @Sendable () async throws -> Void
     ) async -> Bool {
         guard pendingConfirmation == nil, draft?.hasChanges != true,
-              queuedStopState == nil,
               let generation = begin(.saving) else { return false }
         var succeeded = false
         let task = Task { @MainActor [weak self] in
@@ -460,191 +440,12 @@ final class ProviderControlStore: ObservableObject {
         return succeeded
     }
 
-    /// Queue the native `stop` command until two consecutive fresh activity
-    /// reads report idle. A stale or unknown read only keeps the queue waiting;
-    /// it can never authorize the stop. The final read happens immediately
-    /// before dispatch, after which the CLI's own shutdown drain is authoritative.
-    func queueStopWhenIdle() {
-        guard canQueueStop else { return }
-
-        queuedStopGeneration &+= 1
-        let generation = queuedStopGeneration
-        queuedStopState = ProviderQueuedStopState(requestedAt: now())
-        errorMessage = nil
-        let controller = self.controller
-        queuedStopTask = Task { @MainActor [weak self] in
-            await self?.runQueuedStop(
-                controller: controller,
-                generation: generation
-            )
-        }
-    }
-
-    func cancelQueuedStop() {
-        guard queuedStopState?.phase == .waiting else { return }
-        queuedStopGeneration &+= 1
-        queuedStopTask?.cancel()
-        queuedStopTask = nil
-        queuedStopState = nil
-    }
-
     func cancelPendingLifecycle() {
         pendingConfirmation = nil
     }
 
     func cancelCurrentOperation() {
         currentTask?.cancel()
-    }
-
-    private func runQueuedStop(
-        controller: any ProviderControlling,
-        generation: UInt64
-    ) async {
-        defer {
-            if queuedStopGeneration == generation {
-                queuedStopTask = nil
-                if queuedStopState?.phase == .waiting {
-                    queuedStopState = nil
-                }
-            }
-        }
-
-        while !Task.isCancelled,
-              queuedStopGeneration == generation,
-              queuedStopState?.phase == .waiting
-        {
-            // These are all main-actor state reads. They protect the queue
-            // from a draft or confirmation appearing while it is waiting.
-            guard pendingConfirmation == nil,
-                  draft?.hasChanges != true
-            else {
-                queuedStopState = nil
-                return
-            }
-
-            // A read-only control refresh may overlap the queue. Wait for it
-            // to finish rather than treating the temporary busy state as a
-            // cancellation; mutation gates cannot start while the queue is
-            // reserved.
-            if operation != .idle {
-                do {
-                    try await queuedStopWait()
-                } catch {
-                    return
-                }
-                continue
-            }
-
-            let risk = await controller.activityRisk()
-            guard !Task.isCancelled, queuedStopGeneration == generation else {
-                return
-            }
-            recordQueuedStopObservation(
-                ProviderQueuedStopObservation(risk),
-                generation: generation
-            )
-
-            switch risk {
-            case .active, .unknown:
-                do {
-                    try await queuedStopWait()
-                } catch {
-                    return
-                }
-            case .idle:
-                // Re-read immediately before dispatch. This is intentionally
-                // separate from the poll cadence so a newly arriving request
-                // cannot be mistaken for the prior idle sample.
-                let finalRisk = await controller.activityRisk()
-                guard !Task.isCancelled, queuedStopGeneration == generation else {
-                    return
-                }
-                recordQueuedStopObservation(
-                    ProviderQueuedStopObservation(finalRisk),
-                    generation: generation
-                )
-                guard finalRisk == .idle else {
-                    do {
-                        try await queuedStopWait()
-                    } catch {
-                        return
-                    }
-                    continue
-                }
-                let dispatched = await dispatchQueuedStop(
-                    controller: controller,
-                    generation: generation
-                )
-                if dispatched { return }
-                do {
-                    try await queuedStopWait()
-                } catch {
-                    return
-                }
-            }
-        }
-    }
-
-    private func recordQueuedStopObservation(
-        _ observation: ProviderQueuedStopObservation,
-        generation: UInt64
-    ) {
-        guard queuedStopGeneration == generation,
-              let state = queuedStopState,
-              state.phase == .waiting
-        else { return }
-        queuedStopState = ProviderQueuedStopState(
-            requestedAt: state.requestedAt,
-            lastCheckedAt: now(),
-            lastObservation: observation
-        )
-    }
-
-    private func dispatchQueuedStop(
-        controller: any ProviderControlling,
-        generation: UInt64
-    ) async -> Bool {
-        guard queuedStopGeneration == generation,
-              queuedStopState?.phase == .waiting,
-              let operationGeneration = begin(
-                  .lifecycle(.stop),
-                  allowingQueuedStop: true
-              )
-        else {
-            return false
-        }
-
-        if let state = queuedStopState {
-            queuedStopState = ProviderQueuedStopState(
-                phase: .stopping,
-                requestedAt: state.requestedAt,
-                lastCheckedAt: state.lastCheckedAt,
-                lastObservation: .idle
-            )
-        }
-        let enabledModels = draft?.original.enabled
-            ?? snapshot?.draft.original.enabled
-            ?? []
-        do {
-            try await executeLifecycle(
-                .stop,
-                enabledModels: enabledModels,
-                generation: operationGeneration
-            )
-        } catch is CancellationError {
-            // Cancellation is intentionally silent; the native command's
-            // reconciliation still runs when it has already been dispatched.
-        } catch let error as ProviderControlError {
-            errorMessage = controlErrorMessage(error, action: "stop")
-        } catch {
-            errorMessage = "Could not stop the provider."
-        }
-        finish(operationGeneration)
-        if queuedStopGeneration == generation {
-            queuedStopTask = nil
-            queuedStopState = nil
-        }
-        return true
     }
 
     private func executeLifecycle(
@@ -720,17 +521,21 @@ final class ProviderControlStore: ObservableObject {
         accept(refreshed, preserving: draft)
     }
 
-    private func begin(
-        _ newOperation: ProviderOperation,
-        allowingQueuedStop: Bool = false
-    ) -> UInt64? {
-        guard operation == .idle else { return nil }
-        if !allowingQueuedStop,
-           newOperation != .refreshing,
-           queuedStopState != nil
-        {
-            return nil
+    private func gracefulStopFailureMessage() -> String? {
+        guard let lifecycle = snapshot?.daemonState?.lifecycle,
+              lifecycle.outcome == .draining
+        else { return nil }
+        guard let remaining = lifecycle.remainingRequests else {
+            return "Provider remains in graceful drain. New requests are paused; select Stop again to continue."
         }
+        if remaining == 0 {
+            return "Provider is confirming completed usage before shutdown. New requests are paused; select Stop again to continue."
+        }
+        return "Provider remains in graceful drain. \(remaining) accepted request(s) remain; new requests are paused. Select Stop again to continue."
+    }
+
+    private func begin(_ newOperation: ProviderOperation) -> UInt64? {
+        guard operation == .idle else { return nil }
         operationGeneration &+= 1
         operation = newOperation
         switch newOperation {

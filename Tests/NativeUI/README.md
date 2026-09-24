@@ -59,8 +59,8 @@ swiftc -target arm64-apple-macosx14.0 -parse-as-library -I .build/out/Products/D
 
 Supply a normal local app Info.plist with executable `CLI097Fixture` and identifier `dev.darkbloom.cli097fixture`. Native review on September 21 verified the corrected single-line idle field, typed 60-minute draft, Save becoming enabled then disabled, reread summary and restart-required feedback, MTP automatic-to-enabled state, and unknown feature read-only presentation. All changes stayed in the synthetic actor. This proves those view interactions, not live provider setting writes or macOS removable-volume access.
 
-## Models and queued-stop fixture
+## Models fixture
 
-`ModelsFixture.swift` hosts the production model editor and queued-stop view with an in-memory controller. It never reads provider files. Its Save action changes only synthetic values; Finish simulated work changes only fake activity. Compile against the debug telemetry library with ModelManagerView, ProviderControlStore, ProviderLifecycleControls, and ProviderQueuedStop. Use a separate app identifier and keep the synthetic banner visible.
+`ModelsFixture.swift` hosts the production model editor with an in-memory controller. It never reads provider files. Its Save action changes only synthetic values; Finish simulated work changes only fake activity. Compile against the debug telemetry library with ModelManagerView and ProviderControlStore. Use a separate app identifier and keep the synthetic banner visible.
 
-Native review verified populated cards, Capacity selection, unsaved changes, refresh preserving the draft, synthetic save, queue waiting while active, cancellation, and stop completion after simulated work ended. This is interaction proof, separate from real CLI/configuration integration tests and live drive access.
+Native review verified populated cards, Capacity selection, unsaved changes, refresh preserving the draft, and synthetic save. This is interaction proof, separate from real CLI/configuration integration tests and live drive access.

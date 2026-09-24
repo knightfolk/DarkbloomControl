@@ -379,10 +379,14 @@ struct ProviderControlServiceTests {
         let invocations = await harness.runner.lifecycleInvocations
         #expect(invocations.map(\.command.arguments) == [
             ["start", "--config", harness.configURL.path, "--model", "gemma-4-26b-qat-4bit", "--model", "gpt-oss-20b"],
-            ["stop"],
+            ["stop", "--timeout", "600"],
             ["start", "--config", harness.configURL.path, "--model", "gemma-4-26b-qat-4bit", "--model", "gpt-oss-20b"],
         ])
-        #expect(invocations.allSatisfy { $0.timeout == DarkbloomSourcePolicy.lifecycleTimeout })
+        #expect(invocations.map(\.timeout) == [
+            DarkbloomSourcePolicy.lifecycleTimeout,
+            DarkbloomSourcePolicy.stopCommandTimeout,
+            DarkbloomSourcePolicy.lifecycleTimeout,
+        ])
         #expect(invocations.allSatisfy { $0.outputLimit == DarkbloomSourcePolicy.mutationOutputByteLimit })
         #expect(invocations.allSatisfy { !$0.command.arguments.contains("--uninstall") })
     }
@@ -883,7 +887,7 @@ struct ProviderControlServiceTests {
 
         #expect(completion.snapshot != nil)
         #expect(await phases.values == [.reconciling])
-        #expect(await harness.runner.lifecycleInvocations.map(\.command.arguments) == [["stop"]])
+        #expect(await harness.runner.lifecycleInvocations.map(\.command.arguments) == [["stop", "--timeout", "600"]])
         #expect(await harness.runner.sourceArguments.count == 2)
         try await harness.service.execute(.stop, enabledModels: [])
     }
@@ -1123,7 +1127,7 @@ struct ProviderControlServiceTests {
         await harness.runner.releaseBlockedLocal()
         try await stop.value
 
-        #expect(await harness.runner.lifecycleInvocations.map(\.command.arguments) == [["stop"]])
+        #expect(await harness.runner.lifecycleInvocations.map(\.command.arguments) == [["stop", "--timeout", "600"]])
     }
 
 }

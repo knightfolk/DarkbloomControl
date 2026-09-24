@@ -48,7 +48,8 @@ release bundle; no Gatekeeper-disable or quarantine-removal workaround is needed
 - Clear saved-state labels for idle-memory, beta, and electricity settings
 - Starting/Restarting progress that blocks repeated clicks until fresh telemetry arrives
 - Signed automatic and manual Control updates, plus a separate read-only CLI update notice
-- Stop when idle with fresh activity checks, a visible pending state, and cancellation
+- Native graceful Stop pauses new work, drains accepted requests, and reports exact requests remaining
+- Provider resources include a system-wide GPU-use gauge and an honest running/draining request count
 - Opportunity cards with readable names, RAM checks, demand badges, and workload counts
 - Separate network-history charts with technical details available on demand
 - Saved versus advertised model selection, with an explicit restart warning when they differ
@@ -164,16 +165,20 @@ Changes remain staged until **Save Changes**; **Refresh** preserves edits and
 **Discard edits** reloads saved values. These settings use the official provider configuration. Manual live warming, staged replacement and
 automatic demand-based switching are not supported by this app.
 
-Stop and Restart require a customer-impact override when work is active or
-activity is unknown. Delete requires fresh residency evidence. Quitting the
-monitor stops its own work, not the provider.
+Stop and Restart require a customer-impact confirmation when work is active or
+activity is unknown. Stop uses the CLI's native graceful drain: it pauses new
+requests, completes accepted work, confirms usage, and then stops. The app waits
+up to ten minutes for the CLI drain; if work remains, the provider stays paused
+and draining, and the exact remaining count is shown so Stop can continue it.
+No force-cancel or uninstall option is used. Restart may interrupt work.
+Delete requires fresh residency evidence. Quitting the monitor stops its own
+work, not the provider.
 
-**Stop when idle**, in the menu-bar popup, queues a stop until fresh activity
-reports no running work, then checks again before dispatching the normal CLI
-stop. Unknown or stale activity never counts as idle. Cancel the request at any
-time while waiting. Keep the monitor open: queued stops are not saved across
-app quits. New work may arrive while it waits; after dispatch, the CLI performs
-its normal bounded graceful shutdown. No automatic restart is queued.
+Provider resources show a best-effort whole-Mac GPU utilization reading when
+macOS exposes it; it includes other apps and is not attributed to Darkbloom.
+During normal serving, the request indicator shows `1+` when inference is active
+because the daemon reports activity but not an exact live count. During native
+drain, it shows the exact accepted requests remaining.
 
 Idle-memory and beta controls use official CLI commands and require a restart to
 apply. They share the model/lifecycle action gate and cannot overwrite a staged

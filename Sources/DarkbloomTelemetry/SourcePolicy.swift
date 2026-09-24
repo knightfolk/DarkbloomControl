@@ -8,6 +8,10 @@ public struct DarkbloomSourcePolicy: Equatable, Sendable {
     public static let processOutputByteLimit = 256 * 1_024
     public static let processTimeout: Duration = .seconds(3)
     public static let lifecycleTimeout: Duration = .seconds(30)
+    /// Darkbloom's native stop may wait ten minutes for accepted work and usage acknowledgement.
+    public static let stopDrainTimeoutSeconds = 600
+    /// Give the stop command additional time to finish after its own drain deadline.
+    public static let stopCommandTimeout: Duration = .seconds(630)
     public static let catalogTimeout: Duration = .seconds(15)
     public static let downloadTimeout: Duration = .seconds(21_600)
     public static let mutationOutputByteLimit = 1_048_576
@@ -88,6 +92,11 @@ public enum DarkbloomCommand {
         for model in models { args += ["--model", model] }
         return ProcessCommand(executable: executable, arguments: args)
     }
-    public static func stop(executable: URL) -> ProcessCommand { ProcessCommand(executable: executable, arguments: ["stop"]) }
+    public static func stop(executable: URL) -> ProcessCommand {
+        ProcessCommand(
+            executable: executable,
+            arguments: ["stop", "--timeout", String(DarkbloomSourcePolicy.stopDrainTimeoutSeconds)]
+        )
+    }
     public static func restart(executable: URL, config: URL) -> ProcessCommand { ProcessCommand(executable: executable, arguments: ["restart", "--config", config.path]) }
 }

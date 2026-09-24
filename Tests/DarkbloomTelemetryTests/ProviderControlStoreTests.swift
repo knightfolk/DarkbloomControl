@@ -991,6 +991,23 @@ struct ProviderControlStoreTests {
         #expect(await controller.activityReadCount == 2)
     }
 
+    @Test("confirmed active stop dispatches the native drain without waiting for idle")
+    func confirmedActiveStopDispatchesNativeDrain() async throws {
+        let controller = FakeProviderController.fixture(activityRisks: [.active, .active])
+        let store = ProviderControlStore(controller: controller)
+        await store.refresh()
+
+        await store.request(.stop)
+        #expect(store.pendingConfirmation == .stop(.active))
+        #expect(await controller.executedActions.isEmpty)
+
+        await store.confirmPendingLifecycle()
+
+        #expect(await controller.executedActions.map(\.action) == [.stop])
+        #expect(await controller.activityReadCount == 2)
+        #expect(store.pendingConfirmation == nil)
+    }
+
     @Test("idle lifecycle runs only after an immediate second idle read")
     func doubleChecksIdle() async throws {
         let controller = FakeProviderController.fixture(activityRisks: [.idle, .idle])
@@ -1685,7 +1702,7 @@ case "$1:$2" in
         /usr/bin/printf delete > "$root/mutation.sentinel"
         /usr/bin/printf deleted > "$root/model-state"
         ;;
-    "stop:")
+    "stop:--timeout")
         /usr/bin/printf lifecycle > "$root/mutation.sentinel"
         /usr/bin/printf stopped > "$root/model-state"
         ;;

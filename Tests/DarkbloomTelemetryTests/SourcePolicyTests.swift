@@ -49,7 +49,9 @@ struct SourcePolicyTests {
         ]
 
         #expect(commands.allSatisfy { $0.executable == executable })
-        #expect(DarkbloomCommand.stop(executable: executable).arguments == ["stop"])
+        #expect(DarkbloomCommand.stop(executable: executable).arguments == ["stop", "--timeout", "600"])
+        #expect(DarkbloomCommand.stop(executable: executable).arguments.contains("--timeout"))
+        #expect(!DarkbloomCommand.stop(executable: executable).arguments.contains("--force"))
         #expect(!DarkbloomCommand.stop(executable: executable).arguments.contains("--uninstall"))
         #expect(DarkbloomCommand.start(executable: executable, config: config, models: ["first", "second"]).arguments == [
             "start", "--config", config.path, "--model", "first", "--model", "second",
@@ -66,6 +68,8 @@ struct SourcePolicyTests {
         #expect(DarkbloomSourcePolicy.processOutputByteLimit == 262_144)
         #expect(DarkbloomSourcePolicy.processTimeout == .seconds(3))
         #expect(DarkbloomSourcePolicy.lifecycleTimeout == .seconds(30))
+        #expect(DarkbloomSourcePolicy.stopDrainTimeoutSeconds == 600)
+        #expect(DarkbloomSourcePolicy.stopCommandTimeout == .seconds(630))
         #expect(DarkbloomSourcePolicy.catalogTimeout == .seconds(15))
         #expect(DarkbloomSourcePolicy.downloadTimeout == .seconds(21_600))
         #expect(DarkbloomSourcePolicy.mutationOutputByteLimit == 1_048_576)

@@ -71,7 +71,14 @@ public enum DaemonStateParser {
                         occurredAt: nil
                     )
                 }
-            )
+            ),
+            lifecycle: raw.lifecycle.map {
+                ProviderLifecycleState(
+                    outcome: ProviderLifecycleOutcome(rawValue: $0.outcome ?? ""),
+                    remainingRequests: $0.remaining,
+                    coordinatorAcknowledged: $0.coordinatorAcknowledged
+                )
+            }
         )
     }
 }
@@ -118,6 +125,7 @@ private struct RawDaemonState: Decodable {
     let writtenAt: TimeInterval
     let processIdentity: RawProcessIdentity
     let lastModelLoadError: RawModelLoadError?
+    let lifecycle: RawLifecycle?
 
     enum CodingKeys: String, CodingKey {
         case schema, stats, version, trust, pid, capacity, slots
@@ -126,6 +134,7 @@ private struct RawDaemonState: Decodable {
         case advertisedModels = "advertised_models"
         case coordinatorURL = "coordinator_url"
         case lastModelLoadError = "last_model_load_error"
+        case lifecycle
         case inferenceActive = "inference_active"
         case startedAt = "started_at"
         case writtenAt = "written_at"
@@ -150,6 +159,25 @@ private struct RawDaemonState: Decodable {
         writtenAt = try values.decode(TimeInterval.self, forKey: .writtenAt)
         processIdentity = try values.decode(RawProcessIdentity.self, forKey: .processIdentity)
         lastModelLoadError = try values.decodeIfPresent(RawModelLoadError.self, forKey: .lastModelLoadError)
+        lifecycle = try? values.decode(RawLifecycle.self, forKey: .lifecycle)
+    }
+}
+
+private struct RawLifecycle: Decodable {
+    let outcome: String?
+    let remaining: Int?
+    let coordinatorAcknowledged: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case outcome, remaining
+        case coordinatorAcknowledged = "coordinator_acknowledged"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        outcome = try? values.decode(String.self, forKey: .outcome)
+        remaining = try? values.decode(Int.self, forKey: .remaining)
+        coordinatorAcknowledged = try? values.decode(Bool.self, forKey: .coordinatorAcknowledged)
     }
 }
 

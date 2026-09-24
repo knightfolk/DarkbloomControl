@@ -224,19 +224,26 @@ struct LifecycleConfirmationPresentation: Equatable {
     let confirmLabel: String
 
     static func make(_ confirmation: LifecycleConfirmation) -> Self {
-        let body = switch confirmation.risk {
-        case .active:
+        let isStop = confirmation.action == .stop
+        let body = switch (confirmation.action, confirmation.risk) {
+        case (.stop, .active):
+            "Darkbloom will pause new requests, finish accepted requests, and then stop. This may take several minutes."
+        case (.stop, .unknown):
+            "Activity is unavailable. Darkbloom's native Stop will pause new requests, finish accepted requests, and then stop. This may take several minutes."
+        case (.stop, .idle):
+            "Darkbloom reports no active customer job. Native Stop will still pause new work before shutting down."
+        case (_, .active):
             "A customer job is currently running. Continuing will interrupt it."
-        case .unknown:
+        case (_, .unknown):
             "Darkbloom Control cannot confirm whether a customer job is running. Continuing may interrupt customer work."
-        case .idle:
+        case (_, .idle):
             "Darkbloom reports no active customer job."
         }
         let confirmLabel = switch confirmation.risk {
         case .unknown:
-            "Continue Anyway"
+            isStop ? "Drain & Stop" : "Continue Anyway"
         case .active, .idle:
-            confirmation.action == .stop ? "Stop Anyway" : "Restart Anyway"
+            isStop ? "Drain & Stop" : "Restart Anyway"
         }
         if case .restartSelection(_, let comparison) = confirmation {
             let advertised = comparison.advertised.map { $0.joined(separator: ", ") } ?? "not currently verified"
@@ -247,7 +254,7 @@ struct LifecycleConfirmationPresentation: Equatable {
                         confirmLabel: "Restart with Saved Models")
         }
         return Self(
-            title: "Customer work may be interrupted",
+            title: isStop ? "Drain and stop the provider?" : "Customer work may be interrupted",
             body: body,
             confirmLabel: confirmLabel
         )
@@ -359,7 +366,9 @@ struct ProviderLifecycleControls: View {
                     Text(action == .stop ? "Stopping…" : action == .restart ? "Restarting…" : "Starting…")
                         .font(.callout.weight(.semibold))
                 }
-                Text(action == .stop ? "Waiting for the provider to stop." : "Waiting for the provider. Models may take a moment to load.")
+                Text(action == .stop
+                    ? "Pausing new requests and draining accepted work. This can take several minutes."
+                    : "Waiting for the provider. Models may take a moment to load.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -380,8 +389,7 @@ struct ProviderLifecycleControls: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(store.queuedStopState != nil
-                        || !control.isEnabled(in: presentation))
+                    .disabled(!control.isEnabled(in: presentation))
                     .help(control.accessibilityLabel)
                     .accessibilityLabel(control.accessibilityLabel)
                     .accessibilityIdentifier(control.accessibilityIdentifier)
@@ -406,11 +414,6 @@ struct ProviderLifecycleControls: View {
                     .accessibilityIdentifier(reason.accessibilityIdentifier)
             }
 
-            ProviderQueuedStopView(
-                store: store,
-                providerIsRunning: presentation.canStop,
-                currentTime: currentTime
-            )
         }
         .frame(
             maxWidth: ProviderLifecycleUnavailableReasonPresentation.maxWidth,
