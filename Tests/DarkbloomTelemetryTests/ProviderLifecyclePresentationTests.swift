@@ -836,15 +836,16 @@ struct ProviderLifecyclePresentationTests {
         let coordinator = LifecycleConfirmationDismissalCoordinator()
         let state = ConfirmationDismissalState()
 
-        state.scheduleCancellation(on: coordinator)
-        state.scheduleCancellation(on: coordinator)
-        await drainScheduledCancellation()
+        let supersededCancellation = state.scheduleCancellation(on: coordinator)
+        let currentCancellation = state.scheduleCancellation(on: coordinator)
+        await supersededCancellation.value
+        await currentCancellation.value
 
         #expect(state.cancellationCount == 1)
         #expect(!state.pending)
 
-        state.scheduleCancellation(on: coordinator)
-        await drainScheduledCancellation()
+        let repeatedCancellation = state.scheduleCancellation(on: coordinator)
+        await repeatedCancellation.value
         #expect(state.cancellationCount == 1)
     }
 
@@ -854,9 +855,9 @@ struct ProviderLifecyclePresentationTests {
         let coordinator = LifecycleConfirmationDismissalCoordinator()
         let state = ConfirmationDismissalState()
 
-        state.scheduleCancellation(on: coordinator)
+        let cancellation = state.scheduleCancellation(on: coordinator)
         state.cancel()
-        await drainScheduledCancellation()
+        await cancellation.value
 
         #expect(state.cancellationCount == 1)
     }
@@ -868,9 +869,9 @@ struct ProviderLifecyclePresentationTests {
             LifecycleConfirmationDismissalCoordinator()
         let state = ConfirmationDismissalState()
 
-        state.scheduleCancellation(on: coordinator!)
+        let cancellation = state.scheduleCancellation(on: coordinator!)
         coordinator = nil
-        await drainScheduledCancellation()
+        await cancellation.value
 
         #expect(state.cancellationCount == 1)
         #expect(!state.pending)
@@ -882,9 +883,9 @@ struct ProviderLifecyclePresentationTests {
         let coordinator = LifecycleConfirmationDismissalCoordinator()
         let state = ConfirmationDismissalState()
 
-        state.scheduleCancellation(on: coordinator)
+        let cancellation = state.scheduleCancellation(on: coordinator)
         coordinator.beginConfirmation()
-        await drainScheduledCancellation()
+        await cancellation.value
 
         #expect(state.cancellationCount == 0)
         #expect(state.pending)
@@ -900,21 +901,14 @@ struct ProviderLifecyclePresentationTests {
         let state = ConfirmationDismissalState()
 
         coordinator.beginConfirmation()
-        state.scheduleCancellation(on: coordinator)
-        await drainScheduledCancellation()
+        let cancellation = state.scheduleCancellation(on: coordinator)
+        await cancellation.value
 
         #expect(state.cancellationCount == 0)
         #expect(state.pending)
 
         state.completeConfirmation()
         coordinator.endConfirmation()
-    }
-
-    @MainActor
-    private func drainScheduledCancellation() async {
-        for _ in 0..<4 {
-            await Task.yield()
-        }
     }
 }
 
@@ -1102,7 +1096,9 @@ private final class ConfirmationDismissalState {
     private(set) var pending = true
     private(set) var cancellationCount = 0
 
-    func scheduleCancellation(on coordinator: LifecycleConfirmationDismissalCoordinator) {
+    func scheduleCancellation(
+        on coordinator: LifecycleConfirmationDismissalCoordinator
+    ) -> Task<Void, Never> {
         coordinator.scheduleCancellation(
             isPending: { self.pending },
             cancel: { self.cancel() }

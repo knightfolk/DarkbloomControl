@@ -279,13 +279,14 @@ final class LifecycleConfirmationDismissalCoordinator {
         confirmationInProgress = false
     }
 
+    @discardableResult
     func scheduleCancellation(
         isPending: @escaping @MainActor () -> Bool,
         cancel: @escaping @MainActor () -> Void
-    ) {
+    ) -> Task<Void, Never> {
         generation &+= 1
         let scheduledGeneration = generation
-        Task { @MainActor in
+        return Task { @MainActor in
             await Task.yield()
             guard generation == scheduledGeneration,
                   !confirmationInProgress,
