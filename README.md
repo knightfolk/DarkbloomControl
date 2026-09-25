@@ -214,8 +214,7 @@ does not claim to verify the applied runtime configuration through private APIs.
 - Chat is a first non-streaming version with cancellation; responses arrive
   as a single completion. The paid network route's balance display is
   advisory only — the network decides reservation sufficiency per request,
-  and HTTP 402 is final. Chat is available on this unreleased
-  `codex/chat-routing` worktree only.
+  and HTTP 402 is final.
 - Only the official CLI is supported; do not install a custom provider branch
   to enable monitor features. Live streaming throughput and protected model
   switching are not available.
