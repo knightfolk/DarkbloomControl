@@ -3,6 +3,33 @@
     <channel>
         <title>Darkbloom Control</title>
         <item>
+            <title>1.6.0</title>
+            <pubDate>Thu, 24 Sep 2026 22:19:53 -0700</pubDate>
+            <sparkle:version>120</sparkle:version>
+            <sparkle:shortVersionString>1.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Darkbloom Control v1.6.0
+
+- Add Chat inside the dashboard and in a separate resizable window. Both views
+  share one in-memory conversation; prompts and replies are discarded on quit.
+- Make the destination explicit for each new conversation. Local hosting is the
+  default. If the local endpoint is unavailable, sending stays disabled until
+  you choose another destination; chat never switches to the paid network on
+  its own.
+- Add an opt-in Darkbloom network route with a clear paid-inference warning,
+  consumer balance and pricing information, and a fresh balance check before
+  each send. The network can still reject a request when credits are
+  insufficient. The consumer API key is stored in the macOS Keychain.
+- Add local hosting controls for loopback or LAN access, model selection, and
+  optional endpoint bearer authentication. Chat also supports a local endpoint
+  intentionally configured without a bearer token.
+- Keep beta review builds separate from the installed app's preferences,
+  history, and single-instance lock so they can run side by side.
+]]></description>
+            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.6.0/Darkbloom-Control-1.6.0-mac-arm64.zip" length="6187574" type="application/octet-stream" sparkle:edSignature="mQcmhGMHFD3Mlcu1QwmxuJRhiJ7t78r074vPdGBlJW0L81FI2Srq4rJQKgrwhzOED4lcRNnNS0sv5cdV1MURAA=="/>
+        </item>
+        <item>
             <title>1.5.0</title>
             <pubDate>Thu, 24 Sep 2026 12:00:14 -0700</pubDate>
             <sparkle:version>118</sparkle:version>
