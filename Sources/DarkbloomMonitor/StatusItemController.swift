@@ -114,14 +114,21 @@ private final class PassthroughHostingView<Content: View>: NSHostingView<Content
 
 private struct StatusItemRootView: View {
     @ObservedObject var store: MonitorStore
+    @ObservedObject private var gpuUsage: SystemGPUUsageStore
     @AppStorage("menuBarDisplayMode") private var displayModeRaw = MenuBarDisplayMode.automatic.rawValue
+
+    init(store: MonitorStore) {
+        self.store = store
+        self.gpuUsage = store.gpuUsage
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
             MenuBarLabel(
                 presentation: store.menuPresentation(mode: displayMode),
                 uptime: store.observedUptime,
-                family: ModelFamilyIcon.select(snapshot: store.snapshot, now: Date())
+                family: ModelFamilyIcon.select(snapshot: store.snapshot, now: Date()),
+                ring: store.menuGPURing()
             )
             .frame(maxWidth: .infinity, alignment: .leading)
         }

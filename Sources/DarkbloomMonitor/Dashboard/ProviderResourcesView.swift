@@ -5,9 +5,16 @@ import SwiftUI
 struct ProviderResourcesView: View {
     @ObservedObject var store: MonitorStore
     @StateObject private var cpuUsage = SystemCPUUsageStore()
-    @StateObject private var gpuUsage = SystemGPUUsageStore()
+    /// The dashboard shares the app-lifecycle GPU sampler with the menu-bar
+    /// ring instead of owning a competing one.
+    @ObservedObject private var gpuUsage: SystemGPUUsageStore
 
     private let columns = [GridItem(.adaptive(minimum: 220), spacing: 10)]
+
+    init(store: MonitorStore) {
+        self.store = store
+        self.gpuUsage = store.gpuUsage
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -31,11 +38,9 @@ struct ProviderResourcesView: View {
         .accessibilityIdentifier("provider-resources")
         .task {
             cpuUsage.start()
-            gpuUsage.start()
         }
         .onDisappear {
             cpuUsage.stop()
-            gpuUsage.stop()
         }
     }
 

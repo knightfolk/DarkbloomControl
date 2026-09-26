@@ -1,0 +1,821 @@
+{
+  "upstream_revision": "b6f9574ed40a5e1f8b8fb288224ea3de88d1be98",
+  "source": "coordinator/api/server.go",
+  "note": "Source registrations only. Handler-level authorization, payload validation, availability, and charging still apply. No endpoint was invoked to generate this inventory. The method-agnostic /v1/ catch-all is excluded.",
+  "route_count": 115,
+  "method_counts": {
+    "GET": 60,
+    "POST": 40,
+    "DELETE": 9,
+    "PATCH": 1,
+    "PUT": 5
+  },
+  "admin_prefix_count": 41,
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/install.sh",
+      "line": 2641,
+      "registration": "func(w http.ResponseWriter, r *http.Request) {",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2641"
+    },
+    {
+      "method": "GET",
+      "path": "/health",
+      "line": 2649,
+      "registration": "s.handleHealth)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2649"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/cache/status",
+      "line": 2652,
+      "registration": "s.handleExactCacheStatus)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2652"
+    },
+    {
+      "method": "GET",
+      "path": "/readyz",
+      "line": 2657,
+      "registration": "s.handleReadyz)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2657"
+    },
+    {
+      "method": "GET",
+      "path": "/ws/provider",
+      "line": 2660,
+      "registration": "s.handleProviderWS)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2660"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/auth/keys",
+      "line": 2664,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleCreateKey)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2664"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/auth/keys",
+      "line": 2665,
+      "registration": "s.requirePrivyAuth(s.handleRevokeKey))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2665"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/keys",
+      "line": 2670,
+      "registration": "s.requirePrivyAuth(s.handleListAPIKeys))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2670"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/keys",
+      "line": 2671,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleCreateAPIKey)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2671"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/keys/{id}",
+      "line": 2672,
+      "registration": "s.requirePrivyAuth(s.handleGetAPIKey))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2672"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v1/keys/{id}",
+      "line": 2673,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleUpdateAPIKey)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2673"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/keys/{id}",
+      "line": 2674,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteAPIKey)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2674"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/keys/{id}/rotate",
+      "line": 2675,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleRotateAPIKey)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2675"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/key",
+      "line": 2677,
+      "registration": "s.requireAuth(s.handleGetCallingKey))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2677"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "line": 2697,
+      "registration": "s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2697"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/responses",
+      "line": 2698,
+      "registration": "s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API \u2014 same handler, auto-detects input vs messages",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2698"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/completions",
+      "line": 2699,
+      "registration": "s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2699"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/messages",
+      "line": 2700,
+      "registration": "s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages)))))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2700"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/models",
+      "line": 2701,
+      "registration": "s.requireAuth(s.handleListModels))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2701"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/models/openrouter",
+      "line": 2703,
+      "registration": "s.requireAuth(s.handleListModelsOpenRouter))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2703"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/models/{id...}",
+      "line": 2706,
+      "registration": "s.requireAuth(s.handleGetModel))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2706"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/encryption-key",
+      "line": 2711,
+      "registration": "s.handleEncryptionKey)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2711"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/mdm/webhook",
+      "line": 2714,
+      "registration": "s.HandleMDMWebhook)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2714"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/payments/balance",
+      "line": 2717,
+      "registration": "s.requireAuth(s.handleBalance))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2717"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/payments/usage",
+      "line": 2718,
+      "registration": "s.requireAuth(s.handleUsage))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2718"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/provider/earnings",
+      "line": 2721,
+      "registration": "s.handleProviderEarnings)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2721"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/provider/account-earnings",
+      "line": 2723,
+      "registration": "s.requireAuth(s.handleAccountEarnings))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2723"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/me/providers",
+      "line": 2726,
+      "registration": "s.requirePrivyAuth(s.handleMyProviders))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2726"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/me/token-promotions",
+      "line": 2727,
+      "registration": "s.requirePrivyAuth(s.handleMyModelTokenPromotions))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2727"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/me/token-promotions/claim",
+      "line": 2728,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleMyModelTokenPromotions)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2728"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/token-promotions",
+      "line": 2729,
+      "registration": "s.handleAdminModelTokenPromotions)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2729"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/admin/token-promotions",
+      "line": 2730,
+      "registration": "s.handleAdminModelTokenPromotions)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2730"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/me/summary",
+      "line": 2731,
+      "registration": "s.requirePrivyAuth(s.handleMySummary))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2731"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/me/self-route-models",
+      "line": 2733,
+      "registration": "s.requirePrivyAuth(s.handleMySelfRouteModels))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2733"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/me/providers/{id}",
+      "line": 2735,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2735"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/enroll",
+      "line": 2740,
+      "registration": "s.handleEnroll)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2740"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/providers/attestation",
+      "line": 2744,
+      "registration": "s.handleProviderAttestation)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2744"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/models/capacity",
+      "line": 2747,
+      "registration": "s.handleModelsCapacity)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2747"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/stats",
+      "line": 2750,
+      "registration": "s.handleStats)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2750"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/leaderboard",
+      "line": 2754,
+      "registration": "s.handleLeaderboard)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2754"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/network/totals",
+      "line": 2755,
+      "registration": "s.handleNetworkTotals)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2755"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/network/series",
+      "line": 2756,
+      "registration": "s.handleNetworkSeries)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2756"
+    },
+    {
+      "method": "GET",
+      "path": "/api/version",
+      "line": 2759,
+      "registration": "s.handleVersion)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2759"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/releases",
+      "line": 2762,
+      "registration": "s.handleRegisterRelease)     // scoped release key (GitHub Action)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2762"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/releases/latest",
+      "line": 2763,
+      "registration": "s.handleLatestRelease) // public (install.sh)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2763"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/device/code",
+      "line": 2766,
+      "registration": "s.handleDeviceCode)   // no auth \u2014 provider not yet authenticated",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2766"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/device/token",
+      "line": 2767,
+      "registration": "s.handleDeviceToken) // no auth \u2014 polls with device_code secret",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2767"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/device/approve",
+      "line": 2771,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeviceApprove)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2771"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/billing/stripe/create-session",
+      "line": 2777,
+      "registration": "s.requireAuth(s.rateLimitFinancial(s.handleStripeCreateSession)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2777"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/billing/stripe/webhook",
+      "line": 2778,
+      "registration": "s.handleStripeWebhook) // no auth \u2014 Stripe signs it",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2778"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/billing/stripe/session",
+      "line": 2779,
+      "registration": "s.requireAuth(s.handleStripeSessionStatus))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2779"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/billing/wallet/balance",
+      "line": 2782,
+      "registration": "s.requireAuth(s.handleWalletBalance))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2782"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/billing/stripe/quote",
+      "line": 2785,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleGlobalPayoutQuote)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2785"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/billing/stripe/global/webhook",
+      "line": 2786,
+      "registration": "s.handleGlobalPayoutWebhook)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2786"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/billing/stripe/onboard",
+      "line": 2788,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeOnboard)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2788"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/billing/stripe/status",
+      "line": 2789,
+      "registration": "s.requireAuth(s.handleStripeStatus))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2789"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/billing/withdraw/stripe",
+      "line": 2790,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeWithdraw)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2790"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/billing/stripe/withdrawals",
+      "line": 2791,
+      "registration": "s.requireAuth(s.handleStripeWithdrawals))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2791"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/billing/stripe/dashboard",
+      "line": 2802,
+      "registration": "s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeDashboardLink)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2802"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/billing/stripe/account",
+      "line": 2803,
+      "registration": "s.requirePrivyAuth(s.handleStripeUnlink))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2803"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/billing/stripe/connect/webhook",
+      "line": 2804,
+      "registration": "s.handleStripeConnectWebhook) // no auth \u2014 Stripe signs it",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2804"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/pricing",
+      "line": 2807,
+      "registration": "s.handleGetPricing)                        // public",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2807"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/pricing",
+      "line": 2808,
+      "registration": "s.requireAuth(s.handleSetPricing))         // provider sets own prices",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2808"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/pricing",
+      "line": 2809,
+      "registration": "s.requireAuth(s.handleDeletePricing))   // revert to default",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2809"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/admin/pricing",
+      "line": 2810,
+      "registration": "s.requireAuth(s.handleAdminPricing)) // platform sets defaults",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2810"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/admin/users/role",
+      "line": 2813,
+      "registration": "s.requireAuth(s.handleAdminSetUserRole))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2813"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/admin/users/platform-fee",
+      "line": 2814,
+      "registration": "s.requireAuth(s.handleAdminSetUserPlatformFee))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2814"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/models/register",
+      "line": 2819,
+      "registration": "s.handleRegisterModel)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2819"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/models/openrouter-aliases",
+      "line": 2822,
+      "registration": "s.handleOpenRouterAliasList)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2822"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/models/openrouter-aliases",
+      "line": 2823,
+      "registration": "s.handleOpenRouterAliasUpsert)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2823"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/admin/models/openrouter-aliases/{aliasID}",
+      "line": 2824,
+      "registration": "s.handleOpenRouterAliasDelete)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2824"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/models/aliases",
+      "line": 2827,
+      "registration": "s.handleModelAliasList)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2827"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/models/aliases",
+      "line": 2828,
+      "registration": "s.handleModelAliasUpsert)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2828"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/admin/models/aliases/{aliasID}",
+      "line": 2829,
+      "registration": "s.handleModelAliasDelete)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2829"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/models/",
+      "line": 2830,
+      "registration": "s.handleAdminModelRegistryAction)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2830"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/releases",
+      "line": 2831,
+      "registration": "s.handleAdminListReleases) // admin key or Privy admin",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2831"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/app-attest/revoke",
+      "line": 2832,
+      "registration": "s.handleAdminAppAttestRevoke)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2832"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/app-attest/builds",
+      "line": 2833,
+      "registration": "s.requireAuth(s.handleAdminAppAttestBuilds))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2833"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/app-attest/builds",
+      "line": 2834,
+      "registration": "s.requireAuth(s.handleAdminAppAttestBuilds))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2834"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/app-attest/builds/revoke",
+      "line": 2835,
+      "registration": "s.requireAuth(s.handleAdminAppAttestBuildRevoke))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2835"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/admin/releases",
+      "line": 2836,
+      "registration": "s.handleAdminDeleteRelease) // admin key or Privy admin",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2836"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/state-export",
+      "line": 2843,
+      "registration": "s.handleAdminStateExport)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2843"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/auth/init",
+      "line": 2846,
+      "registration": "s.handleAdminAuthInit)     // no auth (sends OTP)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2846"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/auth/verify",
+      "line": 2847,
+      "registration": "s.handleAdminAuthVerify) // no auth (returns token)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2847"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/models/catalog",
+      "line": 2850,
+      "registration": "s.handleModelCatalog)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2850"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/models/catalog/manifest/",
+      "line": 2851,
+      "registration": "s.handleModelCatalogManifest)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2851"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/models/catalog/",
+      "line": 2852,
+      "registration": "s.handleModelCatalogItem)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2852"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/runtime/manifest",
+      "line": 2855,
+      "registration": "s.handleRuntimeManifest)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2855"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/billing/methods",
+      "line": 2858,
+      "registration": "s.handleBillingMethods) // no auth needed",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2858"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/referral/register",
+      "line": 2862,
+      "registration": "s.requireAuth(s.rateLimitFinancial(s.handleReferralRegister)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2862"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/referral/apply",
+      "line": 2863,
+      "registration": "s.requireAuth(s.rateLimitFinancial(s.handleReferralApply)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2863"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/referral/stats",
+      "line": 2864,
+      "registration": "s.requireAuth(s.handleReferralStats))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2864"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/referral/info",
+      "line": 2865,
+      "registration": "s.requireAuth(s.handleReferralInfo))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2865"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/invite-codes",
+      "line": 2872,
+      "registration": "s.requireAuth(s.rateLimitFinancial(s.handleAdminCreateInviteCode)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2872"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/invite-codes",
+      "line": 2873,
+      "registration": "s.requireAuth(s.handleAdminListInviteCodes))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2873"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/admin/invite-codes",
+      "line": 2874,
+      "registration": "s.requireAuth(s.handleAdminDeactivateInviteCode))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2874"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/invite/redeem",
+      "line": 2878,
+      "registration": "s.requireAuth(s.rateLimitFinancial(s.handleRedeemInviteCode)))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2878"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/credit",
+      "line": 2881,
+      "registration": "s.requireAuth(s.handleAdminCredit))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2881"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/reward",
+      "line": 2882,
+      "registration": "s.requireAuth(s.handleAdminReward))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2882"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/telemetry/events",
+      "line": 2887,
+      "registration": "s.handleTelemetryIngest)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2887"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/provider/log-report",
+      "line": 2890,
+      "registration": "s.requireAuth(s.handleUploadLogReport))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2890"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/log-reports/{id}",
+      "line": 2891,
+      "registration": "s.requireAuth(s.handleGetLogReport))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2891"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/metrics",
+      "line": 2894,
+      "registration": "s.handleAdminMetrics)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2894"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/base-rewards",
+      "line": 2895,
+      "registration": "s.handleAdminBaseRewards)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2895"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/utilization",
+      "line": 2899,
+      "registration": "s.handleAdminUtilization)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2899"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/drain",
+      "line": 2909,
+      "registration": "s.requireAuth(s.handleAdminDrain))",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2909"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/routes",
+      "line": 2915,
+      "registration": "s.handleAdminRoutes)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2915"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/routes/export",
+      "line": 2916,
+      "registration": "s.handleAdminRoutesExport)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2916"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/profiles",
+      "line": 2917,
+      "registration": "s.handleAdminProfiles)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2917"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/request-outcomes",
+      "line": 2918,
+      "registration": "s.handleAdminRequestOutcomes)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2918"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/profiles/export",
+      "line": 2919,
+      "registration": "s.handleAdminProfilesExport)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2919"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/snapshots",
+      "line": 2920,
+      "registration": "s.handleAdminSnapshots)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2920"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/snapshots/export",
+      "line": 2921,
+      "registration": "s.handleAdminSnapshotsExport)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2921"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/rejections",
+      "line": 2922,
+      "registration": "s.handleAdminRejections)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2922"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/rejections/export",
+      "line": 2923,
+      "registration": "s.handleAdminRejectionsExport)",
+      "source_url": "https://github.com/Layr-Labs/d-inference/blob/b6f9574ed40a5e1f8b8fb288224ea3de88d1be98/coordinator/api/server.go#L2923"
+    }
+  ]
+}

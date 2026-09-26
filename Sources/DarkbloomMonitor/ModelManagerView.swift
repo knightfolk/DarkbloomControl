@@ -58,20 +58,14 @@ enum ModelManagerPresentation {
             : "\(ramFit) · provider features unverified"
     }
 
-    static func maximumRunPercent(modelID: String, selected: [String: Int]) -> Int {
-        let assignedElsewhere = selected.reduce(into: 0) { total, item in
-            guard item.key != modelID else { return }
-            total += min(100, max(0, item.value))
-        }
-        return max(0, 100 - assignedElsewhere)
-    }
-
-    static func totalRunPercent(_ selected: [String: Int]) -> Int {
-        min(100, selected.values.reduce(0) { $0 + min(100, max(0, $1)) })
-    }
-
     static func runHoursPerDay(percent: Int) -> Double {
         24 * Double(min(100, max(0, percent))) / 100
+    }
+
+    /// The one clear entry action every compact card offers to its shared
+    /// details/forecast sheet, alongside its real hosting controls.
+    static func compactEntryActionLabel(for item: ModelInventoryItem) -> String {
+        item.isDownloaded ? "Manage" : "Details"
     }
 
     static func opportunityGrade(modelID: String, peers: [ModelOpportunitySignal]) -> String? {
@@ -169,6 +163,64 @@ struct ModelManagerTelemetry {
     var tokenRates: [ModelTokenRateAverage] = []
     var servingAverages: [ModelServingProfitAverage] = []
     var networkCapacity: NetworkCapacitySnapshot?
+}
+
+/// The two collapsible model groups shown in the model manager. `capacity`
+/// covers the provider limits disclosure, which is settings rather than a
+/// model group, so only `enabled` and `available` partition the catalog.
+enum ModelGroupScope: String, CaseIterable {
+    case enabled
+    case available
+    case capacity
+
+    var defaultsKey: String { "models.group-collapse.v2.\(rawValue)" }
+}
+
+/// Partitions the whole catalog into exactly two groups: models enabled in
+/// the staged draft, and everything else — downloaded-but-disabled models
+/// together with models that have not been downloaded.
+struct ModelGrouping: Equatable {
+    let enabled: [ModelInventoryItem]
+    let available: [ModelInventoryItem]
+
+    var isEmpty: Bool { enabled.isEmpty && available.isEmpty }
+
+    /// `isEnabled` must reflect the staged draft (the caller's
+    /// `isEffectivelyEnabled`) so unsaved enable/disable changes move cards
+    /// between groups immediately. MainActor because it reuses the
+    /// MainActor-isolated `ModelManagerPresentation.filtered` ordering.
+    @MainActor
+    static func partition(
+        myCatalog: [ModelInventoryItem],
+        available: [ModelInventoryItem],
+        search: String,
+        isEnabled: (ModelInventoryItem) -> Bool
+    ) -> ModelGrouping {
+        var seenCatalogIDs = Set<String>()
+        var catalog: [ModelInventoryItem] = []
+        for item in myCatalog + available where seenCatalogIDs.insert(item.catalogID).inserted {
+            catalog.append(item)
+        }
+        let filtered = ModelManagerPresentation.filtered(catalog, search: search)
+        var enabledItems: [ModelInventoryItem] = []
+        var availableItems: [ModelInventoryItem] = []
+        for item in filtered {
+            if isEnabled(item) {
+                enabledItems.append(item)
+            } else {
+                availableItems.append(item)
+            }
+        }
+        // Within Available, downloaded models read first: they are closest to
+        // being usable, while undownloaded cards stay muted further down.
+        let sortedAvailable = availableItems.enumerated().sorted { lhs, rhs in
+            if lhs.element.isDownloaded != rhs.element.isDownloaded {
+                return lhs.element.isDownloaded
+            }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+        return Self(enabled: enabledItems, available: sortedAvailable)
+    }
 }
 
 struct ModelRowPresentation: Equatable {
@@ -462,11 +514,13 @@ struct ModelManagerView: View {
     var networkContext: (String, Date) -> [String] = { _, _ in [] }
     var telemetry = ModelManagerTelemetry()
     @State private var deletion: ModelDeletionConfirmation?
-    @State private var section = 0
     @State private var search = ""
     @State private var inspectedModel: ModelInventoryItem?
-    @State private var runPercentByModel: [String: Int] = [:]
-    @AppStorage("models.daily-serving-schedule-v1") private var savedRunSchedule = ""
+    @State private var whatIfRunPercent: [String: Int] = [:]
+    @AppStorage("models.what-if-runtime-v1") private var savedWhatIfRuntime = ""
+    @AppStorage(ModelGroupScope.enabled.defaultsKey) private var enabledGroupCollapsed = false
+    @AppStorage(ModelGroupScope.available.defaultsKey) private var availableGroupCollapsed = false
+    @AppStorage(ModelGroupScope.capacity.defaultsKey) private var capacityGroupCollapsed = true
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -502,10 +556,10 @@ struct ModelManagerView: View {
                 }
             }.padding(24).frame(width: 620, height: 740)
         }
-        .onAppear(perform: restoreRunSchedule)
-        .onChange(of: runPercentByModel) { _, schedule in
-            guard let data = try? JSONEncoder().encode(schedule) else { return }
-            savedRunSchedule = String(decoding: data, as: UTF8.self)
+        .onAppear(perform: restoreWhatIfRuntime)
+        .onChange(of: whatIfRunPercent) { _, runtime in
+            guard let data = try? JSONEncoder().encode(runtime) else { return }
+            savedWhatIfRuntime = String(decoding: data, as: UTF8.self)
         }
     }
 
@@ -518,47 +572,41 @@ struct ModelManagerView: View {
         }
     }
 
+    private var currentGrouping: ModelGrouping {
+        ModelGrouping.partition(
+            myCatalog: store.snapshot?.inventory.myCatalog ?? [],
+            available: store.snapshot?.inventory.available ?? [],
+            search: search,
+            isEnabled: isEffectivelyEnabled
+        )
+    }
+
     private func modelList(currentTime: Date) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    sectionPicker
-                    Spacer(minLength: 4)
-                    if section != 2 { modelSearchField }
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    sectionPicker
-                    if section != 2 { modelSearchField }
-                }
-            }
-            if section == 0 {
-                Text("Enabled models can receive work; startup loading is subject to memory.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Text("Scheduled serving: \(ModelManagerPresentation.runHoursPerDay(percent: ModelManagerPresentation.totalRunPercent(enabledSchedule)).formatted(.number.precision(.fractionLength(0...1)))) h/day · active work estimate, not memory use")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                modelSearchField
+                Spacer(minLength: 4)
             }
             GeometryReader { geometry in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        if section == 2 {
-                            capacityControls
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        let grouping = currentGrouping
+                        if store.snapshot == nil && store.operation == .refreshing {
+                            HStack { ProgressView().controlSize(.small); Text("Reading your model catalog…") }
+                                .foregroundStyle(.secondary).padding(.vertical, 20)
+                        } else if grouping.isEmpty {
+                            ContentUnavailableView(search.isEmpty ? "No models here" : "No matching models",
+                                systemImage: "cpu", description: Text(store.snapshot == nil
+                                    ? "Refresh to load the model catalog." : "Try another search."))
                         } else {
-                            let items = visibleModels
-                            if store.snapshot == nil && store.operation == .refreshing {
-                                HStack { ProgressView().controlSize(.small); Text("Reading your model catalog…") }
-                                    .foregroundStyle(.secondary).padding(.vertical, 20)
-                            } else if items.isEmpty {
-                                ContentUnavailableView(search.isEmpty ? "No models here" : "No matching models",
-                                    systemImage: "cpu", description: Text(store.snapshot == nil
-                                        ? "Refresh to load the model catalog." : "Try another view or search."))
-                            }
-                            LazyVGrid(columns: ModelCardLayout.columns(for: geometry.size.width),
-                                      alignment: .leading, spacing: ModelCardLayout.rowSpacing) {
-                                ForEach(items) { item in
-                                    modelCard(item, at: currentTime)
-                                }
-                            }
+                            modelGroup(.enabled, items: grouping.enabled,
+                                collapsed: $enabledGroupCollapsed, gridWidth: geometry.size.width,
+                                currentTime: currentTime)
+                            modelGroup(.available, items: grouping.available,
+                                collapsed: $availableGroupCollapsed, gridWidth: geometry.size.width,
+                                currentTime: currentTime)
                         }
+                        capacityGroup
                         if let issues = store.snapshot?.inventory.issues, !issues.isEmpty {
                             DisclosureGroup("Catalog notices (\(issues.count))") {
                                 ForEach(issues, id: \.self) { issue in
@@ -566,29 +614,112 @@ struct ModelManagerView: View {
                                 }
                             }
                         }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 8)
                 }
-                .frame(height: min(geometry.size.height, ModelCardLayout.maximumVisibleHeight))
             }
         }
         .padding(.horizontal, 20)
+        .padding(.top, 12)
         .padding(.bottom, 8)
     }
 
-    private var visibleModels: [ModelInventoryItem] {
-        let items = section == 0 ? store.snapshot?.inventory.myCatalog : store.snapshot?.inventory.available
-        let filtered = ModelManagerPresentation.filtered(items ?? [], search: search)
-        return ModelManagerPresentation.enabledFirst(filtered, isEnabled: isEffectivelyEnabled)
+    /// While searching, groups with matches stay expanded so results are
+    /// visible; the persisted collapsed state still applies otherwise.
+    private func groupExpansion(_ collapsed: Binding<Bool>, matches: Int) -> Binding<Bool> {
+        Binding(
+            get: { search.isEmpty ? !collapsed.wrappedValue : matches > 0 },
+            set: { collapsed.wrappedValue = !$0 }
+        )
     }
 
-    private var sectionPicker: some View {
-        Picker("View", selection: $section) {
-            Text("On this Mac").tag(0)
-            Text("Available").tag(1)
-            Text("Capacity").tag(2)
+    private func modelGroup(
+        _ scope: ModelGroupScope,
+        items: [ModelInventoryItem],
+        collapsed: Binding<Bool>,
+        gridWidth: CGFloat,
+        currentTime: Date
+    ) -> some View {
+        DisclosureGroup(isExpanded: groupExpansion(collapsed, matches: items.count)) {
+            if items.isEmpty {
+                Text(scope == .enabled ? "No enabled models here." : "No available models here.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .padding(.vertical, 6)
+            } else {
+                LazyVGrid(columns: ModelCardLayout.columns(for: gridWidth),
+                          alignment: .leading, spacing: ModelCardLayout.rowSpacing) {
+                    ForEach(items) { item in
+                        modelCard(item, at: currentTime)
+                    }
+                }
+            }
+        } label: {
+            groupHeader(scope, items: items)
         }
-        .pickerStyle(.segmented)
-        .frame(maxWidth: 520)
+        .disclosureGroupStyle(ModelGroupDisclosureStyle())
+        .accessibilityIdentifier("models.group.\(scope.rawValue)")
+    }
+
+    private func groupHeader(_ scope: ModelGroupScope, items: [ModelInventoryItem]) -> some View {
+        HStack(spacing: 8) {
+            Text(scope == .enabled ? "Enabled" : "Available")
+                .font(.headline)
+            Text("\(items.count)")
+                .font(.callout.weight(.semibold)).monospacedDigit()
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7).padding(.vertical, 1)
+                .background(.quaternary, in: Capsule())
+                .fixedSize()
+            Spacer(minLength: 8)
+            Text(subtitle(for: scope, items: items))
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.tail)
+        }
+        .help(headerHelp(for: scope))
+    }
+
+    private func subtitle(for scope: ModelGroupScope, items: [ModelInventoryItem]) -> String {
+        if scope == .enabled {
+            return "Runtime earnings on cards are what-if estimates, not a schedule"
+        }
+        let downloaded = items.filter(\.isDownloaded).count
+        let notDownloaded = items.count - downloaded
+        switch (downloaded, notDownloaded) {
+        case (0, 0): return "No models"
+        case (0, _): return "\(notDownloaded) to download"
+        case (_, 0): return "\(downloaded) downloaded, disabled"
+        default: return "\(downloaded) downloaded · \(notDownloaded) to download"
+        }
+    }
+
+    private func headerHelp(for scope: ModelGroupScope) -> String {
+        switch scope {
+        case .enabled:
+            return "Enabled models can receive work; startup loading is subject to memory. Serving allocation describes active work time, not memory use. Counts reflect the current search."
+        case .available:
+            return "Downloaded models that are currently disabled, plus catalog models not yet downloaded. Not-downloaded cards stay muted until you download them. Counts reflect the current search."
+        case .capacity:
+            return "Provider-wide concurrency and memory-slot limits."
+        }
+    }
+
+    private var capacityGroup: some View {
+        DisclosureGroup(isExpanded: Binding(
+            get: { search.isEmpty ? !capacityGroupCollapsed : !capacityGroupCollapsed },
+            set: { capacityGroupCollapsed = !$0 }
+        )) {
+            capacityControls.padding(.top, 6)
+        } label: {
+            HStack(spacing: 8) {
+                Text("Provider capacity").font(.headline)
+                Spacer(minLength: 8)
+                Text("Concurrency & memory slots")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .disclosureGroupStyle(ModelGroupDisclosureStyle())
+        .accessibilityIdentifier("models.group.capacity")
     }
 
     private var modelSearchField: some View {
@@ -599,39 +730,32 @@ struct ModelManagerView: View {
             .accessibilityLabel("Find a model")
     }
 
-    private var enabledSchedule: [String: Int] {
-        let enabled = (store.snapshot?.inventory.myCatalog ?? []).filter(isEffectivelyEnabled)
-            .sorted { $0.catalogID < $1.catalogID }
-        var result: [String: Int] = [:]
-        for item in enabled {
-            let remaining = ModelManagerPresentation.maximumRunPercent(modelID: item.catalogID, selected: result)
-            result[item.catalogID] = min(remaining, max(0, runPercentByModel[item.catalogID] ?? 0))
-        }
-        return result
-    }
-
     private func isEffectivelyEnabled(_ item: ModelInventoryItem) -> Bool {
         guard let draft = store.draft else { return item.isEnabled }
         return ModelRowPresentation.contains(item, in: draft.selection.enabled, selector: item.enabledSelector)
     }
 
-    private func restoreRunSchedule() {
-        guard !savedRunSchedule.isEmpty,
-              let decoded = try? JSONDecoder().decode([String: Int].self, from: Data(savedRunSchedule.utf8))
-        else { return }
+    /// Restores the per-model what-if runtime selection. Each value is an
+    /// independent 0–100% share of a 24-hour day; models do not share a
+    /// single allocation budget.
+    private func restoreWhatIfRuntime() {
+        whatIfRunPercent = Self.decodeRuntime(savedWhatIfRuntime)
+    }
+
+    static func decodeRuntime(_ stored: String) -> [String: Int] {
+        guard !stored.isEmpty,
+              let decoded = try? JSONDecoder().decode([String: Int].self, from: Data(stored.utf8))
+        else { return [:] }
         var sanitized: [String: Int] = [:]
         for (id, value) in decoded.sorted(by: { $0.key < $1.key }).prefix(128) {
             guard !id.isEmpty, id.utf8.count <= 512, (0...100).contains(value) else { continue }
             sanitized[id] = value
         }
-        runPercentByModel = sanitized
+        return sanitized
     }
 
-    private func setRunPercent(_ value: Int, for item: ModelInventoryItem) {
-        var selected = enabledSchedule
-        let limit = ModelManagerPresentation.maximumRunPercent(modelID: item.catalogID, selected: selected)
-        selected[item.catalogID] = min(limit, max(0, value))
-        runPercentByModel[item.catalogID] = selected[item.catalogID]
+    private func setWhatIfRunPercent(_ value: Int, for item: ModelInventoryItem) {
+        whatIfRunPercent[item.catalogID] = min(100, max(0, value))
     }
 
     private func tokenRate(for item: ModelInventoryItem) -> ModelTokenRateAverage? {
@@ -667,11 +791,11 @@ struct ModelManagerView: View {
         let serving = servingAverage(for: item)
         let calibratedServing = serving.flatMap { $0.activeHours >= 2 ? $0 : nil }
         let capacity = demand(for: item, at: date)
-        let runPercent = enabledSchedule[item.catalogID] ?? 0
+        let runPercent = whatIfRunPercent[item.catalogID] ?? 0
         let forecast = ModelRunForecast.calculate(runPercent: runPercent, serving: calibratedServing, tokenRate: rate)
         let peers = opportunitySignals(at: date)
         let grade = ModelManagerPresentation.opportunityGrade(modelID: item.catalogID, peers: peers)
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             ModelCardSummary(
                 item: item,
                 installedMemoryGB: Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824,
@@ -681,15 +805,55 @@ struct ModelManagerView: View {
                 grade: grade,
                 forecast: forecast,
                 runPercent: runPercent,
-                isScheduleEnabled: item.isDownloaded && isEffectivelyEnabled(item),
-                maximumRunPercent: ModelManagerPresentation.maximumRunPercent(
-                    modelID: item.catalogID, selected: enabledSchedule
-                ),
-                setRunPercent: { setRunPercent($0, for: item) },
+                setRunPercent: { setWhatIfRunPercent($0, for: item) },
                 showsDetails: expanded
             )
             if expanded {
-            if item.isDownloaded, let snapshot = store.snapshot {
+                if item.isDownloaded, let snapshot = store.snapshot {
+                    DownloadedModelRow(item: item, draft: store.draft,
+                        operation: store.operation, sources: snapshot.sources,
+                        currentTime: date, sanitize: store.sanitizedDiagnostic,
+                        setEnabled: { store.setEnabled($0, modelID: $1) },
+                        setPreloaded: { store.setPreloaded($0, modelID: $1) },
+                        requestDelete: { item in
+                            guard let localID = item.localID else { return }
+                            inspectedModel = nil
+                            deletion = ModelDeletionConfirmation(localID: localID,
+                                displayName: item.displayName, sizeGB: item.sizeGB)
+                        })
+                } else {
+                    AvailableModelRow(item: item, store: store)
+                }
+                modelDetails(item, at: date)
+            } else {
+                Divider()
+                cardControls(item: item, at: date)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            .quaternary.opacity(item.isDownloaded ? 0.4 : 0.22),
+            in: RoundedRectangle(cornerRadius: 14)
+        )
+        .overlay(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(ModelCardSummary.companyColor(for: item.catalogID)
+                    .opacity(item.isDownloaded ? 1 : 0.55))
+                .frame(width: 28, height: 3)
+                .padding(.leading, 14)
+        }
+        .accessibilityIdentifier("model.\(item.catalogID).card")
+    }
+
+    /// The single controls row of a compact card: real hosting controls plus
+    /// one clear action. Undownloaded cards keep their Download action fully
+    /// interactive even though the informational content above is muted, and
+    /// every card can still reach its details/forecast sheet.
+    @ViewBuilder
+    func cardControls(item: ModelInventoryItem, at date: Date) -> some View {
+        if item.isDownloaded, let snapshot = store.snapshot {
+            HStack(alignment: .center, spacing: 12) {
                 DownloadedModelRow(item: item, draft: store.draft,
                     operation: store.operation, sources: snapshot.sources,
                     currentTime: date, sanitize: store.sanitizedDiagnostic,
@@ -700,40 +864,25 @@ struct ModelManagerView: View {
                         inspectedModel = nil
                         deletion = ModelDeletionConfirmation(localID: localID,
                             displayName: item.displayName, sizeGB: item.sizeGB)
-                    })
-            } else {
-                AvailableModelRow(item: item, store: store)
+                    }, compact: true)
+                Spacer(minLength: 8)
+                Button(ModelManagerPresentation.compactEntryActionLabel(for: item)) { inspectedModel = item }
+                    .help("Open the what-if forecast, model details, and additional controls for \(item.displayName).")
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .fixedSize()
+                    .accessibilityIdentifier("model.\(item.catalogID).manage")
             }
-            modelDetails(item, at: date)
-            } else {
-                Divider()
-                VStack(alignment: .leading, spacing: 10) {
-                    if item.isDownloaded, let snapshot = store.snapshot {
-                        DownloadedModelRow(item: item, draft: store.draft,
-                            operation: store.operation, sources: snapshot.sources,
-                            currentTime: date, sanitize: store.sanitizedDiagnostic,
-                            setEnabled: { store.setEnabled($0, modelID: $1) },
-                            setPreloaded: { store.setPreloaded($0, modelID: $1) },
-                            requestDelete: { _ in }, compact: true)
-                    } else {
-                        Label("Not downloaded", systemImage: "arrow.down.circle")
-                            .foregroundStyle(.secondary)
-                    }
-                }.frame(height: 66, alignment: .topLeading)
-                Button("Manage & forecast") { inspectedModel = item }
-                    .help("Open daily serving estimates, model details, and additional controls. Serving allocation estimates compute time, not memory residency.")
-                    .buttonStyle(.bordered).controlSize(.large)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+        } else {
+            HStack(alignment: .center, spacing: 12) {
+                AvailableModelRow(item: item, store: store, compact: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button(ModelManagerPresentation.compactEntryActionLabel(for: item)) { inspectedModel = item }
+                    .help("Open model details, assumptions, and the what-if forecast for \(item.displayName).")
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .fixedSize()
+                    .accessibilityIdentifier("model.\(item.catalogID).manage")
             }
         }
-        .padding(22)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 16))
-        .overlay(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 2).fill(ModelCardSummary.companyColor(for: item.catalogID))
-                .frame(width: 40, height: 4).padding(.leading, 16)
-        }
-        .accessibilityIdentifier("model.\(item.catalogID).card")
     }
 
     @ViewBuilder
@@ -830,18 +979,30 @@ struct ModelManagerView: View {
 }
 
 enum ModelCardLayout {
-    static let maximumColumns = 3
-    static let maximumVisibleRows = 2
-    static let rowSpacing: CGFloat = 20
-    static let estimatedCardHeight: CGFloat = 530
-    static let maximumVisibleHeight = CGFloat(maximumVisibleRows) * estimatedCardHeight + rowSpacing
+    static let maximumColumns = 2
+    /// Bounded card width keeps text readable and controls intact: cards sit
+    /// between a ~300pt floor and a 400pt ceiling so wide windows show a
+    /// left-aligned 2×2-style grid instead of stretched cards.
+    static let minimumCardWidth: CGFloat = 300
+    static let maximumCardWidth: CGFloat = 400
+    static let rowSpacing: CGFloat = 14
+    /// Expected compact-card height; the previous card measured ~530pt.
+    static let estimatedCardHeight: CGFloat = 268
 
     static func columnCount(for width: CGFloat) -> Int {
-        min(maximumColumns, max(1, Int((width + rowSpacing) / 370)))
+        width >= CGFloat(maximumColumns) * minimumCardWidth + rowSpacing ? maximumColumns : 1
+    }
+
+    /// Card width for the given container width: two even bounded columns,
+    /// or one bounded column on genuinely narrow containers.
+    static func cardWidth(for width: CGFloat) -> CGFloat {
+        let columns = CGFloat(columnCount(for: width))
+        let available = max(0, width - (columns - 1) * rowSpacing)
+        return min(maximumCardWidth, available / columns)
     }
 
     static func columns(for width: CGFloat) -> [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: rowSpacing, alignment: .top),
+        Array(repeating: GridItem(.fixed(cardWidth(for: width)), spacing: rowSpacing, alignment: .top),
               count: columnCount(for: width))
     }
 }
@@ -855,10 +1016,12 @@ struct ModelCardSummary: View {
     let grade: String?
     let forecast: ModelRunForecast
     let runPercent: Int
-    let isScheduleEnabled: Bool
-    let maximumRunPercent: Int
     let setRunPercent: (Int) -> Void
     var showsDetails = false
+
+    /// Informational content of not-yet-downloaded cards is muted, while the
+    /// Download action stays fully opaque and enabled whenever it is allowed.
+    static let mutedOpacity: Double = 0.62
 
     private var company: ModelCompany { ModelManagerPresentation.vendor(for: item.catalogID) }
     private var accent: Color { Self.companyColor(for: item.catalogID) }
@@ -868,95 +1031,291 @@ struct ModelCardSummary: View {
         if showsDetails { detailedBody } else { cardFace }
     }
 
+    // MARK: - Compact card face
+
     private var cardFace: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
-                if let image = DarkbloomLogoAsset.modelImage(family: ModelFamilyIcon.select(status: .online, activeModel: item.catalogID)) {
-                    Image(nsImage: image).resizable().renderingMode(.template).scaledToFit()
-                        .foregroundStyle(accent).frame(width: 32, height: 32)
-                        .frame(width: 48, height: 48)
-                        .background(accent.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
-                }
-                Text(companyName).font(.system(size: 15, weight: .semibold)).foregroundStyle(accent)
-                Spacer()
+        VStack(alignment: .leading, spacing: 10) {
+            Group {
+                identityRow
                 if item.isDownloaded {
-                    LiveStatePill(state: item.liveState)
-                        .help("Current provider residency or activity. Loaded means in memory; it does not necessarily mean serving a request. This can differ from your saved enable and startup settings.")
+                    historyStrip
+                } else {
+                    catalogStrip
                 }
-                else { Text("Available").font(.system(size: 13)).foregroundStyle(.secondary) }
             }
-            Text(item.displayName)
-                .font(.system(size: 22, weight: .bold))
-                .lineLimit(3).help(item.displayName)
-                .frame(height: 76, alignment: .topLeading)
-                .padding(.top, 14)
-            Text("\(item.modelType.uppercased())  ·  \(ModelFormatting.size(item.sizeGB)) weights")
-                .help("Model type and catalog weight-size estimate. This is not the model’s total memory use while running.")
-                .font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
-                .padding(.bottom, 20)
-            HStack(alignment: .top, spacing: 20) {
-                headlineMetric("Measured speed", icon: "speedometer", value: speedValue, unit: "tok/s", explanation: "Average measured token generation speed on this Mac. Based on recent samples, not advertised performance. A dash means no usable samples yet.")
-                Spacer(minLength: 0)
-                headlineMetric("Average profit", icon: "dollarsign.arrow.circlepath", value: profitValue, unit: profitUnit, explanation: "Recorded earnings per active serving hour, less estimated electricity when available. Power is estimated from whole-Mac adapter draw above idle, not measured separately for this model. Gross excludes electricity. Learning requires at least two active hours; this is not a guaranteed payout.")
-            }
-            .frame(height: 116, alignment: .top)
-            Divider()
-            HStack(spacing: 10) {
-                ZStack {
-                    Image(systemName: "shield.fill")
-                        .foregroundStyle(
-                            LinearGradient(colors: [demandColor.opacity(0.55), demandColor, demandColor.opacity(0.65)],
-                                           startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .shadow(color: demandColor.opacity(0.25), radius: 3, x: 0, y: 2)
-                    Image(systemName: "shield.lefthalf.filled")
-                        .foregroundStyle(.white.opacity(0.23))
-                    Image(systemName: "shield")
-                        .foregroundStyle(
-                            LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.08)],
-                                           startPoint: .top, endPoint: .bottom))
-                }
-                .font(.system(size: 27, weight: .regular))
-                .help(demandHelp)
-                .accessibilityHidden(true)
-                Text(capacity.map { demandTitle($0.demandBand).replacingOccurrences(of: " demand", with: "") } ?? "—")
-                    .help(demandHelp)
-                Spacer(minLength: 4)
-                if let capacity {
-                    VStack(alignment: .trailing, spacing: 3) {
-                        Text("\(capacity.activeRequests.formatted()) active")
-                            .help("Requests currently running across the network for this model—not just on your Mac.")
-                        Text("\(capacity.queuedRequests.formatted()) waiting")
-                            .foregroundStyle(.secondary)
-                            .help("Requests queued across the network for this model, waiting to be served.")
-                    }
-                    .font(.system(size: 12, weight: .medium).monospacedDigit())
-                    .help("Network-wide requests for this model, not just this Mac.")
-                }
-                HStack(spacing: 5) {
-                    Image(systemName: "seal")
-                        .foregroundStyle(accent).accessibilityHidden(true)
-                    Text(grade ?? "—").font(.system(size: 17, weight: .semibold, design: .rounded))
-                }.help(gradeHelp)
-            }
-            .font(.system(size: 13, weight: .medium)).padding(.vertical, 16)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Network demand: " + (capacity.map { demandTitle($0.demandBand) } ?? "unavailable")
-                                + demandRequestDescription + ". Opportunity grade: " + (grade ?? "not yet rated"))
+            .opacity(item.isDownloaded ? 1 : Self.mutedOpacity)
+            whatIfControl
         }
-        .frame(height: 336, alignment: .top)
+    }
+
+    private var identityRow: some View {
+        HStack(alignment: .top, spacing: 10) {
+            familyMark
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.displayName)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(item.displayName)
+                Text("\(companyName) · \(item.modelType.uppercased()) · \(ModelFormatting.size(item.sizeGB))")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.tail)
+                    .help("Model type and catalog weight-size estimate (\(ModelFormatting.size(item.sizeGB)) weights). This is not the model’s total memory use while running.")
+            }
+            Spacer(minLength: 6)
+            residencyBadge
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(item.displayName), \(companyName), \(item.modelType.uppercased())")
+        .accessibilityValue(residencyDescription)
+    }
+
+    private var residencyDescription: String {
+        guard item.isDownloaded else { return "Not downloaded" }
+        switch item.liveState {
+        case .active: return "Active"
+        case .loadedIdle: return "Loaded"
+        case .unloaded: return "Unloaded"
+        }
+    }
+
+    private var residencyBadge: some View {
+        Group {
+            if item.isDownloaded {
+                LiveStatePill(state: item.liveState)
+            } else {
+                Text("Not downloaded")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(.quaternary, in: Capsule())
+            }
+        }
+        .help(item.isDownloaded
+            ? "Current provider residency or activity. Loaded means in memory; it does not necessarily mean serving a request. This can differ from your saved enable and startup settings."
+            : "Not downloaded to this Mac. The Download action remains available.")
+    }
+
+    private var familyMark: some View {
+        familyImage
+            .frame(width: 34, height: 34)
+            .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var familyImage: some View {
+        let family = ModelFamilyIcon.select(status: .online, activeModel: item.catalogID)
+        // `.darkbloom` is the app mark, not a vendor logo; models without a
+        // bundled family logo fall back to a capability symbol.
+        if family != .darkbloom, let image = DarkbloomLogoAsset.modelImage(family: family) {
+            Image(nsImage: image).resizable().renderingMode(.template).scaledToFit()
+                .foregroundStyle(accent)
+        } else {
+            Image(systemName: modelSymbol)
+                .font(.system(size: 16, weight: .semibold)).foregroundStyle(accent)
+        }
+    }
+
+    private struct CompactStat: Identifiable {
+        let id: String
+        let icon: String
+        let iconTint: Color?
+        let value: String
+        let unit: String?
+        let label: String
+        let help: String
+    }
+
+    /// Stats for a downloaded model. Locally measured facts come first; any
+    /// slot not backed by history is filled with a catalog fact rather than a
+    /// dash, and one caption explains what is still learning.
+    private var historyStats: [CompactStat] {
+        var stats: [CompactStat] = []
+        if hasMeasuredSpeed {
+            stats.append(CompactStat(
+                id: "Measured speed", icon: "speedometer", iconTint: nil,
+                value: speedValue, unit: "tok/s", label: "Measured speed", help: speedHelp))
+        }
+        if let demand = demandStatSpec {
+            stats.append(demand)
+        }
+        if hasAccountEarnings {
+            stats.append(CompactStat(
+                id: "Derived account earnings", icon: "dollarsign.circle", iconTint: nil,
+                value: Self.money(serving?.grossUSDPerActiveHour ?? 0), unit: "gross/hr",
+                label: "Derived rate", help: accountEarningsHelp))
+        }
+        for filler in catalogFillers where stats.count < 3 && !stats.contains(where: { $0.id == filler.id }) {
+            stats.append(filler)
+        }
+        return Array(stats.prefix(3))
+    }
+
+    /// Catalog facts used to complete the stat row when history is partial.
+    private var catalogFillers: [CompactStat] {
+        var fillers: [CompactStat] = [
+            CompactStat(
+                id: "Minimum RAM", icon: "memorychip", iconTint: nil,
+                value: "\(item.minimumRAMGB) GB", unit: nil,
+                label: "Minimum RAM",
+                help: "Catalog minimum RAM requirement. On this Mac: \(ramFit).")
+        ]
+        let capabilities = ModelFormatting.capabilityAdvisories(item)
+        if !capabilities.isEmpty {
+            fillers.append(CompactStat(
+                id: "Capabilities", icon: "square.grid.2x2", iconTint: nil,
+                value: capabilities.first ?? "", unit: nil,
+                label: capabilities.count > 1 ? "Capabilities +\(capabilities.count - 1)" : "Capabilities",
+                help: "Catalog capabilities: " + capabilities.joined(separator: " · ") + "."))
+        }
+        return fillers
+    }
+
+    private var historyStrip: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            statsRow(historyStats)
+            if let status = learningStatus {
+                Text(status)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Catalog facts for an undownloaded model. A demand tile without a
+    /// fresh reading is omitted rather than shown empty.
+    private var catalogStats: [CompactStat] {
+        var stats: [CompactStat] = [
+            CompactStat(
+                id: "Download size", icon: "internaldrive", iconTint: nil,
+                value: ModelFormatting.size(item.sizeGB), unit: nil,
+                label: "Download size",
+                help: "Catalog estimate of the weights download size. Actual disk use can differ.")
+        ]
+        if let demand = demandStatSpec {
+            stats.append(demand)
+        }
+        stats.append(CompactStat(
+            id: "Minimum RAM", icon: "memorychip", iconTint: nil,
+            value: "\(item.minimumRAMGB) GB", unit: nil,
+            label: "Minimum RAM",
+            help: "Catalog minimum RAM requirement. On this Mac: \(ramFit)."))
+        return stats
+    }
+
+    private var catalogStrip: some View {
+        statsRow(catalogStats)
+            .accessibilityIdentifier("model.\(item.catalogID).metadata")
+    }
+
+    private func statsRow(_ stats: [CompactStat]) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            ForEach(Array(stats.enumerated()), id: \.element.id) { index, stat in
+                if index > 0 { statDivider }
+                statView(stat)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The unit sits under the value so full money amounts never truncate at
+    /// the narrowest column width.
+    private func statView(_ stat: CompactStat) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Image(systemName: stat.icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle((stat.iconTint ?? accent).opacity(0.9))
+                    .accessibilityHidden(true)
+                Text(stat.value)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1).truncationMode(.tail)
+            }
+            if let unit = stat.unit {
+                Text(unit)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.tail)
+            }
+            Text(stat.label)
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 6)
+        .help(stat.help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(stat.label + ": " + stat.value + (stat.unit.map { " " + $0 } ?? ""))
+    }
+
+    private var statDivider: some View {
+        Rectangle().fill(.quaternary).frame(width: 1, height: 42)
+    }
+
+    /// Demand keeps its text next to the tinted shield so color is never the
+    /// only carrier of meaning. The caption carries the live network count,
+    /// and the tile is omitted entirely without a fresh reading.
+    private var demandStatSpec: CompactStat? {
+        guard let capacity else { return nil }
+        return CompactStat(
+            id: "Network demand", icon: "shield.fill", iconTint: demandColor,
+            value: demandValue, unit: nil,
+            label: "\(capacity.activeRequests.formatted()) network active",
+            help: demandHelp + demandRequestDescription)
+    }
+
+    /// Independent 0–100% runtime what-if with an estimate that is clearly
+    /// labeled as estimated and visually separate from measured facts.
+    private var whatIfControl: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("Runtime")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Slider(value: Binding(
+                    get: { Double(runPercent) },
+                    set: { setRunPercent(Int($0.rounded())) }
+                ), in: 0...100, step: 5)
+                    .tint(accent)
+                    .controlSize(.small)
+                    .accessibilityLabel("What-if daily runtime for \(item.displayName)")
+                    .accessibilityValue("\(runPercent) percent, \(hours(runPercent)) hours per day")
+                    .accessibilityHint(Self.whatIfEstimateHint)
+                Text("\(runPercent)% · \(hours(runPercent)) h")
+                    .font(.caption.monospacedDigit().weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 74, alignment: .trailing)
+            }
+            HStack(alignment: .top, spacing: 5) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+                Text(Self.whatIfEstimateText(forecast))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .help(Self.whatIfEstimateHelp)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Estimated scenario: " + Self.whatIfEstimateText(forecast))
+        }
+    }
+
+    private var learningStatus: String? {
+        switch (hasMeasuredSpeed, hasAccountEarnings) {
+        case (true, true): return nil
+        case (false, true): return "Measured speed appears after this model serves on this Mac"
+        case (true, false): return "Derived earnings rate appears after two active serving hours"
+        case (false, false): return "Learning · measured speed and account earnings appear after this model serves"
+        }
     }
 
     private var demandHelp: String {
         "Network demand for this model. Red: urgent. Yellow: high or moderate. Green: low. Gray: no fresh reading. This describes network traffic, not your Mac’s health or a guarantee of work."
     }
 
-    private var gradeHelp: String {
-        "Opportunity grade: " + (grade ?? "not yet rated") + ". Speed contributes 40%, demand 30%, and estimated net profit 30%. Speed and profit are compared with your enabled models. Requires at least two active hours and usable speed, demand and net-profit data. A is highest; F includes nonpositive profit. A dash means insufficient data."
-    }
-
     private var demandRequestDescription: String {
-        guard let capacity else { return ". Request counts unavailable" }
-        return ". Network-wide: \(capacity.activeRequests) active requests, \(capacity.queuedRequests) waiting"
+        guard let capacity else { return " Request counts unavailable." }
+        return " Network-wide: \(capacity.activeRequests) active requests, \(capacity.queuedRequests) waiting."
     }
 
     private var demandColor: Color {
@@ -968,42 +1327,69 @@ struct ModelCardSummary: View {
         }
     }
 
+    private var demandValue: String {
+        capacity.map { demandTitle($0.demandBand).replacingOccurrences(of: " demand", with: "") } ?? "No reading"
+    }
+
+    private var demandLabel: String {
+        guard let capacity else { return "Network demand" }
+        return "\(capacity.activeRequests.formatted()) active · \(capacity.queuedRequests.formatted()) queued"
+    }
+
+    private var hasMeasuredSpeed: Bool {
+        guard let rate else { return false }
+        return rate.tokensPerSecond.isFinite && rate.tokensPerSecond > 0 && rate.sampleCount > 0
+    }
+
     private var speedValue: String {
-        guard let rate, rate.tokensPerSecond.isFinite, rate.tokensPerSecond > 0, rate.sampleCount > 0 else { return "—" }
-        return rate.tokensPerSecond.formatted(.number.precision(.fractionLength(1)))
+        hasMeasuredSpeed
+            ? rate?.tokensPerSecond.formatted(.number.precision(.fractionLength(1))) ?? "—"
+            : "—"
     }
 
-    private var profitValue: String {
-        guard let serving, serving.activeHours >= 2 else { return "Learning" }
-        return serving.profitUSDPerActiveHour.map(money) ?? serving.grossUSDPerActiveHour.formatted(.currency(code: "USD"))
+    private var speedHelp: String {
+        "Average measured token generation speed on this Mac. Based on recent samples, not advertised performance."
     }
 
-    private var profitUnit: String {
-        guard let serving, serving.activeHours >= 2 else { return "needs 2 active hours" }
-        return serving.profitUSDPerActiveHour == nil ? "gross / active hour" : "net / active hour"
+    /// Earnings history is account-level (it may include other machines) and
+    /// only becomes a rate once the model has served here for two active
+    /// hours; before that there is nothing honest to show.
+    private var hasAccountEarnings: Bool {
+        guard let serving else { return false }
+        return serving.activeHours >= 2
     }
 
-    private func headlineMetric(_ title: String, icon: String, value: String, unit: String, explanation: String) -> some View {
-        VStack(spacing: 6) {
-            ZStack(alignment: .bottom) {
-                Image(systemName: icon)
-                    .font(.system(size: 64, weight: .light))
-                    .foregroundStyle(accent.opacity(0.45))
-                    .frame(height: 78, alignment: .top)
-                    .accessibilityHidden(true)
-                Text(value)
-                    .font(.system(size: value == "Learning" ? 23 : 30, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .padding(.horizontal, 8)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
-            }
-            Text(unit).font(.system(size: 12)).foregroundStyle(.secondary)
+    private var accountEarningsHelp: String {
+        "History-based and account-derived: earnings recorded for this model on the account, divided by this Mac’s observed active serving hours. The account may include other machines, so this is not measured income on this Mac. Gross excludes electricity; a derived net only feeds the labeled what-if estimate below. Not a guaranteed payout."
+    }
+
+    /// Compact-card estimate line. Only real inputs are used: no measured
+    /// speed or earnings history means the absence is stated, never filled in.
+    @MainActor
+    static func whatIfEstimateText(_ forecast: ModelRunForecast) -> String {
+        guard forecast.runPercent > 0 else {
+            return "0% runtime · estimated $0/day"
         }
-        .frame(maxWidth: .infinity)
-        .help(title + ": " + value + " " + unit + "\n\n" + explanation)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title + ": " + value + " " + unit)
-        .accessibilityHint(explanation)
+        let hours = ModelManagerPresentation.runHoursPerDay(percent: forecast.runPercent)
+            .formatted(.number.precision(.fractionLength(0...1)))
+        if let net = forecast.profitUSDPerDay {
+            return "Est. net \(Self.money(net))/day if it served \(hours) h/day · what-if, not actual"
+        }
+        if let gross = forecast.grossUSDPerDay {
+            return "Est. gross \(Self.money(gross))/day · net needs a power baseline · what-if"
+        }
+        if let tokens = forecast.tokensPerDay, tokens > 0 {
+            return "Est. ≈\(tokens.formatted(.number.notation(.compactName).precision(.fractionLength(1)))) tokens/day at measured speed · earnings unmeasured"
+        }
+        return "No estimate yet · needs measured speed or earnings history"
+    }
+
+    static var whatIfEstimateHelp: String {
+        "Independent what-if: assumes this model served requests for the selected share of a 24-hour day at its recent measured speed on this Mac and its account-derived per-active-hour earnings, including estimated incremental electricity where a baseline exists. It assumes this Mac produced the account earnings recorded for this model; until provider-aware tracking ships, the account may include other machines. Estimated only — never actual earnings or a guarantee, and not a schedule."
+    }
+
+    static var whatIfEstimateHint: String {
+        "Independent what-if: assumes this model served requests for the selected share of a 24-hour day. Estimated, not actual earnings, and not a schedule."
     }
 
     private var detailedBody: some View {
@@ -1068,19 +1454,19 @@ struct ModelCardSummary: View {
                         ModelMetricCopy(value: "Demand unavailable", detail: "Waiting for a fresh network reading")
                     }
                 }
-                ModelMetricTile(icon: "dollarsign.circle", title: "Average profit", accent: accent) {
+                ModelMetricTile(icon: "dollarsign.circle", title: "Earnings per active hour", accent: accent) {
                     if let serving, serving.activeHours < 2 {
                         ModelMetricCopy(
                             value: "Calibrating",
-                            detail: "\(serving.activeHours.formatted(.number.precision(.fractionLength(1)))) / 2 active hours · provisional gross \(money(serving.grossUSDPerActiveHour))/hr"
+                            detail: "\(serving.activeHours.formatted(.number.precision(.fractionLength(1)))) / 2 active hours · provisional gross \(Self.money(serving.grossUSDPerActiveHour))/hr"
                         )
                     } else if let net = serving?.profitUSDPerActiveHour {
                         ModelMetricCopy(
-                            value: "\(money(net)) net / active hour",
-                            detail: "\(serving?.activeHours.formatted(.number.precision(.fractionLength(1))) ?? "0") measured active hours"
+                            value: "\(Self.money(net)) net / active hour",
+                            detail: "\(serving?.activeHours.formatted(.number.precision(.fractionLength(1))) ?? "0") local active hours · net derived from account earnings minus estimated power"
                         )
                     } else if let gross = serving?.grossUSDPerActiveHour {
-                        ModelMetricCopy(value: "\(money(gross)) gross / active hour", detail: "Net estimate needs an idle-power baseline")
+                        ModelMetricCopy(value: "\(Self.money(gross)) gross / active hour", detail: "Account-derived · net needs an idle-power baseline")
                     } else {
                         ModelMetricCopy(value: "Calibrating payout and power", detail: "Needs complete earnings and activity data")
                     }
@@ -1096,10 +1482,8 @@ struct ModelCardSummary: View {
                 }
             }
 
-            if isScheduleEnabled {
-                Divider()
-                scheduleControl
-            }
+            Divider()
+            scheduleControl
         }
         .accessibilityElement(children: .contain)
     }
@@ -1107,7 +1491,7 @@ struct ModelCardSummary: View {
     private var scheduleControl: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline) {
-                Label("Daily serving allocation", systemImage: "clock")
+                Label("What-if daily runtime", systemImage: "clock")
                     .font(.callout.weight(.semibold))
                 Spacer(minLength: 5)
                 Text("\(runPercent)% · \(hours(runPercent)) h/day")
@@ -1117,22 +1501,22 @@ struct ModelCardSummary: View {
             Slider(value: Binding(
                 get: { Double(runPercent) },
                 set: { setRunPercent(Int($0.rounded())) }
-            ), in: 0...Double(maximumRunPercent), step: 5)
+            ), in: 0...100, step: 5)
                 .tint(accent)
-                .accessibilityLabel("Daily serving allocation for \(item.displayName)")
+                .accessibilityLabel("What-if daily runtime for \(item.displayName)")
                 .accessibilityValue("\(runPercent) percent, \(hours(runPercent)) hours per day")
-                .accessibilityHint("Shares one 24-hour daily serving budget across enabled models. This does not control memory residency.")
+                .accessibilityHint(Self.whatIfEstimateHint)
 
             if runPercent > 0, let profit = forecast.profitUSDPerDay {
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "sparkline")
+                    Image(systemName: "sparkles")
                         .foregroundStyle(accent)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Estimated net \(money(profit))/day · \(money(forecast.profitUSDPerClockHour ?? 0))/clock hour")
+                        Text("Estimated net \(Self.money(profit))/day · \(Self.money(forecast.profitUSDPerClockHour ?? 0))/clock hour")
                             .font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
                         if let gross = forecast.grossUSDPerDay,
                            let electricity = forecast.incrementalElectricityUSDPerDay {
-                            Text("Gross \(money(gross)) · incremental adapter power estimate \(money(electricity)) per day")
+                            Text("Gross \(Self.money(gross)) · incremental adapter power estimate \(Self.money(electricity)) per day")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         if let tokens = forecast.tokensPerDay {
@@ -1152,16 +1536,16 @@ struct ModelCardSummary: View {
                     }
                 }
             } else if runPercent > 0, let gross = forecast.grossUSDPerDay {
-                Label("Estimated gross \(money(gross))/day; net awaits a measured idle-power baseline and electricity price.", systemImage: "info.circle")
+                Label("Estimated gross \(Self.money(gross))/day; net awaits a measured idle-power baseline and electricity price.", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if runPercent > 0 {
-                Label("Projection appears after this model has measured earning, serving-time, and power data.", systemImage: "info.circle")
+                Label("No dollar estimate yet: this model needs measured earning, serving-time, and power data first.", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("No serving time scheduled. At 50%, this model would be estimated at 12 hours/day.")
+                Label("0% runtime selected · the what-if estimate is $0/day. Drag to explore a scenario.", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Text("Estimate from recent model activity, local token speed, and whole-Mac adapter draw above idle. Serving allocation is separate from loaded-model slots.")
+            Text("Estimate from recent local model activity, local token speed, and whole-Mac adapter draw above idle. Earnings history is account-level: until provider-aware tracking ships, this what-if assumes this Mac produced the account earnings recorded for this model. Each model’s runtime is an independent what-if, not a schedule or a shared allocation.")
                 .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1222,7 +1606,7 @@ struct ModelCardSummary: View {
             .formatted(.number.precision(.fractionLength(0...1)))
     }
 
-    private func money(_ value: Double) -> String {
+    static func money(_ value: Double) -> String {
         let cleaned = value.isFinite ? value : 0
         return (cleaned < 0 ? "−$" : "$") + abs(cleaned).formatted(.number.precision(.fractionLength(2)))
     }
@@ -1291,6 +1675,33 @@ private struct ModelDetailsDisclosureStyle: DisclosureGroupStyle {
     }
 }
 
+private struct ModelGroupDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    configuration.isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                    configuration.label
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+            if configuration.isExpanded {
+                configuration.content
+            }
+        }
+    }
+}
+
 struct DownloadedModelRow: View {
     let item: ModelInventoryItem
     let draft: ProviderConfigDraft?
@@ -1317,66 +1728,88 @@ struct DownloadedModelRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: compact ? 0 : 5) {
             if !compact {
                 Text(ModelFormatting.size(item.sizeGB))
                     .font(.caption).foregroundStyle(.secondary)
             }
-            VStack(alignment: .leading, spacing: compact ? 10 : 1) {
-                if presentation.showsEnableToggle {
-                    ModelOptionToggle(title: "Enabled", isOn: enabledBinding)
-                        .disabled(presentation.enableAction?.isEnabled != true)
-                        .accessibilityLabel(
-                            presentation.enableAction?.accessibilityLabel ?? "Enable \(item.displayName)"
-                        )
-                        .accessibilityHint(
-                            presentation.enableAction?.accessibilityHint ?? ""
-                        )
-                        .help(presentation.enableAction?.isEnabled == false
-                              ? (presentation.enableAction?.accessibilityHint ?? "Unavailable")
-                              : "Allow this model to receive work. This stages a setting change; use Save Changes to save it. Enabling does not guarantee it stays loaded in memory.")
-                        .accessibilityIdentifier("model.\(item.catalogID).enable")
+            if compact {
+                // One horizontal row of real hosting controls keeps the
+                // compact card short; Delete stays in the Manage sheet.
+                HStack(spacing: 14) {
+                    enableToggle(checkbox: true)
+                    preloadToggle(checkbox: true)
                 }
-                if presentation.showsPreloadToggle {
-                    ModelOptionToggle(title: "Load at startup", isOn: preloadedBinding)
-                        .disabled(presentation.preloadAction?.isEnabled != true)
-                        .accessibilityLabel(
-                            presentation.preloadAction?.accessibilityLabel ?? "Preload \(item.displayName)"
-                        )
-                        .accessibilityHint(
-                            presentation.preloadAction?.accessibilityHint ?? ""
-                        )
-                        .help(presentation.preloadAction?.isEnabled == false
-                              ? (presentation.preloadAction?.accessibilityHint ?? "Unavailable")
-                              : "Request that the provider load this model into memory at startup. Save changes, then restart the provider to apply. Loading remains subject to available memory.")
-                        .accessibilityIdentifier("model.\(item.catalogID).preload")
+            } else {
+                VStack(alignment: .leading, spacing: 1) {
+                    enableToggle(checkbox: false)
+                    preloadToggle(checkbox: false)
+                    deleteButton
                 }
-                if !compact && presentation.showsDelete {
-                    Button(role: .destructive) {
-                        presentation.requestDeletion(of: item, using: requestDelete)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                    .disabled(presentation.deleteAction?.isEnabled != true)
-                    .help(presentation.deleteAction?.accessibilityHint ?? "Delete \(item.displayName)")
-                    .accessibilityLabel(
-                        presentation.deleteAction?.accessibilityLabel ?? "Delete \(item.displayName)"
-                    )
-                    .accessibilityHint(
-                        presentation.deleteAction?.accessibilityHint ?? ""
-                    )
-                    .accessibilityIdentifier("model.\(item.catalogID).delete")
+                if let reason = presentation.deleteBlockReason {
+                    Label(reason, systemImage: "lock.fill")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            }
-
-
-            if !compact, let reason = presentation.deleteBlockReason {
-                Label(reason, systemImage: "lock.fill")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, compact ? 0 : 4)
+    }
+
+    @ViewBuilder
+    private func enableToggle(checkbox: Bool) -> some View {
+        if presentation.showsEnableToggle {
+            ModelOptionToggle(title: "Enabled", isOn: enabledBinding, checkbox: checkbox)
+                .disabled(presentation.enableAction?.isEnabled != true)
+                .accessibilityLabel(
+                    presentation.enableAction?.accessibilityLabel ?? "Enable \(item.displayName)"
+                )
+                .accessibilityHint(
+                    presentation.enableAction?.accessibilityHint ?? ""
+                )
+                .help(presentation.enableAction?.isEnabled == false
+                      ? (presentation.enableAction?.accessibilityHint ?? "Unavailable")
+                      : "Allow this model to receive work. This stages a setting change; use Save Changes to save it. Enabling does not guarantee it stays loaded in memory.")
+                .accessibilityIdentifier("model.\(item.catalogID).enable")
+        }
+    }
+
+    @ViewBuilder
+    private func preloadToggle(checkbox: Bool) -> some View {
+        if presentation.showsPreloadToggle {
+            ModelOptionToggle(title: "Load at startup", isOn: preloadedBinding, checkbox: checkbox)
+                .disabled(presentation.preloadAction?.isEnabled != true)
+                .accessibilityLabel(
+                    presentation.preloadAction?.accessibilityLabel ?? "Preload \(item.displayName)"
+                )
+                .accessibilityHint(
+                    presentation.preloadAction?.accessibilityHint ?? ""
+                )
+                .help(presentation.preloadAction?.isEnabled == false
+                      ? (presentation.preloadAction?.accessibilityHint ?? "Unavailable")
+                      : "Request that the provider load this model into memory at startup. Save changes, then restart the provider to apply. Loading remains subject to available memory.")
+                .accessibilityIdentifier("model.\(item.catalogID).preload")
+        }
+    }
+
+    @ViewBuilder
+    private var deleteButton: some View {
+        if presentation.showsDelete {
+            Button(role: .destructive) {
+                presentation.requestDeletion(of: item, using: requestDelete)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .disabled(presentation.deleteAction?.isEnabled != true)
+            .help(presentation.deleteAction?.accessibilityHint ?? "Delete \(item.displayName)")
+            .accessibilityLabel(
+                presentation.deleteAction?.accessibilityLabel ?? "Delete \(item.displayName)"
+            )
+            .accessibilityHint(
+                presentation.deleteAction?.accessibilityHint ?? ""
+            )
+            .accessibilityIdentifier("model.\(item.catalogID).delete")
+        }
     }
 
     private var enabledBinding: Binding<Bool> {
@@ -1444,19 +1877,29 @@ struct ModelOptionToggle: View {
 
     let title: String
     @Binding var isOn: Bool
+    /// Compact cards use checkboxes: fixed-size switches crowd out the card's
+    /// single action button in narrow columns. The Manage sheet keeps switches.
+    var checkbox = false
 
     var body: some View {
-        HStack(spacing: Self.labelSpacing) {
-            switch Self.order {
-            case .labelThenSwitch:
-                Text(title)
-                switchControl
-            case .switchThenLabel:
-                switchControl
-                Text(title)
+        if checkbox {
+            Toggle(title, isOn: $isOn)
+                .toggleStyle(.checkbox)
+                .font(.caption.weight(.medium))
+                .fixedSize()
+        } else {
+            HStack(spacing: Self.labelSpacing) {
+                switch Self.order {
+                case .labelThenSwitch:
+                    Text(title)
+                    switchControl
+                case .switchThenLabel:
+                    switchControl
+                    Text(title)
+                }
             }
+            .fixedSize()
         }
-        .fixedSize()
     }
 
     private var switchControl: some View {
@@ -1470,6 +1913,10 @@ struct ModelOptionToggle: View {
 private struct AvailableModelRow: View {
     let item: ModelInventoryItem
     @ObservedObject var store: ProviderControlStore
+    /// Compact cards surface catalog facts in their stat strip; the row then
+    /// shows only the Download action (kept fully opaque on muted cards),
+    /// progress, and issues.
+    var compact = false
 
     private var isDownloading: Bool {
         store.operation == .downloading(item.catalogID)
@@ -1479,28 +1926,50 @@ private struct AvailableModelRow: View {
         ModelManagerPresentation.availableRow(item: item, store: store)
     }
 
+    private var progressLine: String {
+        store.operationPhase == .reconciling
+            ? "Refreshing model catalog…"
+            : store.latestDownloadProgressLine ?? "Downloading…"
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(presentation.availableMetadataText ?? "")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityLabel(presentation.availableMetadataText ?? "")
-                .accessibilityIdentifier("model.\(item.catalogID).metadata")
-            HStack {
+        VStack(alignment: .leading, spacing: compact ? 4 : 7) {
+            if !compact {
+                Text(presentation.availableMetadataText ?? "")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(presentation.availableMetadataText ?? "")
+                    .accessibilityIdentifier("model.\(item.catalogID).metadata")
+            }
+            HStack(alignment: .center) {
+                if compact, !isDownloading, let issue = presentation.displayedIssue {
+                    Text(issue)
+                        .font(.caption).foregroundStyle(.orange)
+                        .lineLimit(1).truncationMode(.tail)
+                        .help(issue)
+                }
                 Spacer(minLength: 0)
                 if isDownloading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Downloading \(item.displayName)")
-                    if let action = presentation.downloadAction,
-                       store.canCancelCurrentOperation {
-                        Button("Cancel") {
-                            store.cancelCurrentOperation()
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel("Downloading \(item.displayName)")
+                        if compact {
+                            Text(progressLine)
+                                .font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.tail)
                         }
-                        .accessibilityLabel(action.accessibilityLabel)
-                        .accessibilityHint(action.accessibilityHint)
-                        .accessibilityIdentifier("model.\(item.catalogID).download")
+                        if let action = presentation.downloadAction,
+                           store.canCancelCurrentOperation {
+                            Button("Cancel") {
+                                store.cancelCurrentOperation()
+                            }
+                            .controlSize(.small)
+                            .accessibilityLabel(action.accessibilityLabel)
+                            .accessibilityHint(action.accessibilityHint)
+                            .accessibilityIdentifier("model.\(item.catalogID).download")
+                        }
                     }
                 } else {
                     Button {
@@ -1508,8 +1977,12 @@ private struct AvailableModelRow: View {
                     } label: {
                         Label("Download", systemImage: "square.and.arrow.down")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(ModelCardSummary.companyColor(for: item.catalogID))
                     .disabled(presentation.downloadAction?.isEnabled != true)
-                    .help(presentation.downloadAction?.accessibilityHint ?? "")
+                    .help(presentation.downloadAction?.accessibilityHint
+                        ?? "Downloads \(item.displayName) to this Mac.")
                     .accessibilityLabel(
                         presentation.downloadAction?.accessibilityLabel
                             ?? "Download \(item.displayName)"
@@ -1521,23 +1994,21 @@ private struct AvailableModelRow: View {
                 }
             }
 
-            if isDownloading {
-                Text(
-                    store.operationPhase == .reconciling
-                        ? "Refreshing model catalog…"
-                        : store.latestDownloadProgressLine ?? "Downloading…"
-                )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            } else if let issue = presentation.displayedIssue {
-                Text(issue)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+            if !compact {
+                if isDownloading {
+                    Text(progressLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let issue = presentation.displayedIssue {
+                    Text(issue)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, compact ? 0 : 4)
     }
 }
 

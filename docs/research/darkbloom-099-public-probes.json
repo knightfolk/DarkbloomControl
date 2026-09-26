@@ -1,0 +1,157 @@
+[
+  {
+    "url": "https://api.darkbloom.dev/health",
+    "at": "2026-09-26T04:49:18.664512+00:00",
+    "status": 200,
+    "content_type": "application/json",
+    "bytes": 145,
+    "keys": [
+      "build_commit",
+      "build_date",
+      "providers",
+      "status",
+      "version"
+    ],
+    "draining": null
+  },
+  {
+    "url": "https://api.darkbloom.dev/readyz",
+    "at": "2026-09-26T04:49:18.665041+00:00",
+    "status": 200,
+    "content_type": "application/json",
+    "bytes": 47,
+    "keys": [
+      "draining",
+      "inflight",
+      "ready"
+    ]
+  },
+  {
+    "url": "https://api.darkbloom.dev/v1/stats",
+    "at": "2026-09-26T04:49:18.665141+00:00",
+    "status": 200,
+    "content_type": "application/json",
+    "bytes": 1448039,
+    "keys": [
+      "active_power_watts",
+      "active_providers",
+      "application_evidence_connected",
+      "application_evidence_models",
+      "application_evidence_providers",
+      "avg_tokens_per_request",
+      "code_attestation_enforced",
+      "code_attested_providers",
+      "geography_snapshot_at",
+      "last_24h_completion_tokens",
+      "last_24h_prompt_tokens",
+      "last_24h_requests",
+      "last_24h_total_tokens",
+      "location_privacy_min_providers",
+      "location_window_hours",
+      "models",
+      "network_capacity_tps",
+      "network_utilization",
+      "provider_locations",
+      "provider_regions",
+      "providers",
+      "release_policy_enforced",
+      "request_flows",
+      "request_flows_status",
+      "request_location_privacy_min_requests",
+      "request_locations",
+      "request_locations_status",
+      "request_regions",
+      "snapshot_at",
+      "suppressed_city_location_providers",
+      "suppressed_request_city_requests",
+      "time_series",
+      "total_bandwidth_gbs",
+      "total_completion_tokens",
+      "total_cpu_cores",
+      "total_gpu_cores",
+      "total_memory_gb",
+      "total_prompt_tokens",
+      "total_requests",
+      "total_tokens",
+      "unknown_location_providers",
+      "unknown_request_location_requests",
+      "verification_counts"
+    ]
+  },
+  {
+    "url": "https://api.darkbloom.dev/v1/network/totals?window=24h",
+    "at": "2026-09-26T04:49:18.900483+00:00",
+    "issue": "TimeoutError"
+  },
+  {
+    "url": "https://api.darkbloom.dev/v1/providers/attestation",
+    "at": "2026-09-26T04:49:18.901050+00:00",
+    "status": 200,
+    "content_type": "application/json",
+    "bytes": 972410,
+    "keys": [
+      "providers"
+    ]
+  },
+  {
+    "url": "https://api.darkbloom.dev/v1/runtime/manifest",
+    "at": "2026-09-26T04:49:19.327485+00:00",
+    "status": 200,
+    "content_type": "application/json",
+    "bytes": 2451,
+    "keys": [
+      "configured",
+      "python_hashes",
+      "runtime_hashes",
+      "template_hashes"
+    ]
+  },
+  {
+    "url": "https://api.darkbloom.dev/api/version",
+    "at": "2026-09-26T04:49:19.538625+00:00",
+    "status": 200,
+    "content_type": "application/json",
+    "bytes": 583,
+    "keys": [
+      "backend",
+      "binary_hash",
+      "bundle_hash",
+      "changelog",
+      "download_url",
+      "metallib_hash",
+      "platform",
+      "version"
+    ],
+    "version": "0.9.9"
+  },
+  {
+    "url": "https://api.darkbloom.dev/v1/releases/latest",
+    "at": "2026-09-26T04:49:19.540602+00:00",
+    "status": 200,
+    "content_type": "application/json",
+    "bytes": 631,
+    "keys": [
+      "active",
+      "backend",
+      "binary_hash",
+      "bundle_hash",
+      "changelog",
+      "created_at",
+      "metallib_hash",
+      "platform",
+      "url",
+      "version"
+    ]
+  },
+  {
+    "url": "https://status.darkbloom.dev/v3/summary.json",
+    "at": "2026-09-26T04:49:19.751395+00:00",
+    "status": 200,
+    "content_type": "application/json",
+    "bytes": 377,
+    "keys": [
+      "activeIncidents",
+      "page"
+    ]
+  }
+]

@@ -51,14 +51,70 @@ struct ModelManagerPresentationTests {
             "Meets catalog minimum · provider features unverified")
     }
 
-    @Test("mixed model schedules fit within a single twenty-four-hour budget")
-    func mixedModelScheduleBudget() {
-        let selected = ["gemma": 45, "qwen": 40, "openai": 15]
-        #expect(ModelManagerPresentation.maximumRunPercent(modelID: "gemma", selected: selected) == 45)
-        #expect(ModelManagerPresentation.maximumRunPercent(modelID: "qwen", selected: ["gemma": 45, "openai": 15]) == 40)
-        #expect(ModelManagerPresentation.totalRunPercent(selected) == 100)
+    @Test("independent what-if runtime converts percent into hours per day")
+    func whatIfRuntimeHours() {
         #expect(ModelManagerPresentation.runHoursPerDay(percent: 50) == 12)
         #expect(ModelManagerPresentation.runHoursPerDay(percent: 15) == 3.6)
+        #expect(ModelManagerPresentation.runHoursPerDay(percent: 100) == 24)
+        #expect(ModelManagerPresentation.runHoursPerDay(percent: 0) == 0)
+    }
+
+    @Test("what-if estimate states zero, derived net, gross, tokens-only, and honest absence")
+    func whatIfEstimateLines() {
+        let calibrated = ModelServingProfitAverage(
+            model: "model-id",
+            grossUSDPerActiveHour: 1.20,
+            incrementalElectricityUSDPerActiveHour: 0.21,
+            profitUSDPerActiveHour: 0.99,
+            activeHours: 2.5,
+            coveredEarningHours: 3,
+            activePowerSamples: 900,
+            idlePowerSamples: 500
+        )
+        let rate = ModelTokenRateAverage(
+            model: "model-id",
+            tokensPerSecond: 24.7,
+            sampleCount: 116,
+            queryPeriod: nil
+        )
+
+        #expect(ModelCardSummary.whatIfEstimateText(
+            ModelRunForecast.calculate(runPercent: 0, serving: calibrated, tokenRate: rate)
+        ) == "0% runtime · estimated $0/day")
+
+        #expect(ModelCardSummary.whatIfEstimateText(
+            ModelRunForecast.calculate(runPercent: 50, serving: calibrated, tokenRate: rate)
+        ) == "Est. net $11.88/day if it served 12 h/day · what-if, not actual")
+
+        let grossOnly = ModelServingProfitAverage(
+            model: "model-id",
+            grossUSDPerActiveHour: 1.20,
+            incrementalElectricityUSDPerActiveHour: nil,
+            profitUSDPerActiveHour: nil,
+            activeHours: 3,
+            coveredEarningHours: 4,
+            activePowerSamples: 100,
+            idlePowerSamples: 40
+        )
+        #expect(ModelCardSummary.whatIfEstimateText(
+            ModelRunForecast.calculate(runPercent: 50, serving: grossOnly, tokenRate: nil)
+        ) == "Est. gross $14.40/day · net needs a power baseline · what-if")
+
+        let tokensOnly = ModelCardSummary.whatIfEstimateText(
+            ModelRunForecast.calculate(runPercent: 25, serving: nil, tokenRate: rate)
+        )
+        #expect(tokensOnly.contains("tokens/day"))
+        #expect(tokensOnly.contains("earnings unmeasured"))
+
+        #expect(ModelCardSummary.whatIfEstimateText(
+            ModelRunForecast.calculate(runPercent: 50, serving: nil, tokenRate: nil)
+        ) == "No estimate yet · needs measured speed or earnings history")
+
+        // Account-level attribution must be disclosed wherever the estimate
+        // is explained (see docs/research/STAT_ATTRIBUTION_REVIEW.md).
+        #expect(ModelCardSummary.whatIfEstimateHelp.contains("assumes this Mac produced the account earnings"))
+        #expect(ModelCardSummary.whatIfEstimateHelp.contains("not a schedule"))
+        #expect(ModelCardSummary.whatIfEstimateHint.contains("not actual earnings"))
     }
 
     @Test("opportunity grade waits for measured serving history and compares speed demand and net profit")

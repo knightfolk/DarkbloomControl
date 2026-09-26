@@ -5,28 +5,34 @@ import SwiftUI
 @MainActor
 final class MonitorStore: ObservableObject {
     let providerExtras: ProviderExtrasStore?
+    /// Whole-Mac GPU utilization sampler owned by the app lifecycle so the
+    /// menu-bar ring keeps working with no dashboard open. Views observe it;
+    /// only `start()`/`stop()` drive it.
+    let gpuUsage: SystemGPUUsageStore
     private var providerExtrasTask: Task<Void, Never>?
     @Published private(set) var energy: EnergyRecordingSnapshot?
     @Published private(set) var energyEarnings: EnergyEarnings?
     private var energyEarningsDay: Date?
 
     var currentEnergyReading: EnergyReading? {
-        guard UserDefaults.standard.bool(forKey: "electricity.enabled"),
-              ElectricityCost.rate(UserDefaults.standard.string(forKey: "electricity.usdPerKWh") ?? "") != nil,
+        guard energyPreferences.bool(forKey: "electricity.enabled"),
+              ElectricityCost.rate(energyPreferences.string(forKey: "electricity.usdPerKWh") ?? "") != nil,
               let reading = energy?.reading,
               (0...30).contains(Date().timeIntervalSince(reading.date)) else { return nil }
         return reading
     }
 
     var currentEnergyEarnings: EnergyEarnings? {
-        guard UserDefaults.standard.bool(forKey: "electricity.enabled"),
-              ElectricityCost.rate(UserDefaults.standard.string(forKey: "electricity.usdPerKWh") ?? "") != nil,
+        guard energyPreferences.bool(forKey: "electricity.enabled"),
+              ElectricityCost.rate(energyPreferences.string(forKey: "electricity.usdPerKWh") ?? "") != nil,
               energyEarningsDay == Calendar.current.startOfDay(for: Date()) else { return nil }
         return energyEarnings
     }
     private var energyTask: Task<Void, Never>?
-    private let energyRecorder = EnergyRecorder(file: MonitorApplicationIdentity
-        .applicationSupportDirectory().appendingPathComponent("energy-history.json"))
+    private let energyRecorder: EnergyRecorder
+    /// Narrowly scoped preferences dependency for the electricity settings,
+    /// so tests can inject an isolated suite instead of mutating `.standard`.
+    private let energyPreferences: UserDefaults
     static let earningsPollingInterval: Duration = .seconds(600)
     @Published private(set) var dashboardVisible = false
     private var networkPollingPolicy = NetworkPollingPolicy()
@@ -101,10 +107,20 @@ final class MonitorStore: ObservableObject {
         publicPollingSleep: @escaping @Sendable (TimeInterval) async throws -> Void = {
             try await Task.sleep(for: .seconds($0))
         },
-        publicPollingJitter: @escaping @Sendable () -> Double = { Double.random(in: 0...0.2) }
+        publicPollingJitter: @escaping @Sendable () -> Double = { Double.random(in: 0...0.2) },
+        energyPreferences: UserDefaults = .standard,
+        energyRecorder: EnergyRecorder? = nil,
+        gpuUsage: SystemGPUUsageStore? = nil
     ) {
         self.service = service
         self.providerExtras = providerExtras
+        self.gpuUsage = gpuUsage ?? SystemGPUUsageStore()
+        self.energyPreferences = energyPreferences
+        self.energyRecorder = energyRecorder ?? EnergyRecorder(
+            file: MonitorApplicationIdentity
+                .applicationSupportDirectory()
+                .appendingPathComponent("energy-history.json")
+        )
         energy = initialEnergy
         self.earningsClient = earningsClient
         self.uptimeRecorder = uptimeRecorder
@@ -136,6 +152,7 @@ final class MonitorStore: ObservableObject {
         guard !hasStarted, shutdownTask == nil else { return }
         hasStarted = true
         observeThermalState()
+        gpuUsage.start()
         if providerExtras != nil {
             providerExtrasTask = Task { [weak self] in
                 while !Task.isCancelled {
@@ -148,8 +165,8 @@ final class MonitorStore: ObservableObject {
         energyTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let enabled = UserDefaults.standard.bool(forKey: "electricity.enabled")
-                let rate = ElectricityCost.rate(UserDefaults.standard.string(forKey: "electricity.usdPerKWh") ?? "")
+                let enabled = energyPreferences.bool(forKey: "electricity.enabled")
+                let rate = ElectricityCost.rate(energyPreferences.string(forKey: "electricity.usdPerKWh") ?? "")
                 let sampleTime = Date()
                 let activity = self.modelPowerActivity(at: sampleTime)
                 let result = await self.energyRecorder.sample(
@@ -261,8 +278,8 @@ final class MonitorStore: ObservableObject {
     }
 
     func refreshModelServingProfitability() async {
-        guard UserDefaults.standard.bool(forKey: "electricity.enabled"),
-              ElectricityCost.rate(UserDefaults.standard.string(forKey: "electricity.usdPerKWh") ?? "") != nil,
+        guard energyPreferences.bool(forKey: "electricity.enabled"),
+              ElectricityCost.rate(energyPreferences.string(forKey: "electricity.usdPerKWh") ?? "") != nil,
               let first = energy?.intervals.first?.start,
               let last = energy?.intervals.last?.end,
               last > first else {
@@ -619,7 +636,23 @@ final class MonitorStore: ObservableObject {
         )
     }
 
+    /// The menu-bar GPU ring, composed from the shared utilization sampler
+    /// and the lifecycle-owned fan status polling. Nil means "render no ring".
+    func menuGPURing(
+        now: Date = Date(),
+        thresholds: MenuBarGPURing.Thresholds = .standard
+    ) -> MenuBarGPURing? {
+        MenuBarGPURing.make(
+            utilization: gpuUsage.percentage,
+            sampledAt: gpuUsage.sampledAt,
+            fanStatus: providerExtras?.snapshot?.fanStatus,
+            now: now,
+            thresholds: thresholds
+        )
+    }
+
     func stop() async {
+        gpuUsage.stop()
         providerExtrasTask?.cancel()
         await providerExtrasTask?.value
         providerExtrasTask = nil
