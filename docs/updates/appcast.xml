@@ -3,6 +3,32 @@
     <channel>
         <title>Darkbloom Control</title>
         <item>
+            <title>1.7.0</title>
+            <pubDate>Sat, 26 Sep 2026 00:11:30 -0700</pubDate>
+            <sparkle:version>121</sparkle:version>
+            <sparkle:shortVersionString>1.7.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Darkbloom Control v1.7.0
+
+- Organize Models into collapsible Enabled and Available groups, with narrower
+  cards and up to two columns. Models that still need downloading are visually muted.
+- Add an independent daily-runtime slider to each model card. Forecasts are
+  what-if estimates based on observed activity and configured electricity cost;
+  they do not schedule or change provider runtime. Earnings inputs are account-level
+  and assume this Mac produced the recorded work for that model.
+- Show whole-Mac GPU utilization as a menu-bar ring, with temperature coloring
+  when fresh readings are available. Missing or stale utilization omits the ring;
+  missing temperature uses a neutral color.
+- Share GPU sampling between the menu bar and dashboard to avoid duplicate polling.
+
+Coming soon: the iOS companion and remote pairing/control. Fan controls, richer
+statistics, and automatic model warming also remain planned and are not enabled
+in this release.
+]]></description>
+            <enclosure url="https://github.com/knightfolk/DarkbloomControl/releases/download/v1.7.0/Darkbloom-Control-1.7.0-mac-arm64.zip" length="6225664" type="application/octet-stream" sparkle:edSignature="54GDTm1tVrr50mdXVKCGyt8bFN3MV+1qvxn8ejfvKQSXosUahUhblukCzWKyK9PEo9aFo+VhUqlMnJQaEK9TCQ=="/>
+        </item>
+        <item>
             <title>1.6.0</title>
             <pubDate>Thu, 24 Sep 2026 22:19:53 -0700</pubDate>
             <sparkle:version>120</sparkle:version>
