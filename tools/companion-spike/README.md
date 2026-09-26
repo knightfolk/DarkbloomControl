@@ -1,5 +1,8 @@
 # Companion transport prototype
 
+**iOS companion: Coming soon.** This is an unreleased development prototype;
+there is no companion UI or remote-control feature in the shipping macOS app.
+
 **Checkpoint decision: native TLS is usable for the next experiment; the embedded C adapter is blocked.** Repeated connections intermittently deliver zero bytes at the host after the phone has written a complete request. A single successful mTLS run does not establish reliable transport. Keep external Tailscale as the first-release route while this candidate remains under investigation. The full verifier deliberately retains the failing regression and must not be advertised as green.
 
 This is a standalone **test tool**, the local portion of [Task 1](../../docs/superpowers/plans/2026-09-25-ios-companion.md). It is not linked into Darkbloom Control and cannot read provider settings, telemetry, tokens or history, run the CLI, or register a helper. All keys, node states, responses and fake start/stop actions are synthetic. It listens only on loopback; this security fixture is not a LAN preview.

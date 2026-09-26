@@ -11,6 +11,16 @@ gross recorded earnings per earning-hour, and per-model network demand. It
 builds on v1.1's clearer settings, provider startup progress, and signed Control
 updates. Previously named Darkbloom Monitor.
 
+## iOS companion — Coming soon
+
+An iPhone companion is in development for secure QR pairing, monitoring,
+supported settings, and provider/Mac app controls over LAN and remote access.
+It is not available in the current app release. The isolated
+[transport prototype](tools/companion-spike/README.md) is for development only
+and is not included in the macOS app. See the
+[implementation plan](docs/superpowers/plans/2026-09-25-ios-companion.md)
+for the remaining work.
+
 ## Download
 
 Download the Apple Silicon build from [Releases](https://github.com/knightfolk/DarkbloomControl/releases/latest),
