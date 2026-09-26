@@ -1,0 +1,97 @@
+--- a/tailscale.go
++++ b/tailscale.go
+@@ -70 +70 @@
+-	m  map[C.int]*conn // keyed by the FD given to C (w)
++	m  map[*conn]struct{} // keyed by stable connection identity
+@@ -76 +76 @@
+-	r *os.File // r is the local socket to the C client
++	r net.Conn // r is the owned Go socket endpoint to the C client
+@@ -288 +288 @@
+-			err = syscall.Sendmsg(sp, nil, rights, nil, 0)
++			err = syscall.Sendmsg(sp, []byte{1}, rights, nil, 0)
+@@ -322 +322,2 @@
+-	_, oobn, _, _, err := syscall.Recvmsg(int(listenerFd), nil, buf, 0)
++	payload := make([]byte, 1)
++	n, oobn, _, _, err := syscall.Recvmsg(int(listenerFd), payload, buf, 0)
+@@ -324,0 +326,4 @@
++	}
++
++	if n != 1 || payload[0] != 1 {
++		return ln.s.recErr(fmt.Errorf("invalid descriptor transfer marker"))
+@@ -351 +356,10 @@
+-	r := os.NewFile(uintptr(fds[1]), "socketpair-r")
++	// net.FileConn duplicates the Go endpoint and makes socket I/O pollable.
++	// Its CloseRead/CloseWrite methods pin the descriptor against concurrent
++	// Close; the original raw file is closed exactly once after transfer.
++	f := os.NewFile(uintptr(fds[1]), "socketpair-r")
++	r, err := net.FileConn(f)
++	f.Close()
++	if err != nil {
++		syscall.Close(fds[0])
++		return err
++	}
+@@ -354 +367,0 @@
+-
+@@ -357,3 +370,3 @@
+-		conns.m = make(map[C.int]*conn)
+-	}
+-	conns.m[fdC] = c
++		conns.m = make(map[*conn]struct{})
++	}
++	conns.m[c] = struct{}{}
+@@ -361 +374 @@
+-
++	var cleanupOnce sync.Once
+@@ -363,9 +376,15 @@
+-		var inCleanup bool
+-		conns.mu.Lock()
+-		if tsConn, ok := conns.m[fdC]; ok && tsConn.c == netConn {
+-			delete(conns.m, fdC)
+-			inCleanup = true
+-		}
+-		conns.mu.Unlock()
+-
+-		if !inCleanup {
++		cleanupOnce.Do(func() {
++			r.Close()
++			netConn.Close()
++			conns.mu.Lock()
++			delete(conns.m, c)
++			conns.mu.Unlock()
++		})
++	}
++	var copies sync.WaitGroup
++	copies.Add(2)
++	go func() {
++		defer copies.Done()
++		var b [1 << 16]byte
++		if _, err := io.CopyBuffer(struct{ io.Writer }{r}, struct{ io.Reader }{netConn}, b[:]); err != nil {
++			connCleanup()
+@@ -374,12 +393 @@
+-
+-		r.Close()
+-		netConn.Close()
+-	}
+-	go func() {
+-		defer connCleanup()
+-		var b [1 << 16]byte
+-		io.CopyBuffer(r, netConn, b[:])
+-		syscall.Shutdown(int(r.Fd()), syscall.SHUT_WR)
+-		if cr, ok := netConn.(interface{ CloseRead() error }); ok {
+-			cr.CloseRead()
+-		}
++		r.(interface{ CloseWrite() error }).CloseWrite()
+@@ -388 +396 @@
+-		defer connCleanup()
++		defer copies.Done()
+@@ -390,2 +398,4 @@
+-		io.CopyBuffer(netConn, r, b[:])
+-		syscall.Shutdown(int(r.Fd()), syscall.SHUT_RD)
++		if _, err := io.CopyBuffer(struct{ io.Writer }{netConn}, struct{ io.Reader }{r}, b[:]); err != nil {
++			connCleanup()
++			return
++		}
+@@ -395,0 +406 @@
++	go func() { copies.Wait(); connCleanup() }()
+@@ -522,0 +534 @@
++		s.s.UserLogf = logger.Discard

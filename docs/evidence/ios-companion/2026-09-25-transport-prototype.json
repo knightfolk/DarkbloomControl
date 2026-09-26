@@ -1,0 +1,311 @@
+{
+  "schemaVersion": 1,
+  "checkpointDate": "2026-09-25",
+  "researchCommit": "ada1bb6",
+  "branch": "codex/companion-transport-spike",
+  "decision": {
+    "native": "usable for the next synthetic experiment",
+    "embedded": "BLOCKED: intermittent complete request loss",
+    "productIntegration": "none",
+    "task1Complete": false
+  },
+  "toolchain": {
+    "macOS": "27.2 (26B5091g)",
+    "xcode": "27.0 (27A266a)",
+    "swift": "6.4 (swiftlang-6.4.0.34.1)",
+    "go": "1.26.6 darwin/arm64",
+    "simulatorRuntime": "iOS 26.5, iPhone 17 Pro",
+    "minimumDeploymentTargets": {
+      "macOS": "14",
+      "iOS": "17"
+    },
+    "minimumOSRuntimeTested": false
+  },
+  "dependencies": {
+    "libtailscale": "59d4bb82744915815178e0f0776d60026a397ee7",
+    "tailscale.com": "v1.102.4",
+    "swiftLockfile": "tools/companion-spike/Package.resolved",
+    "goLockfile": "tools/companion-spike/tailscale/go.sum"
+  },
+  "sourceSHA256": {
+    "tools/companion-spike/Package.resolved": "d698947d891c6b71747a61b86791c38ea66181758a04c3375c6cf3d797d6d8f4",
+    "tools/companion-spike/Package.swift": "0f8af6b506f9f24aa9c27989c1b2defd5fdf695dc4eec644e21890be12d96fec",
+    "tools/companion-spike/Sources/SpikeCore/SpikeIdentity.swift": "97cf3b6de7123990d28f0492e4b61b22968e6c2eb5da5b02fcbcf84c6fef0773",
+    "tools/companion-spike/Sources/SpikeCore/SpikeTLS.swift": "ef33dfab784ed3d687ef2daac92410366e72b126a2bd5b13a406c178704efaae",
+    "tools/companion-spike/Sources/TLSBridgeHarness/Harness.swift": "d6c4a132016fc56eb21fefe346755e3e1f31bccceea69450ddf90311e381e3e1",
+    "tools/companion-spike/Tests/SpikeCoreTests/SpikeIdentityTests.swift": "3e249699c0aee1413b51fd432073cf0e4f603eb4c179773498e2ee9b3a374903",
+    "tools/companion-spike/Tests/SpikeCoreTests/SpikeTLSTests.swift": "849d1ce25390ef5564013049d077ae1af47a7f27f07483cfb9aa48b8ed2aeabc",
+    "tools/companion-spike/tailscale/bounded-descriptors.patch": "66f389f0b53b125e64699807df02aa2ddbfa05ee089c0d0ae6b65bceede7c99b",
+    "tools/companion-spike/tailscale/build.sh": "8b83fee5fbf438ed942f12fba5108fd9783138f5ca6f5ea168bd3b9c663242fe",
+    "tools/companion-spike/tailscale/go.mod": "a9063d9f567885cf91ab777034891eb3a91a7b8b78108c4683bcd7096ef917dd",
+    "tools/companion-spike/tailscale/go.sum": "b3381bd2c7379dda4ecc7f14bd662f1a01cb051476e0939c38e3161fc8e730ea",
+    "tools/companion-spike/tailscale/overlay/spike_bounds.go": "e542b2a918c3aa4e3706d3d09d6a0e1f323ec43c78418952b2c4a20e2419c4fc",
+    "tools/companion-spike/tailscale/overlay/spike_test.go": "434622ff7cf06100526a403b05c8ff5a21ad44a1bf938e597027b8b0d9a2da15",
+    "tools/companion-spike/tailscale/overlay/spikefixture/capi.go": "c9b0bf2b198dde217e45a1ce7e463a601e2321e6bc5efddd6076d2bb7e4df86e",
+    "tools/companion-spike/tailscale/overlay/spikefixture/checks.go": "95803d7539c122259ab42f35017eb07a96adf173f2c7da58e6cd8a925d7d059a",
+    "tools/companion-spike/tailscale/overlay/spikefixture/fixture.go": "c0e3e59f144190bfe3c069b7251f3fd22eb9b2691da4066230b2934cb8f134c4",
+    "tools/companion-spike/tailscale/process_smoke.py": "2bcc417f4ebc4352118f4d39bb11978ef424193efe37bc3d22378b69e65c338f",
+    "tools/companion-spike/tailscale/run.sh": "cf56e41cb41746674a84ad557d942bf5f8f11515c7513ede778be4de0739bd6f",
+    "tools/companion-spike/verify.sh": "bad1c6c329021ed05a3eab362d76ec39feb9bb04978dc3c8ee44fa41e127f1a9"
+  },
+  "generatedArtifactSHA256": {
+    ".build/companion-spike/fixture": "b6eac9d814615cba4f8c31363bc9624e25975445c22816c27b8afa27de0973c6",
+    ".build/companion-spike/tailscale.go": "ebdee937d31f398b681b09287b786bfcdb3864d0302fd10717d184d3e68c59a7",
+    "tools/companion-spike/.build/out/Products/Debug/TLSBridgeHarness": "b8cf22d97d36955fb66675e5dc7e4cb0a2f7c413eb1d2fe44259a5fb9c4af900"
+  },
+  "verification": {
+    "performedBy": "Codex, independently of GLM review",
+    "rootTests": {
+      "status": "passed",
+      "reportedTests": 654,
+      "suites": 87,
+      "optInLiveChecksSkipped": 2
+    },
+    "rootReleaseBuild": {
+      "status": "passed"
+    },
+    "rootPackaging": {
+      "status": "passed",
+      "tests": 16
+    },
+    "nativeTests": {
+      "status": "passed",
+      "XCTest": 12,
+      "SwiftTesting": 11,
+      "totalPassed": 23
+    },
+    "nativeMTLS": {
+      "status": "passed",
+      "assertions": [
+        {
+          "assertion": "routeHealthyBeforeRejectionProbes",
+          "passed": true
+        },
+        {
+          "assertion": "wrongSPKIRejected",
+          "passed": true
+        },
+        {
+          "assertion": "missingClientCertificateRejected",
+          "passed": true
+        },
+        {
+          "assertion": "unpairedPhoneRejected",
+          "passed": true
+        },
+        {
+          "assertion": "unpairedPhoneReachedHostTrustCheck",
+          "passed": true
+        },
+        {
+          "assertion": "rejectedPeersCannotInvokeFakeRunner",
+          "passed": true
+        },
+        {
+          "assertion": "nativeIdentityRoundTrip",
+          "passed": true
+        },
+        {
+          "assertion": "largeFrameTraversesNativeTLS",
+          "passed": true
+        },
+        {
+          "assertion": "fakeRunnerOnlyRoundTrip",
+          "passed": true
+        },
+        {
+          "assertion": "revokedPhoneRejected",
+          "passed": true
+        },
+        {
+          "assertion": "revocationPreventsFurtherApplicationRequests",
+          "passed": true
+        },
+        {
+          "assertion": "nativeStopClosesOwnedSessions",
+          "passed": true
+        },
+        {
+          "assertion": "harnessCompleted",
+          "passed": true
+        }
+      ],
+      "note": "Rebuilt and rerun after explicit POSIX timeout/cancellation/unreachable and DNS failures were excluded from the rejection predicate."
+    },
+    "iOSSimulatorTests": {
+      "status": "passed",
+      "totalPassed": 22,
+      "skipped": 1,
+      "skipReason": "Generated XCTest host lacks Keychain entitlement for exact synthetic-key absence lookup."
+    },
+    "iOSDeviceBuild": {
+      "status": "passed",
+      "codeSigning": "disabled",
+      "runtimeTested": false
+    },
+    "embeddedRace": {
+      "status": "failed",
+      "passedBehavioralCases": 7,
+      "failedBehavioralCases": 2,
+      "nestedFixtureCases": 7,
+      "processOnlyEntryPointSkipped": 1,
+      "elapsedSeconds": 50.648,
+      "exitCode": 1,
+      "failures": [
+        {
+          "test": "TestSpikeStalledHandshakeDoesNotBlockNextConnection",
+          "symptom": "Next round trip exceeded request read deadline."
+        },
+        {
+          "test": "TestSpikeRepeatedConnectionsPreserveDescriptorOwnership",
+          "symptom": "Connection 1: 0 of 8192 bytes received; request read deadline exceeded."
+        }
+      ],
+      "globalWatchdogExpired": false,
+      "activeCleanupHealthyRoundTripBeforeCancel": "passed",
+      "adapterImplementationChangedSincePriorEOFReproduction": false
+    },
+    "completeVerifier": {
+      "status": "failed",
+      "exitCode": 1,
+      "stoppedAt": "Go race suite",
+      "embeddedMTLSOnFinalCandidate": "not run; existing failure already blocks qualification",
+      "note": "Final library tests and Go suite ran from fresh inputs. Final native harness was separately rebuilt and executed after tightening its rejection predicate."
+    },
+    "historicalEmbeddedMTLS": {
+      "assertionsPassed": 14,
+      "candidate": "earlier guarded-descriptor patch; different from the final candidate",
+      "qualifiesFinalCandidate": false
+    },
+    "patchReapplication": {
+      "status": "passed",
+      "note": "Zero-context patch removes nested-diff whitespace warnings; exact reapplication is byte-identical to the verified Go source."
+    },
+    "priorEmbeddedRace": {
+      "status": "failed",
+      "passedBehavioralCases": 8,
+      "failedBehavioralCases": 1,
+      "nestedFixtureCases": 7,
+      "processOnlyEntryPointSkipped": 1,
+      "elapsedSeconds": 42.832,
+      "exitCode": 1,
+      "failure": "TestSpikeRepeatedConnectionsPreserveDescriptorOwnership: connection 1: got 0 bytes, want 8192: <nil>",
+      "timedOut": false
+    }
+  },
+  "ignoredLocalLogEvidence": {
+    "rootTests": {
+      "path": ".superpowers/sdd/2026-09-25-ios-companion/baseline-swift-test.log",
+      "sha256": "3473e8842887f4de0045e4e6b787457903103ddd484dab9248b48925e88f2c3f"
+    },
+    "rootReleaseBuild": {
+      "path": ".superpowers/sdd/2026-09-25-ios-companion/root-release-build.log",
+      "sha256": "d911a5e914d82ca8e77d8752eb12bd996917f0234d8cf03b8b2242ae6dbcaa98"
+    },
+    "rootPackaging": {
+      "path": ".superpowers/sdd/2026-09-25-ios-companion/packaging-tests.log",
+      "sha256": "9ea709d19eb6a2c25ad982bc94d160149688628541023dede5c98265fb567518"
+    },
+    "nativeTests": {
+      "path": "tools/companion-spike/.build/verification.WtBGUy/native-tests.log",
+      "sha256": "3cf9a7e82a6d34b0605d5f02474ccbdc070fa794efc29ed067feb580a10659d2"
+    },
+    "nativeBuild": {
+      "path": "tools/companion-spike/.build/native-build.post-review.log",
+      "sha256": "a93dec3383b93cd9bd556e1a1a81a61092ecf6e1bee12273cbfc2e7659c580c0"
+    },
+    "fixtureBuild": {
+      "path": "tools/companion-spike/.build/verification.WtBGUy/fixture-build.log",
+      "sha256": "6cb47d2e160c131e18bd214d8af94c87904fb142efd5f2c8973cefe6b0bfa1f9"
+    },
+    "embeddedRace": {
+      "path": "tools/companion-spike/.build/verification.WtBGUy/bridge-race-tests.log",
+      "sha256": "d2840575d1a382020edc1163b867ad43e8bc90bca1dd1662924c2faf6aa8a852"
+    },
+    "nativeMTLS": {
+      "path": "tools/companion-spike/.build/direct-mtls.post-review.jsonl",
+      "sha256": "180944d1b6df489c38fe5ada9b915f0df1f6f7c211c22d4871be11450460e825"
+    },
+    "iOSSimulatorTests": {
+      "path": "tools/companion-spike/.build/ios-simulator-tests-final.log",
+      "sha256": "8fa1a009dd3b1123c0d9838c677f1535d2aeb1ab34ce2a9c58f61b7a096fd912"
+    },
+    "iOSDeviceBuild": {
+      "path": "tools/companion-spike/.build/ios-device-build-final.log",
+      "sha256": "a7244d5633b4d99fb6b1d9519ccc858d3ee7dcbb82ceacf17849118380153d52"
+    },
+    "historicalEmbeddedMTLS": {
+      "path": "tools/companion-spike/.build/embedded-mtls.jsonl",
+      "sha256": "34e715fdc06bf7c189732a55853a0c54933549cc67620aa775f6dd1f91642556",
+      "scope": "Earlier guarded-descriptor candidate; not final-source proof."
+    },
+    "priorEmbeddedRace": {
+      "path": "tools/companion-spike/.build/verification.ZXCj5Y/bridge-race-tests.log",
+      "sha256": "e6cbc02babf2f4daf9e94789b30ca97b3b8fc27b580e3174d115e58e1248145f"
+    },
+    "priorNativeMTLS": {
+      "path": "tools/companion-spike/.build/direct-mtls.final.jsonl",
+      "sha256": "180944d1b6df489c38fe5ada9b915f0df1f6f7c211c22d4871be11450460e825"
+    }
+  },
+  "corroboration": {
+    "entitledSimulatorKeyAbsenceProbe": "Native worker reported all eight exact synthetic private/public tag/label lookups returned errSecItemNotFound. This is separate from the skipped unentitled root-run suite."
+  },
+  "review": {
+    "model": "GLM-5.3",
+    "reasoning": "Max",
+    "route": "ZCode desktop",
+    "taskTitle": "Tailscale mTLS spike security review",
+    "permission": "read-only",
+    "status": "completed",
+    "testsRunByReviewer": false,
+    "filesEditedByReviewer": false,
+    "scopeLimit": "Inspected earlier Swift and fixture snapshots and final C patch. Source changed during review; Codex independently checked final source and verified post-review corrections. Not a production security audit.",
+    "findings": [
+      {
+        "id": "P1",
+        "topic": "Dead-route negative assertions in earlier harness",
+        "disposition": "Addressed before review completion; additionally hardened native network-error exclusions; final direct 13 assertions pass."
+      },
+      {
+        "id": "P2",
+        "topic": "Full cleanup on copy errors",
+        "disposition": "Retained as diagnostic hypothesis; not a demonstrated root cause. Adapter remains blocked."
+      },
+      {
+        "id": "P3",
+        "topic": "Unchecked CloseWrite assertion",
+        "disposition": "No reachable mismatch for supported AF_LOCAL stream path established; portability robustness gate remains."
+      },
+      {
+        "id": "P4",
+        "topic": "Cleanup test ignored initial write error",
+        "disposition": "Fixed by asserted request and acknowledged complete round trip before cancel. Final race case passes."
+      },
+      {
+        "id": "P5",
+        "topic": "Watchdog documentation mismatch",
+        "disposition": "Documented native 120s and standalone 200s watchdogs separately."
+      },
+      {
+        "id": "P6",
+        "topic": "Listener registry uses reusable integer descriptor keys",
+        "disposition": "Open lifecycle-audit target before production/listener recreation; not established as this failure root cause."
+      },
+      {
+        "id": "P7",
+        "topic": "Patch/source/binary drift while debugging",
+        "disposition": "Final fresh builds, exact patch comparison and source/binary/log hashes recorded; final race run fails and is not promoted."
+      }
+    ]
+  },
+  "limits": [
+    "No physical iPhone was connected",
+    "No Secure Enclave or persistent production identity proof",
+    "No QR enrollment or real remote device pairing",
+    "No real tailnet enrollment, WAN or background lifecycle proof",
+    "Updated embedded iOS archive slices not built",
+    "No product/provider/settings/history/live-service changes"
+  ],
+  "nextStep": "Signed synthetic iPhone/Mac identity and pairing harness over LAN/external Tailscale; embedded adapter remains separately blocked."
+}

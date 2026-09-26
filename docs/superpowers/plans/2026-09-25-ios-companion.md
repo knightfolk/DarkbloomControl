@@ -14,6 +14,8 @@
 
 **Status:** Research/implementation proposal at `codex/models-window-grid` / `14991f8`. The user confirmed the product scope and embedded-Tailscale evaluation, not every proposed protocol value or implementation phase. This planning assignment authorizes no product implementation, real provider mutation, migration, publication, or tailnet changes. Preserve concurrent documentation/spike work.
 
+**Subsequent authorization/checkpoint:** The user requested committing the research and proceeding to the next logical step. Research is committed as `ada1bb6`; the isolated `codex/companion-transport-spike` branch implements Task 1's local synthetic harness only. Native identity/TLS proof now exists, but repeated connections expose data loss in the embedded C adapter. Do not promote that candidate based on an occasional successful handshake. Continue the physical-device milestone over LAN/external Tailscale; keep the embedded regression as a separate unresolved gate. See [the prototype and reproduction commands](../../../tools/companion-spike/README.md). This is not completion of Task 1, a QR-paired phone app, or authorization for live provider operations.
+
 ## Global Constraints
 
 - Retain macOS 14; proposed iOS floor is 17. Candidate swift-certificates 1.21.0 requires Swift tools 6.1; record the toolchain decision after the spike, without silently raising OS floors.
