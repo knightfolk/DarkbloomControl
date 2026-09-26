@@ -1,0 +1,140 @@
+{
+  "date_local": "2026-09-25",
+  "timezone": "America/Phoenix",
+  "status": "conditional feasibility; unsigned builds and synthetic C API round trip only",
+  "repo_baseline": "14991f8",
+  "source": {
+    "url": "https://github.com/tailscale/libtailscale",
+    "commit": "59d4bb82744915815178e0f0776d60026a397ee7",
+    "tailscale_module": "v1.94.1",
+    "go_toolchain": "go1.25.5",
+    "production_source_modified": false,
+    "test_only_patch": "c-api-roundtrip.patch"
+  },
+  "xcode": "27.0 (27A266a)",
+  "host_architecture": "arm64",
+  "artifacts": [
+    {
+      "name": "macOS framework",
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/build-macos/Build/Products/Release/TailscaleKit.framework/Versions/A/TailscaleKit",
+      "bytes": 26126752,
+      "sha256": "b7e215e3e6929da0ef93e735fefec3b6dcc31ceeae7c156289d4fa55ebbc8232",
+      "platform": "macOS",
+      "minimum_os_from_macho": "14.0",
+      "architectures": [
+        "arm64"
+      ],
+      "signed": false
+    },
+    {
+      "name": "iOS device framework",
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/build-ios-device/Build/Products/Release-iphoneos/TailscaleKit.framework/TailscaleKit",
+      "bytes": 23056728,
+      "sha256": "c09f22276e8121e3915484b4be0eb16e094bcd181450e46e58c4869f8f13ee9d",
+      "platform": "iOS",
+      "minimum_os_from_macho": "17.0",
+      "architectures": [
+        "arm64"
+      ],
+      "signed": false
+    },
+    {
+      "name": "iOS simulator framework",
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/build-ios-simulator/Build/Products/Release-iphonesimulator/TailscaleKit.framework/TailscaleKit",
+      "bytes": 47813072,
+      "sha256": "33d77ae6e9b7fd57031c5f4673a05154216b0a3c2ee7ee52063a1598d1258995",
+      "platform": "iOS Simulator",
+      "minimum_os_from_macho": "17.0",
+      "architectures": [
+        "arm64",
+        "x86_64"
+      ],
+      "signed": false
+    }
+  ],
+  "logs": {
+    "mac-c-archive.log": {
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/mac-c-archive.log",
+      "sha256": "07f44218e097a4c1497ff510a9e8c7fcc2bf63ae4953f4979a85f10b4c77f380",
+      "exit_code_observed": 0
+    },
+    "mac-framework.log": {
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/mac-framework.log",
+      "sha256": "765d728d80a9d23d2688660238e4a1e6e0b2d77c15163f6baebe0986822873e9",
+      "exit_code_observed": 0
+    },
+    "ios-device-c-archive.log": {
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/ios-device-c-archive.log",
+      "sha256": "a94c153e941eb0c6c31286ca202ad9e4bddacd26abe16b9b6ac1d6dbfa5aec92",
+      "exit_code_observed": 0
+    },
+    "ios-device-framework.log": {
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/ios-device-framework.log",
+      "sha256": "72ab70e3c6ebbc6ca373cd126efd5e666104c424b7e7286a12e382d03de1b2e7",
+      "exit_code_observed": 0
+    },
+    "ios-simulator-c-archive.log": {
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/ios-simulator-c-archive.log",
+      "sha256": "09bc4c867adcadb6fda9d48e139e43841ebeec386ba31cbac1462f328cbc6753",
+      "exit_code_observed": 0
+    },
+    "ios-simulator-framework.log": {
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/ios-simulator-framework.log",
+      "sha256": "395c87fa0180feb41098fc1bf566052d530fafa5f7f269850d250f7db25e20d5",
+      "exit_code_observed": 0
+    },
+    "c-api-connection-test.log": {
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/c-api-connection-test.log",
+      "sha256": "5fd54f0ca051a7ea88218fccb5c6c8ef67f661cdca31a46cf5606eb4d62f3ebf",
+      "exit_code_observed": 0
+    },
+    "c-api-roundtrip-test.log": {
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/c-api-roundtrip-test.log",
+      "sha256": "f65fe7c06955a05dc1a18c377a132c65a71a73cb047e6aab1f3e9edccd67c940",
+      "exit_code_observed": 0
+    },
+    "xcframework-package.log": {
+      "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/xcframework-package.log",
+      "sha256": "ab9c36e89279e9c601af49d39da3e1e30821c740a14ec973d2983764081e98d9",
+      "exit_code_observed": 0
+    }
+  },
+  "tests": [
+    {
+      "case": "upstream TestConn",
+      "result": "pass",
+      "test_seconds": 0.9,
+      "scope": "loopback synthetic control and DERP/STUN, temporary node state"
+    },
+    {
+      "case": "TestConn with reverse write/read extension",
+      "result": "pass",
+      "test_seconds": 0.89,
+      "scope": "same accepted descriptor sends reply; dialed descriptor receives reply; cleanup assertions pass"
+    }
+  ],
+  "not_tested": [
+    "signed physical iPhone execution",
+    "runtime on macOS 14 or iOS 17",
+    "native mTLS over loopback bridge",
+    "real tailnet authorization",
+    "real WAN or cellular access",
+    "suspension or VPN coexistence",
+    "memory or battery",
+    "provider or app lifecycle control",
+    "App Store archive or acceptance"
+  ],
+  "physical_device_inventory": "Only simulated devices returned by xcrun devicectl list devices; no physical device available at check time.",
+  "xcframework_package": {
+    "result": "pass",
+    "local_path": "/tmp/darkbloom-tailscale-spike-20260925.o4wfUC/TailscaleKit.xcframework",
+    "info_plist_sha256": "f3ee44b34daa9faee6b4a5529fc943a73199bd6ac0eb9ebd5b9728bd152512d1",
+    "library_identifiers": [
+      "ios-arm64",
+      "macos-arm64",
+      "ios-arm64_x86_64-simulator"
+    ],
+    "signed": false,
+    "distribution_acceptance_tested": false
+  }
+}

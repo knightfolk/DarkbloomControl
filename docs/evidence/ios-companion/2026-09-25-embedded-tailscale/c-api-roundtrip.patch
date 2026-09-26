@@ -1,0 +1,22 @@
+diff --git a/tsnetctest/tsnetctest.go b/tsnetctest/tsnetctest.go
+index a2d17df..f47df60 100644
+--- a/tsnetctest/tsnetctest.go
++++ b/tsnetctest/tsnetctest.go
+@@ -103,0 +104,17 @@ int test_conn() {
++	// Darkbloom feasibility probe: an accepted descriptor must also send,
++	// and a dialed descriptor must also receive, on the same connection.
++	const char reply[] = "reply";
++	char got_reply[sizeof(reply)];
++	if (write(r, reply, sizeof(reply)) != sizeof(reply)) {
++		snprintf(err, errlen, "reverse write failed: %d (%s)", errno, strerror(errno));
++		return 1;
++	}
++	if (read(w, got_reply, sizeof(got_reply)) != sizeof(got_reply)) {
++		snprintf(err, errlen, "reverse read failed: %d (%s)", errno, strerror(errno));
++		return 1;
++	}
++	if (memcmp(got_reply, reply, sizeof(reply)) != 0) {
++		snprintf(err, errlen, "reverse payload mismatch");
++		return 1;
++	}
++
