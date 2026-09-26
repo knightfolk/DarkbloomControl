@@ -6,10 +6,10 @@ Darkbloom Control is a native macOS menu-bar companion for a local Darkbloom
 provider. It turns provider telemetry into a compact infographic popup and
 keeps model and lifecycle controls behind explicit safety checks.
 
-**v1.2** adds per-model chart colors, clearer chart scales, per-model average
-gross recorded earnings per earning-hour, and per-model network demand. It
-builds on v1.1's clearer settings, provider startup progress, and signed Control
-updates. Previously named Darkbloom Monitor.
+**v1.7** adds compact model cards in two columns, collapsible Enabled and
+Available groups, independent daily-runtime forecasts, and a menu-bar GPU ring.
+It builds on v1.6's built-in Chat and explicit local or paid-network routing.
+Previously named Darkbloom Monitor.
 
 ## Download
 
@@ -20,6 +20,13 @@ for first-launch confirmation or permission to read your external model drive.
 The release Apple Silicon app is Developer ID–signed, notarized by Apple, and
 includes a stapled notarization ticket. Gatekeeper verification passed on the
 release bundle; no Gatekeeper-disable or quarantine-removal workaround is needed.
+
+## Coming soon
+
+The iOS companion, QR pairing and remote controls are experimental and are not
+included in this release. Fan controls, richer provider statistics, and automatic
+model warming remain planned. No background remote-control service is installed
+or enabled by this app.
 
 ## Highlights
 
@@ -43,7 +50,12 @@ release bundle; no Gatekeeper-disable or quarantine-removal workaround is needed
   is active or activity cannot be verified
 - Model catalog management with separate Download, Delete, Enable, and Preload
   actions
-- Models organized into On this Mac, Available, and Capacity, with search and expandable details
+- Models organized into collapsible Enabled and Available groups, with search,
+  expandable details, and a separate Provider capacity section
+- Independent daily-runtime what-if sliders with estimates from observed data;
+  they do not schedule or change provider runtime. Earnings inputs are account-level
+  and assume this Mac produced the recorded work for that model
+- A whole-Mac GPU utilization ring in the menu bar, with fresh temperature coloring
 - Concurrency selections from 1–24 and resident-model limits staged together with model selections
 - Clear saved-state labels for idle-memory, beta, and electricity settings
 - Starting/Restarting progress that blocks repeated clicks until fresh telemetry arrives
@@ -167,7 +179,7 @@ applies the saved selection; it can differ from the models the daemon currently
 advertises. The comparison is shown separately from loaded models and unsaved edits. Saving
 configuration does not silently restart the provider.
 
-**Models → Capacity** lets you save a concurrency limit from 1–24
+**Models → Provider capacity** lets you save a concurrency limit from 1–24
 and choose how many models the provider may keep in memory. Darkbloom CLI 0.9.7
 currently caps effective concurrency at 8 per model engine, even when a higher
 value is saved. The CLI 0.9.7 defaults are
